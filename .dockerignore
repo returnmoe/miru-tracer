@@ -1,0 +1,83 @@
+# Jupyter notebooks
+*.ipynb
+*.ipynb_checkpoints
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Test files
+tests/
+test_*.py
+*_test.py
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Models (don't include in image, mount as volume)
+models/
+*.bin
+*.safetensors
+*.gguf
+
+# Generated files
+*.json
+*.log
+*.txt.gz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
