@@ -15,20 +15,20 @@ import gradio as gr
 load_dotenv()
 
 # Setup logging before importing other modules
-from src.core.logging_config import setup_logging, get_logger
+from core.logging_config import setup_logging, get_logger
 
 setup_logging()
 logger = get_logger(__name__)
 
 from gradio.themes.base import Base
 from gradio.themes.utils import colors, fonts, sizes
-from src.core.models import ModelManager
-from src.ui.model_loader import create_model_loader_tab
-from src.ui.tokenize_text import create_tokenize_text_tab
-from src.ui.token_lookup import create_token_lookup_tab
-from src.ui.logging_mode import create_logging_mode_tab
-from src.ui.interactive_mode import create_interactive_mode_tab
-from src.ui.analysis import create_analysis_tab
+from core.models import ModelManager
+from ui.model_loader import create_model_loader_tab
+from ui.tokenize_text import create_tokenize_text_tab
+from ui.token_lookup import create_token_lookup_tab
+from ui.logging_mode import create_logging_mode_tab
+from ui.interactive_mode import create_interactive_mode_tab
+from ui.analysis import create_analysis_tab
 
 # Application version
 __version__ = "0.0.1"
