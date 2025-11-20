@@ -10,8 +10,8 @@ import threading
 import uuid
 import time
 from datetime import datetime, timedelta
-from .tracer import LLMTracer
-from .logging_config import get_logger
+from core.tracer import LLMTracer
+from core.logging_config import get_logger
 
 logger = get_logger(__name__)
 

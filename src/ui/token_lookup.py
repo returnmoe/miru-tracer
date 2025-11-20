@@ -1,8 +1,8 @@
 """Token Lookup tab for Gradio UI."""
 
 import gradio as gr
-from ..core.models import ModelManager
-from ..core.tokenizer_utils import (
+from core.models import ModelManager
+from core.tokenizer_utils import (
     safe_decode_token,
     extract_token_bytes,
 )

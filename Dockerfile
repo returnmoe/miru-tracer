@@ -15,9 +15,11 @@ WORKDIR /build
 # Copy requirements
 COPY requirements.txt .
 
-# Install Python dependencies
 # Install torch separately with specific CUDA version
 RUN pip install "torch~=2.9.1" --index-url https://download.pytorch.org/whl/cu130 --break-system-packages
+
+# Install flash-attn
+RUN pip install "flash-attn~=2.8.3" --break-system-packages
 
 # Filter out torch and audioop-lts from requirements.txt and install the rest
 RUN grep -vE "^(torch|audioop-lts)" requirements.txt > requirements.filtered.txt && \
@@ -58,6 +60,9 @@ COPY --from=builder /usr/local/lib/python3.12/dist-packages /usr/local/lib/pytho
 
 # Set working directory
 WORKDIR /app
+
+# Copy application code
+COPY src/ ./
 
 # Expose SSH port
 EXPOSE 22

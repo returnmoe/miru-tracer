@@ -2,8 +2,8 @@
 
 import gradio as gr
 import json
-from ..core.models import ModelManager
-from ..core.logging_config import get_logger
+from core.models import ModelManager
+from core.logging_config import get_logger
 
 logger = get_logger(__name__)
 

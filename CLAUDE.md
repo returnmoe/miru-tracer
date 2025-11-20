@@ -18,13 +18,13 @@ Miru Tracer is an experimental Gradio-based web application for interactive anal
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # Run locally (opens at http://127.0.0.1:7860)
-python app.py
+cd src && python app.py
 
 # Enable debug mode
-MIRU_DEBUG=1 python app.py
+cd src && MIRU_DEBUG=1 python app.py
 
 # Run with Gradio hot reload (for UI development)
-gradio app.py
+cd src && gradio app.py
 ```
 
 ### Dependencies
@@ -169,8 +169,8 @@ HF_TOKEN=...        # Only needed for gated models
 ## File Organization
 
 ```
-app.py                          # Main Gradio app entry point
 src/
+  app.py                        # Main Gradio app entry point
   core/
     models.py                   # ModelManager, TokenStep dataclass
     tracer.py                   # LLMTracer generation engine

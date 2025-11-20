@@ -6,7 +6,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import warnings
 import time
-from .logging_config import get_logger
+from core.logging_config import get_logger
 
 warnings.filterwarnings("ignore")
 logger = get_logger(__name__)
