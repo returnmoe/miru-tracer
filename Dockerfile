@@ -30,8 +30,8 @@ FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    GRADIO_SERVER_NAME="0.0.0.0" \
-    GRADIO_SERVER_PORT=7860
+    MIRU_SERVER_NAME="0.0.0.0" \
+    MIRU_SERVER_PORT=7860
 
 # Install Python runtime
 RUN apt-get update && apt-get install -y \
@@ -53,13 +53,15 @@ chmod 700 /root/.ssh
 
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.12/dist-packages /usr/local/lib/python3.12/dist-packages
-# COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Set working directory
 WORKDIR /app
 
 # Copy application code
 COPY src/ ./
+
+# Expose Gradio port
+EXPOSE 7860
 
 # Expose SSH port
 EXPOSE 22
