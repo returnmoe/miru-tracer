@@ -165,13 +165,17 @@ if __name__ == "__main__":
     # Check if debug mode is enabled via environment variable
     debug_mode = os.getenv("MIRU_DEBUG", "0") == ("1" or "true")
 
+    # Get server configuration from environment variables
+    server_name = os.getenv("MIRU_SERVER_NAME", "127.0.0.1")
+    server_port = int(os.getenv("MIRU_SERVER_PORT", "7860"))
+
     logger.info("Miru Tracer application starting...")
-    logger.info(f"Server configuration: host=127.0.0.1, port=7860")
+    logger.info(f"Server configuration: host={server_name}, port={server_port}")
     logger.info(f"Debug mode: {'enabled' if debug_mode else 'disabled'}")
 
     demo.launch(
-        server_name="127.0.0.1",
-        server_port=7860,
+        server_name=server_name,
+        server_port=server_port,
         share=False,
         show_error=True,
         debug=debug_mode,

@@ -18,9 +18,6 @@ COPY requirements.txt .
 # Install torch separately with specific CUDA version
 RUN pip install "torch~=2.9.1" --index-url https://download.pytorch.org/whl/cu130 --break-system-packages
 
-# Install flash-attn
-RUN pip install "flash-attn~=2.8.3" --break-system-packages
-
 # Filter out torch and audioop-lts from requirements.txt and install the rest
 RUN grep -vE "^(torch|audioop-lts)" requirements.txt > requirements.filtered.txt && \
     pip install -r requirements.filtered.txt --break-system-packages
@@ -33,7 +30,7 @@ FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    GRADIO_SERVER_NAME="127.0.0.1" \
+    GRADIO_SERVER_NAME="0.0.0.0" \
     GRADIO_SERVER_PORT=7860
 
 # Install Python runtime
