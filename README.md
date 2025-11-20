@@ -56,7 +56,7 @@ Opens at `http://127.0.0.1:7860`
 
 ### Basic workflow
 
-1. Load a model in the "Model Loader" tab (try `gpt2` for testing)
+1. Load a model in the "Model Loader" tab (try `Qwen/Qwen3-1.7B` for testing)
 2. Go to "Interactive Mode"
 3. Enter a prompt and click "Initialize"
 4. Click "Next Step" to generate tokens one at a time
@@ -88,14 +88,14 @@ HF_TOKEN=your_token_here  # Only needed for gated models
 ## Performance tips
 
 - Use 4-bit or 8-bit quantization for models 7B+
-- Start with small models like `gpt2` (124M params)
+- Start with small models like `Qwen/Qwen3-1.7B`
 - Don't enable "log all logits" unless you need full distributions (uses ~600KB
   per step)
 
 ## Project structure
 
 ```
-app.py                      # Main Gradio app
+app.py                     # Main Gradio app
 src/core/tracer.py         # Core LLMTracer class
 src/core/models.py         # ModelManager and data models
 src/ui/                    # Gradio UI tabs
