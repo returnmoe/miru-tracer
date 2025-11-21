@@ -121,8 +121,16 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 info="Ranks to show in visualization",
             )
 
-        # Generate Button
-        generate_button = gr.Button("Generate", variant="primary", size="lg")
+        # Generate Buttons
+        with gr.Row():
+            generate_button = gr.Button("Generate", variant="primary", size="lg")
+            continue_button = gr.Button(
+                "Continue",
+                variant="secondary",
+                size="lg",
+                visible=False,
+                interactive=False,
+            )
 
         # Output Section
         gr.Markdown("---")
@@ -147,8 +155,11 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             label="Download JSON", visible=False, variant="secondary", size="lg"
         )
 
-        # State to persist tracer object
+        # State to persist tracer object and original inputs for change detection
         tracer_state = gr.State(value=None)
+        original_mode_state = gr.State(value=None)
+        original_prompt_state = gr.State(value=None)
+        original_messages_state = gr.State(value=None)
 
         def update_mode_visibility(mode):
             """Update input visibility based on mode."""
@@ -179,7 +190,18 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             if model is None or tokenizer is None:
                 error_msg = "Error: No model loaded. Please load a model in the Model Loader tab first."
                 logger.warning("Generation attempted without loaded model")
-                yield error_msg, None, None, None, None, gr.update()
+                yield (
+                    error_msg,
+                    None,
+                    None,
+                    None,
+                    None,
+                    gr.update(),
+                    gr.update(),  # Continue button
+                    None,         # original_mode
+                    None,         # original_prompt
+                    None,         # original_messages
+                )
                 return
 
             start_time = time.time()
@@ -197,7 +219,18 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         messages = json.loads(chat_msgs)
                         if not isinstance(messages, list):
                             logger.error("Chat messages must be a JSON array")
-                            yield "Error: Chat messages must be a JSON array", None, None, None, None, gr.update()
+                            yield (
+                                "Error: Chat messages must be a JSON array",
+                                None,
+                                None,
+                                None,
+                                None,
+                                gr.update(),
+                                gr.update(),
+                                None,
+                                None,
+                                None,
+                            )
                             return
                         for msg in messages:
                             if (
@@ -208,11 +241,33 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                                 logger.error(
                                     "Invalid chat message format (missing role or content)"
                                 )
-                                yield "Error: Each message must have 'role' and 'content' fields", None, None, None, None, gr.update()
+                                yield (
+                                    "Error: Each message must have 'role' and 'content' fields",
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                    gr.update(),
+                                    gr.update(),
+                                    None,
+                                    None,
+                                    None,
+                                )
                                 return
                     except json.JSONDecodeError as e:
                         logger.error(f"Invalid JSON in chat messages: {str(e)}")
-                        yield f"Error: Invalid JSON in chat messages: {str(e)}", None, None, None, None, gr.update()
+                        yield (
+                            f"Error: Invalid JSON in chat messages: {str(e)}",
+                            None,
+                            None,
+                            None,
+                            None,
+                            gr.update(),
+                            gr.update(),
+                            None,
+                            None,
+                            None,
+                        )
                         return
                     tracer.reset(messages=messages, mode="chat")
                     logger.debug(f"Chat mode: {len(messages)} messages")
@@ -251,9 +306,18 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         f"Generation progress: step={step_num}, complete={is_complete}"
                     )
 
-                    yield generated_text, json.dumps(
-                        progress_stats, indent=2
-                    ), None, None, None, gr.update()
+                    yield (
+                        generated_text,
+                        json.dumps(progress_stats, indent=2),
+                        None,
+                        None,
+                        None,
+                        gr.update(),
+                        gr.update(),  # Continue button (no change during generation)
+                        None,         # original_mode
+                        None,         # original_prompt
+                        None,         # original_messages
+                    )
 
                 # After completion, generate final stats and visualizations
                 generation_time = time.time() - start_time
@@ -278,7 +342,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 # Prepare download file
                 download_update = prepare_download(tracer)
 
-                # Show download button and store tracer in state
+                # Show download button, store tracer and original inputs in state
+                # Also enable Continue button
                 yield (
                     generated_text,
                     stats_json,
@@ -286,6 +351,10 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     plot_output_confidence,
                     tracer,  # Store tracer in state
                     download_update,  # Show download button with file path
+                    gr.update(visible=True, interactive=True),  # Show Continue button
+                    mode,  # Store original mode
+                    prompt,  # Store original prompt
+                    chat_msgs,  # Store original messages
                 )
 
             except Exception as e:
@@ -294,7 +363,185 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
                 error_msg += f"\n\nTraceback:\n{traceback.format_exc()}"
                 logger.error(f"Generation error: {str(e)}", exc_info=True)
-                yield error_msg, None, None, None, None, gr.update()
+                yield (
+                    error_msg,
+                    None,
+                    None,
+                    None,
+                    None,
+                    gr.update(),
+                    gr.update(),  # Continue button
+                    None,  # original_mode
+                    None,  # original_prompt
+                    None,  # original_messages
+                )
+
+        def continue_handler(
+            tracer,
+            max_new_tokens,
+            strat,
+            temp,
+            topk,
+            topp,
+            log_topk,
+            heatmap_r,
+            stop_enabled,
+            stop_token,
+        ):
+            """Handle continuation of existing generation with new parameters."""
+            if tracer is None:
+                error_msg = "Error: No previous generation to continue from."
+                logger.warning("Continue attempted without existing tracer")
+                yield (
+                    error_msg,
+                    None,
+                    None,
+                    None,
+                    None,
+                    gr.update(),
+                    gr.update(),
+                )
+                return
+
+            start_time = time.time()
+            logger.info(
+                f"Continuing generation: max_tokens={max_new_tokens}, strategy={strat}"
+            )
+
+            try:
+                # Store how many tokens we had before continuation
+                tokens_before = len(tracer.history)
+
+                # Continue generation with NEW parameters
+                stop_token_param = None
+                if stop_enabled and stop_token is not None:
+                    stop_token_param = int(stop_token)
+                    logger.debug(f"Stop token enabled: {stop_token_param}")
+
+                for current_text, step_num, is_complete in tracer.generate_stream(
+                    max_new_tokens=max_new_tokens,
+                    strategy=strat,
+                    temperature=temp,
+                    top_k=topk,
+                    top_p=topp,
+                    log_top_k=log_topk,
+                    log_all_logits=False,
+                    stop_token_id=stop_token_param,
+                ):
+                    # Get generated text
+                    generated_text = tracer.get_generated_text()
+
+                    # Update with current progress
+                    progress_stats = {
+                        "step": tokens_before + step_num,
+                        "total_tokens": len(tracer.history),
+                        "new_tokens_this_continuation": step_num,
+                        "is_complete": is_complete,
+                    }
+
+                    logger.debug(
+                        f"Continuation progress: step={step_num}, total={len(tracer.history)}, complete={is_complete}"
+                    )
+
+                    yield (
+                        generated_text,
+                        json.dumps(progress_stats, indent=2),
+                        None,
+                        None,
+                        None,
+                        gr.update(),
+                        gr.update(),
+                    )
+
+                # After completion, generate final stats and visualizations
+                generation_time = time.time() - start_time
+                logger.info(
+                    f"Continuation complete: {len(tracer.history)} total tokens ({step_num} new tokens in {generation_time:.2f}s)"
+                )
+
+                stats = get_generation_stats(tracer)
+
+                # Create visualizations (shows ALL steps including previous)
+                logger.debug(f"Creating visualizations (heatmap_ranks={heatmap_r})")
+                figures = plot_probability_visualizations(tracer, top_k=heatmap_r)
+                logger.info(f"Visualizations generated: {len(figures)} plots")
+
+                # Return both plots
+                plot_output_heatmap = figures[0] if len(figures) > 0 else None
+                plot_output_confidence = figures[1] if len(figures) > 1 else None
+
+                # Convert stats to JSON string
+                stats_json = json.dumps(stats, indent=2)
+
+                # Prepare download file
+                download_update = prepare_download(tracer)
+
+                # Return updated tracer and download button
+                yield (
+                    generated_text,
+                    stats_json,
+                    plot_output_heatmap,
+                    plot_output_confidence,
+                    tracer,  # Return updated tracer
+                    download_update,
+                    gr.update(),  # Continue button stays visible
+                )
+
+            except Exception as e:
+                error_msg = f"Error during continuation:\n\n{str(e)}"
+                import traceback
+
+                error_msg += f"\n\nTraceback:\n{traceback.format_exc()}"
+                logger.error(f"Continuation error: {str(e)}", exc_info=True)
+                yield (
+                    error_msg,
+                    None,
+                    None,
+                    None,
+                    None,
+                    gr.update(),
+                    gr.update(),
+                )
+
+        def check_continue_availability(
+            current_mode,
+            current_prompt,
+            current_messages,
+            original_mode,
+            original_prompt,
+            original_messages,
+            tracer,
+        ):
+            """
+            Check if Continue button should be enabled based on input changes.
+
+            Disables Continue button if:
+            - No tracer exists
+            - Mode has changed
+            - Prompt has changed (in Completion mode)
+            - Messages have changed (in Chat mode)
+            """
+            # No tracer = can't continue
+            if tracer is None or original_mode is None:
+                return gr.update(visible=False, interactive=False)
+
+            # Mode changed = can't continue
+            if current_mode != original_mode:
+                logger.debug("Continue disabled: mode changed")
+                return gr.update(visible=True, interactive=False)
+
+            # Check if inputs changed based on mode
+            if current_mode == "Completion":
+                if current_prompt != original_prompt:
+                    logger.debug("Continue disabled: prompt changed")
+                    return gr.update(visible=True, interactive=False)
+            elif current_mode == "Chat":
+                if current_messages != original_messages:
+                    logger.debug("Continue disabled: messages changed")
+                    return gr.update(visible=True, interactive=False)
+
+            # All good - enable continue
+            return gr.update(visible=True, interactive=True)
 
         def prepare_download(tracer):
             """Prepare JSON file for browser download."""
@@ -361,7 +608,52 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 viz_plot_confidence,
                 tracer_state,
                 download_button,
+                continue_button,
+                original_mode_state,
+                original_prompt_state,
+                original_messages_state,
             ],
         )
+
+        continue_button.click(
+            fn=continue_handler,
+            inputs=[
+                tracer_state,
+                max_tokens,
+                strategy,
+                temperature,
+                top_k,
+                top_p,
+                log_top_k,
+                heatmap_ranks,
+                stop_at_token_enabled,
+                stop_token_id,
+            ],
+            outputs=[
+                generated_text_output,
+                generation_stats,
+                viz_plot_heatmap,
+                viz_plot_confidence,
+                tracer_state,
+                download_button,
+                continue_button,
+            ],
+        )
+
+        # Monitor input changes to enable/disable Continue button
+        for input_component in [mode_selector, prompt_input, chat_messages]:
+            input_component.change(
+                fn=check_continue_availability,
+                inputs=[
+                    mode_selector,
+                    prompt_input,
+                    chat_messages,
+                    original_mode_state,
+                    original_prompt_state,
+                    original_messages_state,
+                    tracer_state,
+                ],
+                outputs=[continue_button],
+            )
 
     return tab
