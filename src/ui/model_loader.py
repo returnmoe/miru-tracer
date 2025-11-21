@@ -70,8 +70,6 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
                 value="",
             )
 
-        gr.Markdown("---")
-
         with gr.Row():
             with gr.Column(scale=3):
                 model_name = gr.Textbox(
@@ -194,7 +192,7 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
                 status = f"Loading model: {model_name_val}\n"
                 status += f"Quantization: {quant_val}\n"
                 if trust_val:
-                    status += "SECURITY WARNING: trust_remote_code=True\n"
+                    status += "Warning: trust_remote_code=True\n"
                 if minimize_ram_val:
                     status += "RAM optimization: enabled (slower loading)\n"
                 status += "\nPlease wait...\n"

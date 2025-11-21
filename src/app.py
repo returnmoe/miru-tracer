@@ -112,10 +112,6 @@ def create_app() -> gr.Blocks:
             max-width: 1024px !important;
         }
 
-        footer::before {
-            content: "";
-        }
-
         /* Monospace textboxes - use theme's monospace font */
         .miru-textbox-mono textarea {
             font-family: var(--font-mono);
@@ -138,7 +134,9 @@ def create_app() -> gr.Blocks:
         # Create tabs - main center content
         with gr.Tabs():
             # Tab 1: Model Loader (returns tab and load state components)
-            model_loader_tab, model_loader_state = create_model_loader_tab(model_manager)
+            model_loader_tab, model_loader_state = create_model_loader_tab(
+                model_manager
+            )
 
             # Tab 2: Tokenize Text
             create_tokenize_text_tab(model_manager)
@@ -166,7 +164,6 @@ def create_app() -> gr.Blocks:
     return app
 
 
-# Create demo instance for Gradio CLI hot reloading
 demo = create_app()
 
 if __name__ == "__main__":

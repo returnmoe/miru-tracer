@@ -69,12 +69,16 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         # Settings
         gr.Markdown("### Settings")
+
         with gr.Row():
-            max_tokens = gr.Slider(
-                minimum=1, maximum=500, value=20, step=1, label="Max New Tokens"
+            max_tokens = gr.Number(
+                minimum=1,
+                value=20,
+                label="Maximum new tokens",
+                precision=0,
             )
             strategy = gr.Radio(
-                choices=["greedy", "sampling"], value="sampling", label="Strategy"
+                choices=["greedy", "sampling"], value="greedy", label="Strategy"
             )
 
         with gr.Row():
@@ -108,12 +112,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             log_all_logits_checkbox = gr.Checkbox(
                 label="Log all logits",
                 value=False,
-                info="Logs ENTIRE vocabulary (~600KB per step for 150K vocab, ~60MB for 100 steps). May cause memory issues!",
-            )
-            visualize_all_ranks_checkbox = gr.Checkbox(
-                label="Visualize all ranks",
-                value=False,
-                info="Shows ALL logged tokens in the heatmap. May crash your browser with large vocabularies!",
+                info="Warning: Logs ENTIRE vocabulary (~600KB per step for 150K vocab). May cause memory issues!",
             )
 
         with gr.Row():
@@ -121,15 +120,15 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 minimum=1,
                 value=10,
                 precision=0,
-                label="Log Top-K Tokens",
-                info="Number of top candidates to log per step",
+                label="Log Top-K tokens",
+                info="Number of top candidates to log per step.",
             )
             heatmap_ranks = gr.Number(
                 minimum=1,
                 value=10,
                 precision=0,
-                label="Heatmap Ranks",
-                info="Ranks to show in visualization",
+                label="Heatmap ranks",
+                info="Ranks to show in visualization.",
             )
 
         # Generate Buttons
@@ -151,7 +150,6 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             )
 
         # Output Section
-        gr.Markdown("---")
         gr.Markdown("### Output")
 
         generated_text_output = gr.Textbox(
@@ -167,10 +165,10 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         with gr.Row():
             probability_mode = gr.Radio(
-                choices=["Adjusted (Post-Temperature)", "Raw (Pre-Temperature)"],
-                value="Adjusted (Post-Temperature)",
-                label="Probability Display Mode",
-                info="Toggle between adjusted (sampling) and raw (model confidence) probabilities. Updates visualization instantly.",
+                choices=["Adjusted (post-temperature)", "Raw (pre-temperature)"],
+                value="Adjusted (post-temperature)",
+                label="Probability display mode",
+                info="Adjusted shows sampling distribution (with temperature), Raw shows model's true confidence. Hover over heatmap cells to see both values.",
             )
 
         viz_plot_heatmap = gr.Plot(label="Probability Heatmap")
@@ -200,13 +198,12 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             else:
                 return gr.update(visible=False), gr.update(visible=True)
 
-        def update_number_visibility(log_all_check, viz_all_check):
-            """Hide number inputs when override checkboxes are enabled."""
+        def update_number_visibility(log_all_check):
+            """Hide Log Top-K input when Log All Logits is enabled."""
             # Hide log_top_k if Log All Logits is checked
             log_visible = not log_all_check
-            # Hide heatmap_ranks if Visualize All Ranks is checked
-            heatmap_visible = not viz_all_check
-            return gr.update(visible=log_visible), gr.update(visible=heatmap_visible)
+            # Always show heatmap_ranks (user controls visualization)
+            return gr.update(visible=log_visible), gr.update(visible=True)
 
         def generate_handler(
             mode,
@@ -222,7 +219,6 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             log_topk,
             heatmap_r,
             log_all_logits_check,
-            visualize_all_ranks_check,
             prob_mode,
         ):
             """Handle text generation with streaming updates."""
@@ -233,20 +229,39 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             # Use selected probability mode for initial visualization (also hot-toggleable after)
             internal_prob_mode = "raw" if "Raw" in prob_mode else "adjusted"
 
+            # Validate max_new_tokens
+            if max_new_tokens is None or max_new_tokens < 1:
+                error_msg = "Error: Maximum new tokens must be at least 1"
+                logger.warning(f"Invalid max_new_tokens: {max_new_tokens}")
+                yield (
+                    error_msg,
+                    None,
+                    None,
+                    None,
+                    None,
+                    gr.update(),
+                    gr.update(),
+                    gr.update(visible=False),
+                    None,
+                    None,
+                    None,
+                )
+                return
+
             # Determine actual logging and visualization parameters based on checkboxes
             actual_log_top_k = int(log_topk) if log_topk else 10
-            actual_heatmap_ranks = int(heatmap_r) if heatmap_r else 10
             actual_log_all_logits = log_all_logits_check
 
             if log_all_logits_check:
                 # Override: log entire vocabulary
                 actual_log_all_logits = True
-                # When logging all logits, we need a reasonable top_k for display
-                actual_log_top_k = min(50, len(tokenizer)) if tokenizer else 50
+                # When logging all logits, log all tokens for visualization
+                actual_log_top_k = len(tokenizer) if tokenizer else 50
 
-            if visualize_all_ranks_check:
-                # Override: visualize all logged ranks
-                actual_heatmap_ranks = actual_log_top_k
+            # Cap heatmap ranks at what was actually logged
+            actual_heatmap_ranks = min(
+                int(heatmap_r) if heatmap_r else 10, actual_log_top_k
+            )
 
             if model is None or tokenizer is None:
                 error_msg = "Error: No model loaded. Please load a model in the Model Loader tab first."
@@ -480,12 +495,30 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             log_topk,
             heatmap_r,
             log_all_logits_check,
-            visualize_all_ranks_check,
             prob_mode,
         ):
             """Handle continuation of existing generation with new parameters."""
             # Use selected probability mode for visualization (also hot-toggleable after)
             internal_prob_mode = "raw" if "Raw" in prob_mode else "adjusted"
+
+            # Validate max_new_tokens
+            if max_new_tokens is None or max_new_tokens < 1:
+                error_msg = "Error: Maximum new tokens must be at least 1"
+                logger.warning(
+                    f"Invalid max_new_tokens in continue_handler: {max_new_tokens}"
+                )
+                yield (
+                    error_msg,
+                    None,
+                    None,
+                    None,
+                    None,
+                    gr.update(),
+                    gr.update(),
+                    gr.update(visible=False),
+                )
+                return
+
             if tracer is None:
                 error_msg = "Error: No previous generation to continue from."
                 logger.warning("Continue attempted without existing tracer")
@@ -520,20 +553,18 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
             # Determine actual logging and visualization parameters based on checkboxes
             actual_log_top_k = int(log_topk) if log_topk else 10
-            actual_heatmap_ranks = int(heatmap_r) if heatmap_r else 10
             actual_log_all_logits = log_all_logits_check
 
             if log_all_logits_check:
                 # Override: log entire vocabulary
                 actual_log_all_logits = True
-                # When logging all logits, we need a reasonable top_k for display
-                actual_log_top_k = (
-                    min(50, len(tracer.tokenizer)) if tracer.tokenizer else 50
-                )
+                # When logging all logits, log all tokens for visualization
+                actual_log_top_k = len(tracer.tokenizer) if tracer.tokenizer else 50
 
-            if visualize_all_ranks_check:
-                # Override: visualize all logged ranks
-                actual_heatmap_ranks = actual_log_top_k
+            # Cap heatmap ranks at what was actually logged
+            actual_heatmap_ranks = min(
+                int(heatmap_r) if heatmap_r else 10, actual_log_top_k
+            )
 
             start_time = time.time()
             logger.info(
@@ -778,7 +809,11 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         def refresh_visualizations(tracer, heatmap_r, prob_mode, temp):
             """Refresh visualizations with selected probability mode without regenerating text."""
-            if tracer is None or not hasattr(tracer, 'history') or len(tracer.history) == 0:
+            if (
+                tracer is None
+                or not hasattr(tracer, "history")
+                or len(tracer.history) == 0
+            ):
                 return None, None
 
             # Convert probability mode from UI choice to internal format
@@ -803,6 +838,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             except Exception as e:
                 logger.error(f"Error refreshing visualizations: {e}")
                 import traceback
+
                 logger.error(traceback.format_exc())
                 return None, None
 
@@ -891,13 +927,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         # Wire up number input visibility controls
         log_all_logits_checkbox.change(
             fn=update_number_visibility,
-            inputs=[log_all_logits_checkbox, visualize_all_ranks_checkbox],
-            outputs=[log_top_k, heatmap_ranks],
-        )
-
-        visualize_all_ranks_checkbox.change(
-            fn=update_number_visibility,
-            inputs=[log_all_logits_checkbox, visualize_all_ranks_checkbox],
+            inputs=[log_all_logits_checkbox],
             outputs=[log_top_k, heatmap_ranks],
         )
 
@@ -931,7 +961,6 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 log_top_k,
                 heatmap_ranks,
                 log_all_logits_checkbox,
-                visualize_all_ranks_checkbox,
                 probability_mode,
             ],
             outputs=[
@@ -963,7 +992,6 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 log_top_k,
                 heatmap_ranks,
                 log_all_logits_checkbox,
-                visualize_all_ranks_checkbox,
                 probability_mode,
             ],
             outputs=[

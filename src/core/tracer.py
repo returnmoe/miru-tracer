@@ -324,9 +324,11 @@ class LLMTracer:
 
                 # Apply top-k filtering
                 if top_k > 0:
+                    # Clamp top_k to vocabulary size to prevent crashes
+                    actual_top_k = min(top_k, next_token_logits.shape[-1])
                     indices_to_remove = (
                         next_token_logits
-                        < torch.topk(next_token_logits, top_k)[0][..., -1, None]
+                        < torch.topk(next_token_logits, actual_top_k)[0][..., -1, None]
                     )
                     next_token_logits[indices_to_remove] = float("-inf")
 
@@ -456,6 +458,11 @@ class LLMTracer:
         Args:
             stop_token_id: Optional token ID to stop generation at (ignores max_new_tokens)
         """
+        # Validate max_new_tokens
+        if max_new_tokens < 1:
+            logger.error(f"Invalid max_new_tokens: {max_new_tokens}")
+            raise ValueError(f"max_new_tokens must be at least 1, got {max_new_tokens}")
+
         for i in range(max_new_tokens):
             step_data = self.step(
                 strategy=strategy,
@@ -497,6 +504,11 @@ class LLMTracer:
         Args:
             stop_token_id: Optional token ID to stop generation at (ignores max_new_tokens)
         """
+        # Validate max_new_tokens
+        if max_new_tokens < 1:
+            logger.error(f"Invalid max_new_tokens: {max_new_tokens}")
+            raise ValueError(f"max_new_tokens must be at least 1, got {max_new_tokens}")
+
         for i in range(max_new_tokens):
             # Check if stop was requested (highest priority)
             if self._stop_requested:

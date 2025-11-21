@@ -41,7 +41,7 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
 
         additional_info = gr.Textbox(
             elem_classes="miru-textbox-mono",
-            label="Additional Info",
+            label="Additional information",
             interactive=False,
             lines=2,
         )

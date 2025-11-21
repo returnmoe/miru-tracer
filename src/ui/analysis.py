@@ -30,55 +30,36 @@ def create_analysis_tab() -> gr.Tab:
                 minimum=1,
                 value=10,
                 precision=0,
-                label="Heatmap Ranks",
-                info="Ranks to show in visualization",
-            )
-        with gr.Row():
-            visualize_all_ranks_checkbox = gr.Checkbox(
-                label="Visualize All Ranks (Override Heatmap Ranks)",
-                value=False,
-                info="WARNING: Shows ALL logged tokens in heatmap. May CRASH YOUR BROWSER with large vocabularies!",
+                label="Heatmap ranks",
+                info="Ranks to show in visualization.",
             )
         with gr.Row():
             probability_mode = gr.Radio(
-                choices=["Adjusted (Post-Temperature)", "Raw (Pre-Temperature)"],
-                value="Adjusted (Post-Temperature)",
-                label="Probability Display Mode",
+                choices=["Adjusted (post-temperature)", "Raw (pre-temperature)"],
+                value="Adjusted (post-temperature)",
+                label="Probability display mode",
                 info="Adjusted shows sampling distribution (with temperature), Raw shows model's true confidence. Hover over heatmap cells to see both values.",
             )
 
         # Output Section
-        gr.Markdown("### Log Information")
+        gr.Markdown("### Information")
 
-        log_info_output = gr.Code(
-            label="Log Metadata", language="json", interactive=False
-        )
+        log_info_output = gr.Code(label="Metadata", language="json", interactive=False)
 
-        gr.Markdown("### Statistics")
-
-        stats_output = gr.Textbox(
-            label="Probability Statistics", lines=10, interactive=False
-        )
+        stats_output = gr.Textbox(label="Statistics", lines=6, interactive=False)
 
         # Visualizations
         gr.Markdown("### Visualizations")
         viz_plot_heatmap = gr.Plot(label="Probability Heatmap")
         viz_plot_confidence = gr.Plot(label="Confidence Analysis")
 
-        def analyze_json_log(filepath, heatmap_r, visualize_all_ranks_check, prob_mode):
+        def analyze_json_log(filepath, heatmap_r, prob_mode):
             """Analyze an uploaded JSON log file."""
             if filepath is None:
                 return None, "No file uploaded", None, None
 
             # Convert probability mode from UI choice to internal format
             internal_prob_mode = "raw" if "Raw" in prob_mode else "adjusted"
-
-            # Determine actual visualization parameters based on checkbox
-            actual_heatmap_ranks = int(heatmap_r) if heatmap_r else 10
-
-            if visualize_all_ranks_check:
-                # Will be set to the number of logged tokens after loading the data
-                actual_heatmap_ranks = None  # Placeholder, will be updated below
 
             try:
                 with open(filepath, "r") as f:
@@ -116,14 +97,13 @@ def create_analysis_tab() -> gr.Tab:
 
                 probs = [step["probability"] for step in history]
 
-                stats_text = "Probability Statistics:\n"
-                stats_text += f"  Mean: {np.mean(probs):.4f}\n"
-                stats_text += f"  Std Dev: {np.std(probs):.4f}\n"
-                stats_text += f"  Min: {np.min(probs):.4f}\n"
-                stats_text += f"  Max: {np.max(probs):.4f}\n"
-                stats_text += f"  Median: {np.median(probs):.4f}\n"
-                stats_text += f"\n"
-                stats_text += f"Total Steps: {len(history)}\n"
+                stats_text = ""
+                stats_text += f"Mean: {np.mean(probs):.4f}\n"
+                stats_text += f"Std Dev: {np.std(probs):.4f}\n"
+                stats_text += f"Min: {np.min(probs):.4f}\n"
+                stats_text += f"Max: {np.max(probs):.4f}\n"
+                stats_text += f"Median: {np.median(probs):.4f}\n"
+                stats_text += f"Total steps: {len(history)}\n"
 
                 # Reconstruct tracer history for visualization
                 reconstructed_history = []
@@ -136,8 +116,12 @@ def create_analysis_tab() -> gr.Tab:
                         top_k_tokens=step_data["top_k_tokens"],
                         top_k_probs=step_data["top_k_probs"],
                         top_k_texts=step_data["top_k_texts"],
-                        raw_probability=step_data.get("raw_probability", step_data["probability"]),  # Backward compatibility
-                        top_k_raw_probs=step_data.get("top_k_raw_probs", step_data["top_k_probs"]),  # Backward compatibility
+                        raw_probability=step_data.get(
+                            "raw_probability", step_data["probability"]
+                        ),  # Backward compatibility
+                        top_k_raw_probs=step_data.get(
+                            "top_k_raw_probs", step_data["top_k_probs"]
+                        ),  # Backward compatibility
                         all_logits=None,  # Not needed for visualization
                         token_text_raw=step_data.get(
                             "token_text_raw"
@@ -155,10 +139,11 @@ def create_analysis_tab() -> gr.Tab:
 
                 mock_tracer = MockTracer(reconstructed_history)
 
-                # Finalize visualization parameters
-                if visualize_all_ranks_check and reconstructed_history:
-                    # Use all logged tokens (length of top_k_tokens in first step)
-                    actual_heatmap_ranks = len(reconstructed_history[0].top_k_tokens)
+                # Cap heatmap ranks at what was actually logged in the JSON
+                actual_heatmap_ranks = int(heatmap_r) if heatmap_r else 10
+                if reconstructed_history:
+                    num_logged_tokens = len(reconstructed_history[0].top_k_tokens)
+                    actual_heatmap_ranks = min(actual_heatmap_ranks, num_logged_tokens)
 
                 # Generate visualizations
                 figures = plot_probability_visualizations(
@@ -184,21 +169,9 @@ def create_analysis_tab() -> gr.Tab:
                 error_msg += f"\n\nTraceback:\n{traceback.format_exc()}"
                 return "", error_msg, None, None
 
-        # Visibility control function
-        def update_number_visibility(viz_all_check):
-            """Hide heatmap_ranks number input when Visualize All Ranks checkbox is enabled."""
-            return gr.update(visible=not viz_all_check)
-
-        # Wire up number input visibility control
-        visualize_all_ranks_checkbox.change(
-            fn=update_number_visibility,
-            inputs=[visualize_all_ranks_checkbox],
-            outputs=[heatmap_ranks],
-        )
-
         json_file_input.upload(
             fn=analyze_json_log,
-            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox, probability_mode],
+            inputs=[json_file_input, heatmap_ranks, probability_mode],
             outputs=[
                 log_info_output,
                 stats_output,
@@ -210,18 +183,7 @@ def create_analysis_tab() -> gr.Tab:
         # Also update visualization when settings change
         heatmap_ranks.change(
             fn=analyze_json_log,
-            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox, probability_mode],
-            outputs=[
-                log_info_output,
-                stats_output,
-                viz_plot_heatmap,
-                viz_plot_confidence,
-            ],
-        )
-
-        visualize_all_ranks_checkbox.change(
-            fn=analyze_json_log,
-            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox, probability_mode],
+            inputs=[json_file_input, heatmap_ranks, probability_mode],
             outputs=[
                 log_info_output,
                 stats_output,
@@ -232,7 +194,7 @@ def create_analysis_tab() -> gr.Tab:
 
         probability_mode.change(
             fn=analyze_json_log,
-            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox, probability_mode],
+            inputs=[json_file_input, heatmap_ranks, probability_mode],
             outputs=[
                 log_info_output,
                 stats_output,

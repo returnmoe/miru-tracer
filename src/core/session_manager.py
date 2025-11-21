@@ -54,6 +54,19 @@ class SessionManager:
         session_id = str(uuid.uuid4())
 
         with self._global_lock:
+            # Enforce single session: clear any existing sessions first
+            # We do this manually here to avoid re-acquiring the lock if we called clear_all_sessions
+            existing_ids = list(self._sessions.keys())
+            for old_id in existing_ids:
+                # We can't call self.delete_session because it acquires the lock
+                # So we duplicate the cleanup logic here for the single-session enforcement
+                old_session = self._sessions[old_id]
+                old_tracer = old_session["tracer"]
+                old_tracer.past_key_values = None
+                old_tracer.input_ids = None
+                del self._sessions[old_id]
+                logger.info(f"Auto-cleared old session: {old_id}")
+
             tracer = LLMTracer(model, tokenizer, device)
             self._sessions[session_id] = {
                 "tracer": tracer,
