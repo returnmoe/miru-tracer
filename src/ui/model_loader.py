@@ -44,6 +44,12 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
                         info="Security risk: allows model to execute arbitrary code",
                     )
 
+                    minimize_ram = gr.Checkbox(
+                        label="Minimize RAM Usage",
+                        value=False,
+                        info="Load directly to GPU with minimal RAM (slower loading)",
+                    )
+
             with gr.Column(scale=1, elem_classes="fill-height"):
                 status_output = gr.Textbox(
                     label="Status",
@@ -63,14 +69,14 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
         with gr.Row():
             load_button = gr.Button("Load Model", variant="primary", size="lg")
 
-        def load_model_handler(model_name_val, quant_val, trust_val):
+        def load_model_handler(model_name_val, quant_val, trust_val, minimize_ram_val):
             """Handle model loading."""
             if not model_name_val:
                 logger.warning("Model load attempted with empty model name")
                 return "Error: Please enter a model name", ""
 
             logger.info(
-                f"Model load requested via UI: {model_name_val} (quantization={quant_val}, trust_remote_code={trust_val})"
+                f"Model load requested via UI: {model_name_val} (quantization={quant_val}, trust_remote_code={trust_val}, minimize_ram={minimize_ram_val})"
             )
 
             if trust_val:
@@ -81,12 +87,15 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
                 status += f"Quantization: {quant_val}\n"
                 if trust_val:
                     status += "SECURITY WARNING: trust_remote_code=True\n"
+                if minimize_ram_val:
+                    status += "RAM optimization: enabled (slower loading)\n"
                 status += "\nPlease wait...\n"
 
                 model, tokenizer, device, info = model_manager.load_model(
                     model_name=model_name_val,
                     quantization=quant_val,
                     trust_remote_code=trust_val,
+                    minimize_ram_usage=minimize_ram_val,
                 )
 
                 success_msg = f"Model loaded successfully.\n"
@@ -115,7 +124,7 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
 
         load_button.click(
             fn=load_model_handler,
-            inputs=[model_name, quantization, trust_remote_code],
+            inputs=[model_name, quantization, trust_remote_code, minimize_ram],
             outputs=[status_output, model_info_display],
         )
 

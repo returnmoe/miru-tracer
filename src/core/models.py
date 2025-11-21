@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict, Any, Tuple
+import os
 import torch
 from transformers import (
     AutoModelForCausalLM,
@@ -56,6 +57,7 @@ class ModelManager:
         model_name: str,
         quantization: str = "none",
         trust_remote_code: bool = False,
+        minimize_ram_usage: bool = False,
     ) -> Tuple[Any, Any, str, Dict[str, Any]]:
         """
         Load a model and tokenizer.
@@ -64,6 +66,7 @@ class ModelManager:
             model_name: HuggingFace model name
             quantization: "none", "4bit", or "8bit"
             trust_remote_code: Whether to trust remote code (security risk)
+            minimize_ram_usage: Use aggressive optimizations to minimize RAM usage during loading
 
         Returns:
             (model, tokenizer, device, info_dict)
@@ -131,6 +134,24 @@ class ModelManager:
             logger.debug(
                 f"Loading model with torch_dtype={model_dtype}, device_map={load_kwargs['device_map']}"
             )
+
+        # Apply RAM optimization if requested
+        if minimize_ram_usage and torch.cuda.is_available():
+            logger.info("Applying RAM optimization settings (slower loading, minimal RAM usage)")
+            # Calculate available GPU memory
+            gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+            # Reserve 80% of GPU memory, limit CPU RAM to 2GB
+            load_kwargs["max_memory"] = {
+                0: f"{int(gpu_mem_gb * 0.8)}GiB",
+                "cpu": "2GiB"
+            }
+            # Stream weights directly to device without full RAM allocation
+            load_kwargs["offload_state_dict"] = True
+            # Create offload folder for overflow weights
+            offload_dir = "./model_offload"
+            os.makedirs(offload_dir, exist_ok=True)
+            load_kwargs["offload_folder"] = offload_dir
+            logger.debug(f"RAM optimization: max_memory={load_kwargs['max_memory']}, offload_folder={offload_dir}")
 
         # Try loading as CausalLM, fallback to Vision2Seq for VLMs
         is_vlm = False
