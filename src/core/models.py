@@ -26,10 +26,12 @@ class TokenStep:
     step: int
     token_id: int
     token_text: str
-    probability: float
+    probability: float  # Post-temperature (adjusted) probability
     top_k_tokens: List[int]
-    top_k_probs: List[float]
+    top_k_probs: List[float]  # Post-temperature (adjusted) probabilities
     top_k_texts: List[str]
+    raw_probability: float = 0.0  # Pre-temperature (raw model) probability
+    top_k_raw_probs: Optional[List[float]] = None  # Pre-temperature (raw model) probabilities
     all_logits: Optional[List[float]] = None  # Full vocabulary logits (optional)
     token_text_raw: Optional[str] = None  # Raw token representation (visible \n, \t, etc.)
     top_k_texts_raw: Optional[List[str]] = None  # Raw representations for top-k tokens

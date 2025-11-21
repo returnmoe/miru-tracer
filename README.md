@@ -85,6 +85,36 @@ HF_TOKEN=your_token_here  # Only needed for gated models
 - **Strategy**: Greedy (always pick top token) or Sampling (random from
   distribution)
 
+### Understanding probability modes
+
+Miru Tracer displays two types of probability values:
+
+- **Raw (Pre-Temperature)**: The model's true confidence before temperature
+  scaling. These probabilities represent what the model "actually thinks" about
+  each token.
+
+- **Adjusted (Post-Temperature)**: The probabilities after temperature scaling is
+  applied, which is what the sampling algorithm sees. This is the distribution
+  used to actually select tokens during generation.
+
+**When to use each mode:**
+
+- Use **Adjusted** (default) when:
+  - Debugging why specific tokens were selected
+  - Analyzing sampling behavior
+  - Understanding how temperature affects generation
+
+- Use **Raw** when:
+  - Analyzing the model's true confidence
+  - Comparing generations across different temperature settings
+  - Studying model behavior independent of sampling parameters
+
+**Note**: Temperature only affects adjusted probabilities. When temperature = 1.0,
+raw and adjusted probabilities are identical.
+
+**In visualizations**: Hover over any cell in the heatmap to see both raw and
+adjusted probability values regardless of which mode is selected for display.
+
 ## Performance tips
 
 - Use 4-bit or 8-bit quantization for models 7B+

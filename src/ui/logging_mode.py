@@ -103,6 +103,19 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         # Logging Settings
         gr.Markdown("### Logging & Visualization")
+
+        with gr.Row():
+            log_all_logits_checkbox = gr.Checkbox(
+                label="Log all logits",
+                value=False,
+                info="Logs ENTIRE vocabulary (~600KB per step for 150K vocab, ~60MB for 100 steps). May cause memory issues!",
+            )
+            visualize_all_ranks_checkbox = gr.Checkbox(
+                label="Visualize all ranks",
+                value=False,
+                info="Shows ALL logged tokens in the heatmap. May crash your browser with large vocabularies!",
+            )
+
         with gr.Row():
             log_top_k = gr.Number(
                 minimum=1,
@@ -117,18 +130,6 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 precision=0,
                 label="Heatmap Ranks",
                 info="Ranks to show in visualization",
-            )
-
-        with gr.Row():
-            log_all_logits_checkbox = gr.Checkbox(
-                label="Log All Logits (Override Log Top-K)",
-                value=False,
-                info="⚠️ WARNING: Logs ENTIRE vocabulary (~600KB per step for 150K vocab, ~60MB for 100 steps). May cause memory issues!",
-            )
-            visualize_all_ranks_checkbox = gr.Checkbox(
-                label="Visualize All Ranks (Override Heatmap Ranks)",
-                value=False,
-                info="⚠️ WARNING: Shows ALL logged tokens in heatmap. May CRASH YOUR BROWSER with large vocabularies!",
             )
 
         # Generate Buttons
@@ -163,6 +164,15 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         # Visualizations
         gr.Markdown("### Visualizations")
+
+        with gr.Row():
+            probability_mode = gr.Radio(
+                choices=["Adjusted (Post-Temperature)", "Raw (Pre-Temperature)"],
+                value="Adjusted (Post-Temperature)",
+                label="Probability Display Mode",
+                info="Toggle between adjusted (sampling) and raw (model confidence) probabilities. Updates visualization instantly.",
+            )
+
         viz_plot_heatmap = gr.Plot(label="Probability Heatmap")
         viz_plot_confidence = gr.Plot(label="Confidence Analysis")
 
@@ -207,17 +217,21 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             temp,
             topk,
             topp,
+            stop_enabled,
+            stop_token,
             log_topk,
             heatmap_r,
             log_all_logits_check,
             visualize_all_ranks_check,
-            stop_enabled,
-            stop_token,
+            prob_mode,
         ):
             """Handle text generation with streaming updates."""
             model = model_manager.get_model()
             tokenizer = model_manager.get_tokenizer()
             device = model_manager.get_device()
+
+            # Use selected probability mode for initial visualization (also hot-toggleable after)
+            internal_prob_mode = "raw" if "Raw" in prob_mode else "adjusted"
 
             # Determine actual logging and visualization parameters based on checkboxes
             actual_log_top_k = int(log_topk) if log_topk else 10
@@ -396,10 +410,13 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
                 # Create visualizations
                 logger.debug(
-                    f"Creating visualizations (heatmap_ranks={actual_heatmap_ranks})"
+                    f"Creating visualizations (heatmap_ranks={actual_heatmap_ranks}, mode={internal_prob_mode})"
                 )
                 figures = plot_probability_visualizations(
-                    tracer, top_k=actual_heatmap_ranks
+                    tracer,
+                    top_k=actual_heatmap_ranks,
+                    probability_mode=internal_prob_mode,
+                    temperature=temp,
                 )
                 logger.info(f"Visualizations generated: {len(figures)} plots")
 
@@ -458,14 +475,17 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             temp,
             topk,
             topp,
+            stop_enabled,
+            stop_token,
             log_topk,
             heatmap_r,
             log_all_logits_check,
             visualize_all_ranks_check,
-            stop_enabled,
-            stop_token,
+            prob_mode,
         ):
             """Handle continuation of existing generation with new parameters."""
+            # Use selected probability mode for visualization (also hot-toggleable after)
+            internal_prob_mode = "raw" if "Raw" in prob_mode else "adjusted"
             if tracer is None:
                 error_msg = "Error: No previous generation to continue from."
                 logger.warning("Continue attempted without existing tracer")
@@ -580,8 +600,15 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 stats = get_generation_stats(tracer)
 
                 # Create visualizations (shows ALL steps including previous)
-                logger.debug(f"Creating visualizations (heatmap_ranks={heatmap_r})")
-                figures = plot_probability_visualizations(tracer, top_k=heatmap_r)
+                logger.debug(
+                    f"Creating visualizations (heatmap_ranks={heatmap_r}, mode={internal_prob_mode})"
+                )
+                figures = plot_probability_visualizations(
+                    tracer,
+                    top_k=heatmap_r,
+                    probability_mode=internal_prob_mode,
+                    temperature=temp,
+                )
                 logger.info(f"Visualizations generated: {len(figures)} plots")
 
                 # Return both plots
@@ -628,6 +655,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         def stop_handler(
             tracer,
             heatmap_ranks,
+            prob_mode,
+            temp,
             current_mode,
             current_prompt,
             current_messages,
@@ -657,6 +686,9 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             )
 
             try:
+                # Use selected probability mode for visualization (also hot-toggleable after)
+                internal_prob_mode = "raw" if "Raw" in prob_mode else "adjusted"
+
                 # Generate final stats and visualizations from current state
                 generated_text = tracer.get_generated_text()
                 stats = get_generation_stats(tracer)
@@ -665,7 +697,10 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 # Create visualizations if we have any generated tokens
                 if len(tracer.history) > 0:
                     figures = plot_probability_visualizations(
-                        tracer, top_k=heatmap_ranks
+                        tracer,
+                        top_k=heatmap_ranks,
+                        probability_mode=internal_prob_mode,
+                        temperature=temp,
                     )
                     plot_output_heatmap = figures[0] if len(figures) > 0 else None
                     plot_output_confidence = figures[1] if len(figures) > 1 else None
@@ -740,6 +775,36 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     final_original_prompt,  # original_prompt_state
                     final_original_messages,  # original_messages_state
                 )
+
+        def refresh_visualizations(tracer, heatmap_r, prob_mode, temp):
+            """Refresh visualizations with selected probability mode without regenerating text."""
+            if tracer is None or not hasattr(tracer, 'history') or len(tracer.history) == 0:
+                return None, None
+
+            # Convert probability mode from UI choice to internal format
+            internal_prob_mode = "raw" if "Raw" in prob_mode else "adjusted"
+
+            # Determine actual heatmap ranks
+            actual_heatmap_ranks = int(heatmap_r) if heatmap_r else 10
+
+            try:
+                # Regenerate visualizations from existing tracer with selected mode
+                figures = plot_probability_visualizations(
+                    tracer,
+                    top_k=actual_heatmap_ranks,
+                    probability_mode=internal_prob_mode,
+                    temperature=temp,
+                )
+                plot_heatmap = figures[0] if len(figures) > 0 else None
+                plot_confidence = figures[1] if len(figures) > 1 else None
+
+                return plot_heatmap, plot_confidence
+
+            except Exception as e:
+                logger.error(f"Error refreshing visualizations: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return None, None
 
         def check_continue_availability(
             current_mode,
@@ -836,6 +901,20 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             outputs=[log_top_k, heatmap_ranks],
         )
 
+        # Hot-toggle probability mode without regenerating
+        probability_mode.change(
+            fn=refresh_visualizations,
+            inputs=[tracer_state, heatmap_ranks, probability_mode, temperature],
+            outputs=[viz_plot_heatmap, viz_plot_confidence],
+        )
+
+        # Also refresh when heatmap_ranks changes
+        heatmap_ranks.change(
+            fn=refresh_visualizations,
+            inputs=[tracer_state, heatmap_ranks, probability_mode, temperature],
+            outputs=[viz_plot_heatmap, viz_plot_confidence],
+        )
+
         generate_event = generate_button.click(
             fn=generate_handler,
             inputs=[
@@ -847,12 +926,13 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 temperature,
                 top_k,
                 top_p,
+                stop_at_token_enabled,
+                stop_token_id,
                 log_top_k,
                 heatmap_ranks,
                 log_all_logits_checkbox,
                 visualize_all_ranks_checkbox,
-                stop_at_token_enabled,
-                stop_token_id,
+                probability_mode,
             ],
             outputs=[
                 generated_text_output,
@@ -878,12 +958,13 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 temperature,
                 top_k,
                 top_p,
+                stop_at_token_enabled,
+                stop_token_id,
                 log_top_k,
                 heatmap_ranks,
                 log_all_logits_checkbox,
                 visualize_all_ranks_checkbox,
-                stop_at_token_enabled,
-                stop_token_id,
+                probability_mode,
             ],
             outputs=[
                 generated_text_output,
@@ -902,6 +983,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             inputs=[
                 tracer_state,
                 heatmap_ranks,
+                probability_mode,
+                temperature,
                 mode_selector,
                 prompt_input,
                 chat_messages,

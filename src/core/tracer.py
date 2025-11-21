@@ -156,25 +156,34 @@ class LLMTracer:
                 # First call: process full sequence and initialize cache
                 outputs = self.model(self.input_ids, use_cache=True)
 
-            next_token_logits = outputs.logits[:, -1, :] / temperature
+            # Get raw logits (pre-temperature)
+            raw_logits = outputs.logits[:, -1, :]
 
-        # Convert to probabilities
-        probs = torch.softmax(next_token_logits, dim=-1)
+            # Compute RAW probabilities (pre-temperature, model's true distribution)
+            raw_probs = torch.softmax(raw_logits, dim=-1)
 
-        # Get top-k
-        top_k_probs, top_k_indices = torch.topk(probs[0], k=min(top_k, len(probs[0])))
+            # Compute ADJUSTED probabilities (post-temperature, for sampling)
+            adjusted_logits = raw_logits / temperature
+            adjusted_probs = torch.softmax(adjusted_logits, dim=-1)
+
+        # Get top-k from ADJUSTED distribution (used for sampling/display by default)
+        top_k_probs, top_k_indices = torch.topk(adjusted_probs[0], k=min(top_k, len(adjusted_probs[0])))
 
         top_k_tokens = top_k_indices.cpu().tolist()
         top_k_probs_list = top_k_probs.cpu().tolist()
         top_k_texts = [safe_decode_token(self.tokenizer, t) for t in top_k_tokens]
 
+        # Extract raw probabilities for the same top-K tokens (for comparison)
+        top_k_raw_probs_list = [raw_probs[0, token_id].item() for token_id in top_k_tokens]
+
         result = {
             "top_k_tokens": top_k_tokens,
-            "top_k_probs": top_k_probs_list,
+            "top_k_probs": top_k_probs_list,  # Adjusted (post-temperature)
+            "top_k_raw_probs": top_k_raw_probs_list,  # Raw (pre-temperature)
             "top_k_texts": top_k_texts,
-            "all_probs": probs[0].cpu() if return_all_logits else None,
+            "all_probs": adjusted_probs[0].cpu() if return_all_logits else None,
             "past_key_values": outputs.past_key_values,  # Return updated cache
-            "logits": next_token_logits.clone(),  # Return logits for sampling reuse
+            "logits": adjusted_logits.clone(),  # Return logits for sampling reuse
         }
 
         return result
@@ -277,7 +286,7 @@ class LLMTracer:
         if token_id is not None:
             # User override
             next_token = token_id
-            # Try to get probability from returned data
+            # Try to get adjusted probability from returned data
             if prob_data["all_probs"] is not None:
                 token_prob = prob_data["all_probs"][token_id].item()
             elif token_id in prob_data["top_k_tokens"]:
@@ -291,11 +300,24 @@ class LLMTracer:
                     next_token_logits = outputs.logits[:, -1, :] / temperature
                     probs = torch.softmax(next_token_logits, dim=-1)
                     token_prob = probs[0, token_id].item()
+
+            # Get raw probability for the same token
+            if token_id in prob_data["top_k_tokens"]:
+                token_idx = prob_data["top_k_tokens"].index(token_id)
+                token_raw_prob = prob_data["top_k_raw_probs"][token_idx]
+            else:
+                # Need to compute raw probability
+                with torch.inference_mode():
+                    outputs = self.model(self.input_ids, use_cache=False)
+                    raw_logits = outputs.logits[:, -1, :]
+                    raw_probs = torch.softmax(raw_logits, dim=-1)
+                    token_raw_prob = raw_probs[0, token_id].item()
         else:
             # Generate based on strategy
             if strategy == "greedy":
                 next_token = prob_data["top_k_tokens"][0]
                 token_prob = prob_data["top_k_probs"][0]
+                token_raw_prob = prob_data["top_k_raw_probs"][0]
             elif strategy == "sampling":
                 # Sample from distribution using the logits from get_next_token_probabilities()
                 next_token_logits = prob_data["logits"].clone()
@@ -348,7 +370,7 @@ class LLMTracer:
                 # Sample from the distribution
                 next_token = torch.multinomial(probs[0], num_samples=1).item()
 
-                # Get probability from ORIGINAL distribution (before filtering)
+                # Get adjusted probability from ORIGINAL distribution (before filtering)
                 # to match what's displayed in the heatmap ranks
                 if prob_data["all_probs"] is not None:
                     token_prob = prob_data["all_probs"][next_token].item()
@@ -360,6 +382,18 @@ class LLMTracer:
                     # Note: prob_data["logits"] already has temperature applied
                     original_probs = torch.softmax(prob_data["logits"], dim=-1)
                     token_prob = original_probs[0, next_token].item()
+
+                # Get raw probability for the same token
+                if next_token in prob_data["top_k_tokens"]:
+                    token_idx = prob_data["top_k_tokens"].index(next_token)
+                    token_raw_prob = prob_data["top_k_raw_probs"][token_idx]
+                else:
+                    # Fallback: recompute raw probability
+                    with torch.inference_mode():
+                        outputs = self.model(self.input_ids, use_cache=False)
+                        raw_logits = outputs.logits[:, -1, :]
+                        raw_probs = torch.softmax(raw_logits, dim=-1)
+                        token_raw_prob = raw_probs[0, next_token].item()
             else:
                 raise ValueError(
                     f"Unknown strategy: {strategy}. Use 'greedy' or 'sampling'."
@@ -373,10 +407,12 @@ class LLMTracer:
             token_text=(
                 token_text[0] if token_text[0] else token_text[1]
             ),  # Use decoded or raw token
-            probability=token_prob,
+            probability=token_prob,  # Adjusted (post-temperature) probability
             top_k_tokens=prob_data["top_k_tokens"],
-            top_k_probs=prob_data["top_k_probs"],
+            top_k_probs=prob_data["top_k_probs"],  # Adjusted (post-temperature) probabilities
             top_k_texts=[t[0] if t[0] else t[1] for t in prob_data["top_k_texts"]],
+            raw_probability=token_raw_prob,  # Raw (pre-temperature) probability
+            top_k_raw_probs=prob_data["top_k_raw_probs"],  # Raw (pre-temperature) probabilities
             all_logits=(
                 prob_data["all_probs"].tolist()
                 if prob_data["all_probs"] is not None

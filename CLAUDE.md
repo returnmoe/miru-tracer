@@ -108,6 +108,16 @@ Plotly-based charts for log analysis:
 - Guard against temperature <= 0 (use 1e-10 minimum) to avoid division by zero in softmax
 - Applied in `get_next_token_probabilities()` and `step()`
 
+### Dual Probability Storage
+- **Raw Probabilities** (pre-temperature): Model's true confidence, stored in `TokenStep.raw_probability` and `TokenStep.top_k_raw_probs`
+- **Adjusted Probabilities** (post-temperature): Sampling distribution, stored in `TokenStep.probability` and `TokenStep.top_k_probs`
+- Both are computed in `get_next_token_probabilities()`:
+  - `raw_probs = torch.softmax(logits, dim=-1)` - model's true distribution
+  - `adjusted_probs = torch.softmax(logits / temperature, dim=-1)` - sampling distribution
+- Visualization functions accept `probability_mode` parameter ("raw" or "adjusted")
+- Heatmap tooltips always show both values regardless of selected mode
+- JSON exports include both probability types for full fidelity analysis
+
 ### Token Decoding
 - Use `safe_decode_token()` (src/core/tokenizer_utils.py) which handles byte fallback tokens
 - Returns tuple: (decoded_string, raw_fallback) for display

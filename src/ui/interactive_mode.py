@@ -90,7 +90,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             log_all_logits_checkbox = gr.Checkbox(
                 label="Log All Logits (Override Log Top-K)",
                 value=False,
-                info="⚠️ WARNING: Logs ENTIRE vocabulary (~600KB per step for 150K vocab). May cause memory issues!",
+                info="WARNING: Logs ENTIRE vocabulary (~600KB per step for 150K vocab). May cause memory issues!",
             )
 
         with gr.Row():
@@ -130,25 +130,27 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         )
 
         with gr.Row():
-            with gr.Column(scale=3):
-                token_selector = gr.Radio(
-                    choices=["0"],
-                    value="0",
-                    label="Next Token Preview",
-                    info="Shows the token that will be generated. You can change this selection before clicking 'Next Step'.",
-                )
-            with gr.Column(scale=1):
-                use_override = gr.Checkbox(
-                    label="Use Token ID Override",
-                    value=False,
-                    info="Enable to manually specify token ID",
-                )
-                token_override = gr.Number(
-                    label="Token ID",
-                    value=0,
-                    precision=0,
-                    info="Token ID to use when override is enabled",
-                )
+            use_override = gr.Checkbox(
+                label="Token ID override",
+                value=False,
+                info="Enable to manually specify token ID",
+            )
+
+        with gr.Row():
+            token_selector = gr.Radio(
+                choices=["0"],
+                value="0",
+                label="Next Token Preview",
+                info="Shows the token that will be generated. You can change this selection before clicking 'Next Step'.",
+            )
+
+        with gr.Row():
+            token_override = gr.Number(
+                label="Token ID",
+                value=0,
+                precision=0,
+                info="Token ID to use when override is enabled",
+            )
 
         with gr.Row():
             undo_button = gr.Button("Step Back (Undo)", variant="secondary")

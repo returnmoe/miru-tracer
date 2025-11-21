@@ -50,7 +50,7 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
         # Status display row
         with gr.Row():
             current_model_display = gr.Textbox(
-                label="Currently Loaded Model",
+                label="Current",
                 value=initial_model,
                 interactive=False,
                 scale=3,
@@ -61,6 +61,16 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
                 interactive=False,
                 scale=2,
             )
+
+        with gr.Row():
+            model_info_display = gr.Code(
+                label="Details",
+                language="json",
+                interactive=False,
+                value="",
+            )
+
+        gr.Markdown("---")
 
         with gr.Row():
             with gr.Column(scale=3):
@@ -96,14 +106,6 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
                 lines=5,
                 interactive=False,
                 show_copy_button=True,
-            )
-
-        with gr.Row():
-            model_info_display = gr.Code(
-                label="Loaded Model Details",
-                language="json",
-                interactive=False,
-                value="",
             )
 
         with gr.Row():

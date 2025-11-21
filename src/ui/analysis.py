@@ -39,6 +39,13 @@ def create_analysis_tab() -> gr.Tab:
                 value=False,
                 info="WARNING: Shows ALL logged tokens in heatmap. May CRASH YOUR BROWSER with large vocabularies!",
             )
+        with gr.Row():
+            probability_mode = gr.Radio(
+                choices=["Adjusted (Post-Temperature)", "Raw (Pre-Temperature)"],
+                value="Adjusted (Post-Temperature)",
+                label="Probability Display Mode",
+                info="Adjusted shows sampling distribution (with temperature), Raw shows model's true confidence. Hover over heatmap cells to see both values.",
+            )
 
         # Output Section
         gr.Markdown("### Log Information")
@@ -58,10 +65,13 @@ def create_analysis_tab() -> gr.Tab:
         viz_plot_heatmap = gr.Plot(label="Probability Heatmap")
         viz_plot_confidence = gr.Plot(label="Confidence Analysis")
 
-        def analyze_json_log(filepath, heatmap_r, visualize_all_ranks_check):
+        def analyze_json_log(filepath, heatmap_r, visualize_all_ranks_check, prob_mode):
             """Analyze an uploaded JSON log file."""
             if filepath is None:
                 return None, "No file uploaded", None, None
+
+            # Convert probability mode from UI choice to internal format
+            internal_prob_mode = "raw" if "Raw" in prob_mode else "adjusted"
 
             # Determine actual visualization parameters based on checkbox
             actual_heatmap_ranks = int(heatmap_r) if heatmap_r else 10
@@ -90,6 +100,9 @@ def create_analysis_tab() -> gr.Tab:
                     "timestamp": data.get("timestamp", "unknown"),
                     "num_steps": data.get("num_steps", 0),
                 }
+
+                # Extract temperature from metadata if available (default to 1.0)
+                temperature = data.get("temperature", 1.0)
 
                 # Calculate statistics
                 history = data.get("history", [])
@@ -123,6 +136,8 @@ def create_analysis_tab() -> gr.Tab:
                         top_k_tokens=step_data["top_k_tokens"],
                         top_k_probs=step_data["top_k_probs"],
                         top_k_texts=step_data["top_k_texts"],
+                        raw_probability=step_data.get("raw_probability", step_data["probability"]),  # Backward compatibility
+                        top_k_raw_probs=step_data.get("top_k_raw_probs", step_data["top_k_probs"]),  # Backward compatibility
                         all_logits=None,  # Not needed for visualization
                         token_text_raw=step_data.get(
                             "token_text_raw"
@@ -147,7 +162,10 @@ def create_analysis_tab() -> gr.Tab:
 
                 # Generate visualizations
                 figures = plot_probability_visualizations(
-                    mock_tracer, top_k=actual_heatmap_ranks
+                    mock_tracer,
+                    top_k=actual_heatmap_ranks,
+                    probability_mode=internal_prob_mode,
+                    temperature=temperature,
                 )
                 plot_heatmap = figures[0] if len(figures) > 0 else None
                 plot_confidence = figures[1] if len(figures) > 1 else None
@@ -180,7 +198,7 @@ def create_analysis_tab() -> gr.Tab:
 
         json_file_input.upload(
             fn=analyze_json_log,
-            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox],
+            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox, probability_mode],
             outputs=[
                 log_info_output,
                 stats_output,
@@ -192,7 +210,29 @@ def create_analysis_tab() -> gr.Tab:
         # Also update visualization when settings change
         heatmap_ranks.change(
             fn=analyze_json_log,
-            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox],
+            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox, probability_mode],
+            outputs=[
+                log_info_output,
+                stats_output,
+                viz_plot_heatmap,
+                viz_plot_confidence,
+            ],
+        )
+
+        visualize_all_ranks_checkbox.change(
+            fn=analyze_json_log,
+            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox, probability_mode],
+            outputs=[
+                log_info_output,
+                stats_output,
+                viz_plot_heatmap,
+                viz_plot_confidence,
+            ],
+        )
+
+        probability_mode.change(
+            fn=analyze_json_log,
+            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox, probability_mode],
             outputs=[
                 log_info_output,
                 stats_output,
