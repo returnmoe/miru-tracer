@@ -1,3 +1,6 @@
+ # Default to CPU-only Pytorch
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # Core ML/DL dependencies
 torch~=2.9.1
 transformers~=4.57.1
