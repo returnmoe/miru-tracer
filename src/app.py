@@ -137,8 +137,8 @@ def create_app() -> gr.Blocks:
     ) as app:
         # Create tabs - main center content
         with gr.Tabs():
-            # Tab 1: Model Loader
-            create_model_loader_tab(model_manager)
+            # Tab 1: Model Loader (returns tab and load state components)
+            model_loader_tab, model_loader_state = create_model_loader_tab(model_manager)
 
             # Tab 2: Tokenize Text
             create_tokenize_text_tab(model_manager)
@@ -154,6 +154,14 @@ def create_app() -> gr.Blocks:
 
             # Tab 6: Log Analysis
             create_analysis_tab()
+
+        # Wire up app-level load event for Model Loader state
+        load_fn, outputs = model_loader_state
+        app.load(
+            fn=load_fn,
+            inputs=[],
+            outputs=outputs,
+        )
 
     return app
 
@@ -172,6 +180,9 @@ if __name__ == "__main__":
     logger.info("Miru Tracer application starting...")
     logger.info(f"Server configuration: host={server_name}, port={server_port}")
     logger.info(f"Debug mode: {'enabled' if debug_mode else 'disabled'}")
+
+    # Enable queue for event cancellation support
+    demo.queue()
 
     demo.launch(
         server_name=server_name,

@@ -71,7 +71,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         gr.Markdown("### Settings")
         with gr.Row():
             max_tokens = gr.Slider(
-                minimum=1, maximum=500, value=50, step=1, label="Max New Tokens"
+                minimum=1, maximum=500, value=20, step=1, label="Max New Tokens"
             )
             strategy = gr.Radio(
                 choices=["greedy", "sampling"], value="sampling", label="Strategy"
@@ -145,7 +145,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 "Stop",
                 variant="stop",
                 size="lg",
-                visible=False,
+                visible=True,
+                interactive=False,
             )
 
         # Output Section
@@ -335,6 +336,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     stop_token_param = int(stop_token)
                     logger.debug(f"Stop token enabled: {stop_token_param}")
 
+                first_step = True
                 for current_text, step_num, is_complete in tracer.generate_stream(
                     max_new_tokens=max_new_tokens,
                     strategy=strat,
@@ -359,19 +361,30 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         f"Generation progress: step={step_num}, complete={is_complete}"
                     )
 
+                    # Set original state on first yield so it's captured before Stop can be clicked
+                    # Also yield the tracer so stop_handler can receive it
                     yield (
                         generated_text,
                         json.dumps(progress_stats, indent=2),
                         None,
                         None,
-                        None,
+                        tracer,  # Yield tracer so it's available when Stop is clicked
                         gr.update(),
                         gr.update(),  # Continue button (no change during generation)
-                        gr.update(visible=True),  # Stop button (show during generation)
-                        None,  # original_mode
-                        None,  # original_prompt
-                        None,  # original_messages
+                        gr.update(
+                            interactive=True
+                        ),  # Stop button (enable during generation)
+                        (
+                            mode if first_step else None
+                        ),  # original_mode (set on first step)
+                        (
+                            prompt if first_step else None
+                        ),  # original_prompt (set on first step)
+                        (
+                            chat_msgs if first_step else None
+                        ),  # original_messages (set on first step)
                     )
+                    first_step = False
 
                 # After completion, generate final stats and visualizations
                 generation_time = time.time() - start_time
@@ -410,7 +423,9 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     tracer,  # Store tracer in state
                     download_update,  # Show download button with file path
                     gr.update(visible=True, interactive=True),  # Enable Continue button
-                    gr.update(visible=False),  # Hide Stop button (generation complete)
+                    gr.update(
+                        interactive=False
+                    ),  # Disable Stop button (generation complete)
                     mode,  # Store original mode
                     prompt,  # Store original prompt
                     chat_msgs,  # Store original messages
@@ -430,7 +445,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     None,
                     gr.update(),
                     gr.update(),  # Continue button
-                    gr.update(visible=False),  # Stop button
+                    gr.update(interactive=False),  # Stop button
                     None,  # original_mode
                     None,  # original_prompt
                     None,  # original_messages
@@ -463,6 +478,23 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     gr.update(),
                     gr.update(),
                     gr.update(visible=False),
+                )
+                return
+
+            # Check if model has been unloaded or changed
+            current_model = model_manager.get_model()
+            if current_model is None or tracer.model is not current_model:
+                error_msg = "Error: Model has been unloaded or changed.\n\nPlease start a new generation."
+                logger.warning("Continue attempted with unloaded/changed model")
+                yield (
+                    error_msg,
+                    None,
+                    None,
+                    None,
+                    None,  # Clear tracer state
+                    gr.update(interactive=False),  # Disable download
+                    gr.update(interactive=False),  # Disable continue
+                    gr.update(visible=False),  # Hide stop
                 )
                 return
 
@@ -531,10 +563,12 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         json.dumps(progress_stats, indent=2),
                         None,
                         None,
-                        None,
+                        tracer,  # Yield tracer so it's available when Stop is clicked
                         gr.update(),
                         gr.update(),
-                        gr.update(visible=True),  # Show Stop button during generation
+                        gr.update(
+                            interactive=True
+                        ),  # Enable Stop button during generation
                     )
 
                 # After completion, generate final stats and visualizations
@@ -569,7 +603,9 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     tracer,  # Return updated tracer
                     download_update,
                     gr.update(),  # Continue button stays visible
-                    gr.update(visible=False),  # Hide Stop button (generation complete)
+                    gr.update(
+                        interactive=False
+                    ),  # Disable Stop button (generation complete)
                 )
 
             except Exception as e:
@@ -586,15 +622,124 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     None,
                     gr.update(),
                     gr.update(),
-                    gr.update(visible=False),
+                    gr.update(interactive=False),
                 )
 
-        def stop_handler(tracer):
-            """Handle stop request during generation."""
-            if tracer is not None:
-                tracer.request_stop()
-                logger.info("Stop button clicked - requesting generation halt")
-            return gr.update(visible=False)  # Hide stop button
+        def stop_handler(
+            tracer,
+            heatmap_ranks,
+            current_mode,
+            current_prompt,
+            current_messages,
+            original_mode,
+            original_prompt,
+            original_messages,
+        ):
+            """Handle stop request during generation - finalize UI state."""
+            if tracer is None:
+                logger.warning("Stop clicked but no tracer in state")
+                return (
+                    gr.update(),  # generated_text_output
+                    gr.update(),  # generation_stats
+                    gr.update(),  # viz_plot_heatmap
+                    gr.update(),  # viz_plot_confidence
+                    None,  # tracer_state
+                    gr.update(interactive=False),  # download_button
+                    gr.update(interactive=False),  # continue_button
+                    gr.update(interactive=False),  # stop_button
+                    original_mode,  # original_mode_state (preserve)
+                    original_prompt,  # original_prompt_state (preserve)
+                    original_messages,  # original_messages_state (preserve)
+                )
+
+            logger.info(
+                f"Stop button clicked - finalizing after {len(tracer.history)} tokens"
+            )
+
+            try:
+                # Generate final stats and visualizations from current state
+                generated_text = tracer.get_generated_text()
+                stats = get_generation_stats(tracer)
+                stats_json = json.dumps(stats, indent=2)
+
+                # Create visualizations if we have any generated tokens
+                if len(tracer.history) > 0:
+                    figures = plot_probability_visualizations(
+                        tracer, top_k=heatmap_ranks
+                    )
+                    plot_output_heatmap = figures[0] if len(figures) > 0 else None
+                    plot_output_confidence = figures[1] if len(figures) > 1 else None
+                else:
+                    plot_output_heatmap = None
+                    plot_output_confidence = None
+
+                # Prepare download
+                download_update = prepare_download(tracer)
+
+                # Preserve originals if they exist, otherwise set them now
+                final_original_mode = (
+                    original_mode if original_mode is not None else current_mode
+                )
+                final_original_prompt = (
+                    original_prompt if original_prompt is not None else current_prompt
+                )
+                final_original_messages = (
+                    original_messages
+                    if original_messages is not None
+                    else current_messages
+                )
+
+                return (
+                    generated_text,  # generated_text_output
+                    stats_json,  # generation_stats
+                    plot_output_heatmap,  # viz_plot_heatmap
+                    plot_output_confidence,  # viz_plot_confidence
+                    tracer,  # tracer_state (keep it so Continue works)
+                    download_update,  # download_button
+                    gr.update(
+                        visible=True, interactive=True
+                    ),  # continue_button (enable!)
+                    gr.update(interactive=False),  # stop_button
+                    final_original_mode,  # original_mode_state
+                    final_original_prompt,  # original_prompt_state
+                    final_original_messages,  # original_messages_state
+                )
+
+            except Exception as e:
+                logger.error(f"Error in stop_handler: {e}")
+                import traceback
+
+                logger.error(traceback.format_exc())
+
+                # Preserve originals even in error case
+                final_original_mode = (
+                    original_mode if original_mode is not None else current_mode
+                )
+                final_original_prompt = (
+                    original_prompt if original_prompt is not None else current_prompt
+                )
+                final_original_messages = (
+                    original_messages
+                    if original_messages is not None
+                    else current_messages
+                )
+
+                # Return safe defaults on error
+                return (
+                    gr.update(),  # generated_text_output
+                    gr.update(),  # generation_stats
+                    gr.update(),  # viz_plot_heatmap
+                    gr.update(),  # viz_plot_confidence
+                    tracer,  # tracer_state
+                    gr.update(),  # download_button
+                    gr.update(
+                        visible=True, interactive=False
+                    ),  # continue_button (visible but disabled)
+                    gr.update(interactive=False),  # stop_button
+                    final_original_mode,  # original_mode_state
+                    final_original_prompt,  # original_prompt_state
+                    final_original_messages,  # original_messages_state
+                )
 
         def check_continue_availability(
             current_mode,
@@ -691,7 +836,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             outputs=[log_top_k, heatmap_ranks],
         )
 
-        generate_button.click(
+        generate_event = generate_button.click(
             fn=generate_handler,
             inputs=[
                 mode_selector,
@@ -724,7 +869,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             ],
         )
 
-        continue_button.click(
+        continue_event = continue_button.click(
             fn=continue_handler,
             inputs=[
                 tracer_state,
@@ -754,8 +899,30 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         stop_button.click(
             fn=stop_handler,
-            inputs=[tracer_state],
-            outputs=[stop_button],
+            inputs=[
+                tracer_state,
+                heatmap_ranks,
+                mode_selector,
+                prompt_input,
+                chat_messages,
+                original_mode_state,
+                original_prompt_state,
+                original_messages_state,
+            ],
+            outputs=[
+                generated_text_output,
+                generation_stats,
+                viz_plot_heatmap,
+                viz_plot_confidence,
+                tracer_state,
+                download_button,
+                continue_button,
+                stop_button,
+                original_mode_state,
+                original_prompt_state,
+                original_messages_state,
+            ],
+            cancels=[generate_event, continue_event],
         )
 
         # Monitor input changes to enable/disable Continue button

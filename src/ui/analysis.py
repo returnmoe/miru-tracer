@@ -37,7 +37,7 @@ def create_analysis_tab() -> gr.Tab:
             visualize_all_ranks_checkbox = gr.Checkbox(
                 label="Visualize All Ranks (Override Heatmap Ranks)",
                 value=False,
-                info="⚠️ WARNING: Shows ALL logged tokens in heatmap. May CRASH YOUR BROWSER with large vocabularies!",
+                info="WARNING: Shows ALL logged tokens in heatmap. May CRASH YOUR BROWSER with large vocabularies!",
             )
 
         # Output Section

@@ -23,7 +23,7 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
         gr.Markdown("See how text is tokenized by the loaded model.")
 
         text_input = gr.Textbox(
-            label="Input Text",
+            label="Input",
             placeholder="Enter text to tokenize...",
             lines=3,
             value="The future of artificial intelligence is",

@@ -171,6 +171,26 @@ class SessionManager:
         with self._global_lock:
             return len(self._sessions)
 
+    def clear_all_sessions(self) -> int:
+        """
+        Clear all sessions (useful before unloading model).
+
+        Returns:
+            Number of sessions cleared
+        """
+        with self._global_lock:
+            session_ids = list(self._sessions.keys())
+
+        # Delete outside the lock
+        for session_id in session_ids:
+            self.delete_session(session_id)
+
+        count = len(session_ids)
+        if count > 0:
+            logger.info(f"Cleared all {count} session(s)")
+
+        return count
+
     def get_session_info(self, session_id: str) -> Optional[Dict]:
         """
         Get information about a session.
