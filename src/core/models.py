@@ -3,7 +3,12 @@
 from dataclasses import dataclass, asdict
 from typing import Optional, List, Dict, Any, Tuple
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForVision2Seq,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+)
 import warnings
 import time
 from core.logging_config import get_logger
@@ -97,7 +102,14 @@ class ModelManager:
         vocab_size = len(self._tokenizer)
         logger.info(f"Tokenizer loaded: vocab_size={vocab_size:,}")
 
-        # Load model with optional quantization
+        # Build common loading kwargs
+        load_kwargs = {
+            "device_map": "auto" if torch.cuda.is_available() else None,
+            "trust_remote_code": trust_remote_code,
+            "low_cpu_mem_usage": True,  # Critical: load directly to GPU, minimal RAM
+        }
+
+        # Add quantization or dtype
         if quantization != "none" and torch.cuda.is_available():
             logger.debug(
                 f"Using quantization: {quantization} (load_in_{quantization[0]}bit=True)"
@@ -109,39 +121,41 @@ class ModelManager:
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_use_double_quant=True,
             )
-            logger.debug(f"Loading model with device_map='auto'")
-            self._model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                quantization_config=quantization_config,
-                device_map="auto",
-                trust_remote_code=trust_remote_code,
-            )
+            load_kwargs["quantization_config"] = quantization_config
         else:
-            # Determine dtype and device map based on available hardware
-            if torch.cuda.is_available():
-                model_dtype = torch.float16
-                model_device_map = "auto"
-                logger.debug(
-                    f"Loading model with dtype={model_dtype}, device_map='auto'"
+            # Set dtype based on available hardware
+            model_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+            load_kwargs["torch_dtype"] = model_dtype  # Fixed: was "dtype"
+            logger.debug(
+                f"Loading model with torch_dtype={model_dtype}, device_map={load_kwargs['device_map']}"
+            )
+
+        # Try loading as CausalLM, fallback to Vision2Seq for VLMs
+        is_vlm = False
+        try:
+            logger.debug(f"Attempting to load with AutoModelForCausalLM")
+            self._model = AutoModelForCausalLM.from_pretrained(
+                model_name, **load_kwargs
+            )
+        except (ValueError, KeyError) as e:
+            if "Unrecognized configuration class" in str(e) or "does not support" in str(e):
+                logger.warning(
+                    f"AutoModelForCausalLM failed. Retrying with AutoModelForVision2Seq (VLM detected)..."
+                )
+                self._model = AutoModelForVision2Seq.from_pretrained(
+                    model_name, **load_kwargs
+                )
+                is_vlm = True
+                logger.info(
+                    "Loaded Vision-Language Model in text-only mode. Image inputs not supported."
                 )
             else:
-                model_dtype = torch.float32
-                model_device_map = None
-                logger.debug(
-                    f"Loading model with dtype={model_dtype}, device_map=None (CPU mode)"
-                )
+                raise
 
-            self._model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                dtype=model_dtype,
-                device_map=model_device_map,
-                trust_remote_code=trust_remote_code,
-            )
-
-            # If CPU, explicitly move to device
-            if not torch.cuda.is_available():
-                logger.debug("Moving model to CPU device")
-                self._model = self._model.to(self._device)
+        # If CPU mode and not using device_map, explicitly move to device
+        if not torch.cuda.is_available() and load_kwargs["device_map"] is None:
+            logger.debug("Moving model to CPU device")
+            self._model = self._model.to(self._device)
 
         self._model.eval()
         self._model_name = model_name
@@ -159,10 +173,17 @@ class ModelManager:
             "num_parameters_b": num_params,
             "quantization": quantization,
             "pytorch_version": torch.__version__,
+            "is_vlm": is_vlm,
+            "vlm_warning": (
+                "Vision-Language Model loaded in text-only mode. Image inputs not supported."
+                if is_vlm
+                else None
+            ),
         }
 
         logger.info(
             f"Model loaded successfully: {num_params:.2f}B parameters in {load_time:.2f}s"
+            + (f" [VLM - text-only mode]" if is_vlm else "")
         )
 
         return self._model, self._tokenizer, self._device, info

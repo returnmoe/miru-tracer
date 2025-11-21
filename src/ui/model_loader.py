@@ -97,6 +97,10 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
                 if info["device"] == "cuda":
                     success_msg += f"\nVRAM: {info['vram_gb']:.2f} GB"
 
+                # Display VLM warning
+                if info.get("is_vlm"):
+                    success_msg += f"\n\n⚠️ {info['vlm_warning']}"
+
                 logger.info(f"Model load successful via UI: {model_name_val}")
 
                 return success_msg, json.dumps(info, indent=2)
