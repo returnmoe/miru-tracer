@@ -23,6 +23,23 @@ def create_analysis_tab() -> gr.Tab:
             label="Upload JSON Log", file_types=[".json"], type="filepath"
         )
 
+        # Visualization Settings
+        gr.Markdown("### Visualization Settings")
+        with gr.Row():
+            heatmap_ranks = gr.Number(
+                minimum=1,
+                value=10,
+                precision=0,
+                label="Heatmap Ranks",
+                info="Ranks to show in visualization",
+            )
+        with gr.Row():
+            visualize_all_ranks_checkbox = gr.Checkbox(
+                label="Visualize All Ranks (Override Heatmap Ranks)",
+                value=False,
+                info="⚠️ WARNING: Shows ALL logged tokens in heatmap. May CRASH YOUR BROWSER with large vocabularies!",
+            )
+
         # Output Section
         gr.Markdown("### Log Information")
 
@@ -41,10 +58,17 @@ def create_analysis_tab() -> gr.Tab:
         viz_plot_heatmap = gr.Plot(label="Probability Heatmap")
         viz_plot_confidence = gr.Plot(label="Confidence Analysis")
 
-        def analyze_json_log(filepath):
+        def analyze_json_log(filepath, heatmap_r, visualize_all_ranks_check):
             """Analyze an uploaded JSON log file."""
             if filepath is None:
                 return None, "No file uploaded", None, None
+
+            # Determine actual visualization parameters based on checkbox
+            actual_heatmap_ranks = int(heatmap_r) if heatmap_r else 10
+
+            if visualize_all_ranks_check:
+                # Will be set to the number of logged tokens after loading the data
+                actual_heatmap_ranks = None  # Placeholder, will be updated below
 
             try:
                 with open(filepath, "r") as f:
@@ -100,8 +124,12 @@ def create_analysis_tab() -> gr.Tab:
                         top_k_probs=step_data["top_k_probs"],
                         top_k_texts=step_data["top_k_texts"],
                         all_logits=None,  # Not needed for visualization
-                        token_text_raw=step_data.get("token_text_raw"),  # Backward compatibility
-                        top_k_texts_raw=step_data.get("top_k_texts_raw"),  # Backward compatibility
+                        token_text_raw=step_data.get(
+                            "token_text_raw"
+                        ),  # Backward compatibility
+                        top_k_texts_raw=step_data.get(
+                            "top_k_texts_raw"
+                        ),  # Backward compatibility
                     )
                     reconstructed_history.append(token_step)
 
@@ -112,8 +140,15 @@ def create_analysis_tab() -> gr.Tab:
 
                 mock_tracer = MockTracer(reconstructed_history)
 
+                # Finalize visualization parameters
+                if visualize_all_ranks_check and reconstructed_history:
+                    # Use all logged tokens (length of top_k_tokens in first step)
+                    actual_heatmap_ranks = len(reconstructed_history[0].top_k_tokens)
+
                 # Generate visualizations
-                figures = plot_probability_visualizations(mock_tracer, top_k=5)
+                figures = plot_probability_visualizations(
+                    mock_tracer, top_k=actual_heatmap_ranks
+                )
                 plot_heatmap = figures[0] if len(figures) > 0 else None
                 plot_confidence = figures[1] if len(figures) > 1 else None
 
@@ -131,9 +166,33 @@ def create_analysis_tab() -> gr.Tab:
                 error_msg += f"\n\nTraceback:\n{traceback.format_exc()}"
                 return "", error_msg, None, None
 
+        # Visibility control function
+        def update_number_visibility(viz_all_check):
+            """Hide heatmap_ranks number input when Visualize All Ranks checkbox is enabled."""
+            return gr.update(visible=not viz_all_check)
+
+        # Wire up number input visibility control
+        visualize_all_ranks_checkbox.change(
+            fn=update_number_visibility,
+            inputs=[visualize_all_ranks_checkbox],
+            outputs=[heatmap_ranks],
+        )
+
         json_file_input.upload(
             fn=analyze_json_log,
-            inputs=[json_file_input],
+            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox],
+            outputs=[
+                log_info_output,
+                stats_output,
+                viz_plot_heatmap,
+                viz_plot_confidence,
+            ],
+        )
+
+        # Also update visualization when settings change
+        heatmap_ranks.change(
+            fn=analyze_json_log,
+            inputs=[json_file_input, heatmap_ranks, visualize_all_ranks_checkbox],
             outputs=[
                 log_info_output,
                 stats_output,

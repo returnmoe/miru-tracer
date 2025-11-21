@@ -77,6 +77,22 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             top_k = gr.Slider(1, 100, value=50, step=1, label="Top-K")
             top_p = gr.Slider(0.0, 1.0, value=0.9, step=0.05, label="Top-P")
 
+        gr.Markdown("### Logging")
+        with gr.Row():
+            log_top_k = gr.Number(
+                minimum=1,
+                value=10,
+                precision=0,
+                label="Log Top-K Tokens",
+                info="Number of top candidates to log per step",
+            )
+        with gr.Row():
+            log_all_logits_checkbox = gr.Checkbox(
+                label="Log All Logits (Override Log Top-K)",
+                value=False,
+                info="⚠️ WARNING: Logs ENTIRE vocabulary (~600KB per step for 150K vocab). May cause memory issues!",
+            )
+
         with gr.Row():
             init_button = gr.Button("Initialize", variant="primary")
             reset_button = gr.Button("Reset", variant="secondary")
@@ -138,12 +154,16 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             undo_button = gr.Button("Step Back (Undo)", variant="secondary")
             step_button = gr.Button("Next Step", variant="primary", size="lg")
 
-        gr.Markdown("---")
+        # Export Section
+        gr.Markdown("### Export")
 
-        with gr.Row():
-            download_button = gr.DownloadButton(
-                label="Download JSON", visible=False, variant="secondary", size="lg"
-            )
+        download_button = gr.DownloadButton(
+            label="Download JSON",
+            visible=True,
+            interactive=False,
+            variant="secondary",
+            size="lg",
+        )
 
         # Session state - only stores simple session ID string
         session_state = gr.State(value=None)
@@ -151,13 +171,13 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         def prepare_download(session_id: Optional[str]):
             """Prepare JSON file for browser download."""
             if session_id is None:
-                return gr.update(visible=False)
+                return gr.update(interactive=False)
 
             session_manager = get_session_manager()
             tracer = session_manager.get_tracer(session_id)
 
             if tracer is None or tracer.input_ids is None:
-                return gr.update(visible=False)
+                return gr.update(interactive=False)
 
             try:
                 import tempfile
@@ -179,13 +199,23 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     temp_path = f.name
 
                 # Return file path for Gradio to serve
-                return gr.update(value=temp_path, visible=True)
+                return gr.update(value=temp_path, interactive=True)
 
             except Exception as e:
                 logger.error(f"Export error: {e}")
-                return gr.update(visible=False)
+                return gr.update(interactive=False)
 
-        def initialize_tracer(mode, prompt, chat_msgs, temp, topk, topp, strat):
+        def initialize_tracer(
+            mode,
+            prompt,
+            chat_msgs,
+            temp,
+            topk,
+            topp,
+            strat,
+            log_topk,
+            log_all_logits_check,
+        ):
             """Initialize the tracer with a prompt."""
             model = model_manager.get_model()
             tokenizer = model_manager.get_tokenizer()
@@ -198,7 +228,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     None,
                     gr.update(choices=[("Error", "0")], value="0"),
                     None,
-                    gr.update(visible=False),
+                    gr.update(interactive=False),
                 )
 
             try:
@@ -220,7 +250,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                                 None,
                                 gr.update(choices=[("Error", "0")], value="0"),
                                 None,
-                                gr.update(visible=False),
+                                gr.update(interactive=False),
                             )
                         for msg in messages:
                             if (
@@ -234,7 +264,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                                     None,
                                     gr.update(choices=[("Error", "0")], value="0"),
                                     None,
-                                    gr.update(visible=False),
+                                    gr.update(interactive=False),
                                 )
                     except json_module.JSONDecodeError as e:
                         return (
@@ -243,7 +273,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                             None,
                             gr.update(choices=[("Error", "0")], value="0"),
                             None,
-                            gr.update(visible=False),
+                            gr.update(interactive=False),
                         )
 
                     tracer.reset(messages=messages, mode="chat")
@@ -256,8 +286,15 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
                 status = f"Initialized in {mode} mode"
 
+                # Determine actual logging parameters based on checkbox
+                actual_log_top_k = int(log_topk) if log_topk else 10
+                if log_all_logits_check:
+                    actual_log_top_k = min(50, len(tokenizer))
+
                 # Get first set of probabilities and CACHE them
-                prob_data = tracer.cache_next_probabilities(top_k=10, temperature=temp)
+                prob_data = tracer.cache_next_probabilities(
+                    top_k=actual_log_top_k, temperature=temp
+                )
 
                 # Preview what token would be selected based on strategy
                 previewed_token_id, preview_method = _preview_next_token(
@@ -295,7 +332,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     None,
                     gr.update(choices=[("Error", "0")], value="0"),
                     None,
-                    gr.update(visible=False),
+                    gr.update(interactive=False),
                 )
 
         def reset_tracer(session_id):
@@ -311,10 +348,12 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 None,
                 gr.update(choices=[("Reset", "0")], value="0"),
                 None,
-                gr.update(visible=False),
+                gr.update(interactive=False),
             )
 
-        def undo_step(session_id, temp, topk, topp, strat):
+        def undo_step(
+            session_id, temp, topk, topp, strat, log_topk, log_all_logits_check
+        ):
             """Undo the last generation step."""
             if session_id is None:
                 return (
@@ -372,9 +411,14 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         tracer.get_full_text() if len(tracer.history) > 0 else ""
                     )
 
+                    # Determine actual logging parameters based on checkbox
+                    actual_log_top_k = int(log_topk) if log_topk else 10
+                    if log_all_logits_check:
+                        actual_log_top_k = min(50, len(tracer.tokenizer))
+
                     # Get next probabilities and CACHE them
                     prob_data = tracer.cache_next_probabilities(
-                        top_k=10, temperature=temp
+                        top_k=actual_log_top_k, temperature=temp
                     )
 
                     # Preview what token would be selected based on strategy
@@ -414,7 +458,16 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     error = f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
                     return error, "", None, gr.update(), session_id, gr.update()
 
-        def continue_generation(session_id, strat, temp, topk, topp, n_tokens):
+        def continue_generation(
+            session_id,
+            strat,
+            temp,
+            topk,
+            topp,
+            n_tokens,
+            log_topk,
+            log_all_logits_check,
+        ):
             """Continue generating for N tokens autonomously."""
             if session_id is None:
                 yield "Error: Not initialized. Click 'Initialize' first.", "", None, gr.update(), session_id, gr.update()
@@ -444,6 +497,13 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         yield f"Error: State corrupted: {error_msg}\nPlease reset and reinitialize.", "", None, gr.update(), session_id, gr.update()
                         return
 
+                    # Determine actual logging parameters based on checkbox
+                    actual_log_top_k = int(log_topk) if log_topk else 10
+                    if log_all_logits_check:
+                        actual_log_top_k = min(50, len(tracer.tokenizer))
+
+                    actual_log_all_logits = log_all_logits_check
+
                     for i in range(int(n_tokens)):
                         # Generate next token
                         step_data = tracer.step(
@@ -451,7 +511,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                             temperature=temp,
                             top_k=topk,
                             top_p=topp,
-                            log_top_k=10,
+                            log_top_k=actual_log_top_k,
+                            log_all_logits=actual_log_all_logits,
                         )
 
                         # Get current text
@@ -477,7 +538,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
                     # After completion, get next probabilities and CACHE them
                     prob_data = tracer.cache_next_probabilities(
-                        top_k=10, temperature=temp
+                        top_k=actual_log_top_k, temperature=temp
                     )
 
                     # Preview what token would be selected based on strategy
@@ -525,6 +586,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             rank_selection,
             use_override,
             override_id,
+            log_topk,
+            log_all_logits_check,
         ):
             """Generate the next token."""
             if session_id is None:
@@ -574,6 +637,13 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         f"Current position (history length): {len(tracer.history)}, state_info={state_info}"
                     )
 
+                    # Determine actual logging parameters based on checkbox
+                    actual_log_top_k = int(log_topk) if log_topk else 10
+                    if log_all_logits_check:
+                        actual_log_top_k = min(50, len(tracer.tokenizer))
+
+                    actual_log_all_logits = log_all_logits_check
+
                     # Determine which token to commit (what's currently selected in radio)
                     if use_override:
                         # User manually specified a token ID via override field
@@ -616,7 +686,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         temperature=temp,
                         top_k=topk,
                         top_p=topp,
-                        log_top_k=10,
+                        log_top_k=actual_log_top_k,
+                        log_all_logits=actual_log_all_logits,
                     )
 
                     logger.debug(
@@ -644,7 +715,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
                     # Get next probabilities and CACHE them (optimization!)
                     prob_data_next = tracer.cache_next_probabilities(
-                        top_k=10, temperature=temp
+                        top_k=actual_log_top_k, temperature=temp
                     )
 
                     # Preview what the NEXT token would be based on strategy
@@ -704,6 +775,10 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 return gr.update(visible=True), gr.update(visible=False)
             else:
                 return gr.update(visible=False), gr.update(visible=True)
+
+        def update_number_visibility(log_all_check):
+            """Hide log_top_k number input when Log All Logits checkbox is enabled."""
+            return gr.update(visible=not log_all_check)
 
         def _build_prob_display(prob_data):
             """Build dataframe and radio choices from probability data."""
@@ -795,6 +870,13 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             outputs=[completion_inputs, chat_inputs],
         )
 
+        # Wire up number input visibility control
+        log_all_logits_checkbox.change(
+            fn=update_number_visibility,
+            inputs=[log_all_logits_checkbox],
+            outputs=[log_top_k],
+        )
+
         init_button.click(
             fn=initialize_tracer,
             inputs=[
@@ -805,6 +887,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 top_k,
                 top_p,
                 strategy,
+                log_top_k,
+                log_all_logits_checkbox,
             ],
             outputs=[
                 status_output,
@@ -840,6 +924,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 token_selector,
                 use_override,
                 token_override,
+                log_top_k,
+                log_all_logits_checkbox,
             ],
             outputs=[
                 status_output,
@@ -853,7 +939,15 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         undo_button.click(
             fn=undo_step,
-            inputs=[session_state, temperature, top_k, top_p, strategy],
+            inputs=[
+                session_state,
+                temperature,
+                top_k,
+                top_p,
+                strategy,
+                log_top_k,
+                log_all_logits_checkbox,
+            ],
             outputs=[
                 status_output,
                 current_text_output,
@@ -873,6 +967,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 top_k,
                 top_p,
                 continue_tokens,
+                log_top_k,
+                log_all_logits_checkbox,
             ],
             outputs=[
                 status_output,

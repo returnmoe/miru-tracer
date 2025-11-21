@@ -23,6 +23,7 @@ class LLMTracer:
         self._cached_next_probs = (
             None  # Cache for next token probabilities (optimization)
         )
+        self._stop_requested = False  # Flag to request early termination of generation
 
         # Detect if model supports chat templates
         self.has_chat_template = (
@@ -215,6 +216,15 @@ class LLMTracer:
     def invalidate_probability_cache(self):
         """Clear the cached next token probabilities."""
         self._cached_next_probs = None
+
+    def request_stop(self):
+        """Request that ongoing generation stop at the next token."""
+        self._stop_requested = True
+        logger.info("Stop requested for ongoing generation")
+
+    def clear_stop_flag(self):
+        """Clear the stop request flag (call before starting new generation)."""
+        self._stop_requested = False
 
     def step(
         self,
@@ -452,6 +462,13 @@ class LLMTracer:
             stop_token_id: Optional token ID to stop generation at (ignores max_new_tokens)
         """
         for i in range(max_new_tokens):
+            # Check if stop was requested (highest priority)
+            if self._stop_requested:
+                current_text = self.get_full_text()
+                yield (current_text, i, True)
+                logger.info(f"Generation stopped by user request after {i} tokens")
+                break
+
             step_data = self.step(
                 strategy=strategy,
                 temperature=temperature,

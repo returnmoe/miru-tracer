@@ -104,21 +104,31 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         # Logging Settings
         gr.Markdown("### Logging & Visualization")
         with gr.Row():
-            log_top_k = gr.Slider(
+            log_top_k = gr.Number(
                 minimum=1,
-                maximum=50,
                 value=10,
-                step=1,
+                precision=0,
                 label="Log Top-K Tokens",
                 info="Number of top candidates to log per step",
             )
-            heatmap_ranks = gr.Slider(
+            heatmap_ranks = gr.Number(
                 minimum=1,
-                maximum=20,
-                value=5,
-                step=1,
+                value=10,
+                precision=0,
                 label="Heatmap Ranks",
                 info="Ranks to show in visualization",
+            )
+
+        with gr.Row():
+            log_all_logits_checkbox = gr.Checkbox(
+                label="Log All Logits (Override Log Top-K)",
+                value=False,
+                info="⚠️ WARNING: Logs ENTIRE vocabulary (~600KB per step for 150K vocab, ~60MB for 100 steps). May cause memory issues!",
+            )
+            visualize_all_ranks_checkbox = gr.Checkbox(
+                label="Visualize All Ranks (Override Heatmap Ranks)",
+                value=False,
+                info="⚠️ WARNING: Shows ALL logged tokens in heatmap. May CRASH YOUR BROWSER with large vocabularies!",
             )
 
         # Generate Buttons
@@ -128,8 +138,14 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 "Continue",
                 variant="secondary",
                 size="lg",
-                visible=False,
+                visible=True,
                 interactive=False,
+            )
+            stop_button = gr.Button(
+                "Stop",
+                variant="stop",
+                size="lg",
+                visible=False,
             )
 
         # Output Section
@@ -149,10 +165,15 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         viz_plot_heatmap = gr.Plot(label="Probability Heatmap")
         viz_plot_confidence = gr.Plot(label="Confidence Analysis")
 
-        # Export Section (appears after generation)
+        # Export Section
         gr.Markdown("### Export")
+
         download_button = gr.DownloadButton(
-            label="Download JSON", visible=False, variant="secondary", size="lg"
+            label="Download JSON",
+            visible=True,
+            interactive=False,
+            variant="secondary",
+            size="lg",
         )
 
         # State to persist tracer object and original inputs for change detection
@@ -168,6 +189,14 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             else:
                 return gr.update(visible=False), gr.update(visible=True)
 
+        def update_number_visibility(log_all_check, viz_all_check):
+            """Hide number inputs when override checkboxes are enabled."""
+            # Hide log_top_k if Log All Logits is checked
+            log_visible = not log_all_check
+            # Hide heatmap_ranks if Visualize All Ranks is checked
+            heatmap_visible = not viz_all_check
+            return gr.update(visible=log_visible), gr.update(visible=heatmap_visible)
+
         def generate_handler(
             mode,
             prompt,
@@ -179,6 +208,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             topp,
             log_topk,
             heatmap_r,
+            log_all_logits_check,
+            visualize_all_ranks_check,
             stop_enabled,
             stop_token,
         ):
@@ -186,6 +217,21 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             model = model_manager.get_model()
             tokenizer = model_manager.get_tokenizer()
             device = model_manager.get_device()
+
+            # Determine actual logging and visualization parameters based on checkboxes
+            actual_log_top_k = int(log_topk) if log_topk else 10
+            actual_heatmap_ranks = int(heatmap_r) if heatmap_r else 10
+            actual_log_all_logits = log_all_logits_check
+
+            if log_all_logits_check:
+                # Override: log entire vocabulary
+                actual_log_all_logits = True
+                # When logging all logits, we need a reasonable top_k for display
+                actual_log_top_k = min(50, len(tokenizer)) if tokenizer else 50
+
+            if visualize_all_ranks_check:
+                # Override: visualize all logged ranks
+                actual_heatmap_ranks = actual_log_top_k
 
             if model is None or tokenizer is None:
                 error_msg = "Error: No model loaded. Please load a model in the Model Loader tab first."
@@ -198,9 +244,10 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     None,
                     gr.update(),
                     gr.update(),  # Continue button
-                    None,         # original_mode
-                    None,         # original_prompt
-                    None,         # original_messages
+                    gr.update(visible=False),  # Stop button
+                    None,  # original_mode
+                    None,  # original_prompt
+                    None,  # original_messages
                 )
                 return
 
@@ -212,6 +259,9 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             try:
                 # Create tracer
                 tracer = LLMTracer(model, tokenizer, device)
+
+                # Clear any previous stop flag
+                tracer.clear_stop_flag()
 
                 # Setup input based on mode
                 if mode == "Chat":
@@ -227,6 +277,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                                 None,
                                 gr.update(),
                                 gr.update(),
+                                gr.update(visible=False),
                                 None,
                                 None,
                                 None,
@@ -249,6 +300,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                                     None,
                                     gr.update(),
                                     gr.update(),
+                                    gr.update(visible=False),
                                     None,
                                     None,
                                     None,
@@ -264,6 +316,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                             None,
                             gr.update(),
                             gr.update(),
+                            gr.update(visible=False),
                             None,
                             None,
                             None,
@@ -288,8 +341,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     temperature=temp,
                     top_k=topk,
                     top_p=topp,
-                    log_top_k=log_topk,
-                    log_all_logits=False,
+                    log_top_k=actual_log_top_k,
+                    log_all_logits=actual_log_all_logits,
                     stop_token_id=stop_token_param,
                 ):
                     # Get generated text
@@ -314,9 +367,10 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         None,
                         gr.update(),
                         gr.update(),  # Continue button (no change during generation)
-                        None,         # original_mode
-                        None,         # original_prompt
-                        None,         # original_messages
+                        gr.update(visible=True),  # Stop button (show during generation)
+                        None,  # original_mode
+                        None,  # original_prompt
+                        None,  # original_messages
                     )
 
                 # After completion, generate final stats and visualizations
@@ -328,8 +382,12 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 stats = get_generation_stats(tracer)
 
                 # Create visualizations
-                logger.debug(f"Creating visualizations (heatmap_ranks={heatmap_r})")
-                figures = plot_probability_visualizations(tracer, top_k=heatmap_r)
+                logger.debug(
+                    f"Creating visualizations (heatmap_ranks={actual_heatmap_ranks})"
+                )
+                figures = plot_probability_visualizations(
+                    tracer, top_k=actual_heatmap_ranks
+                )
                 logger.info(f"Visualizations generated: {len(figures)} plots")
 
                 # Return both plots (heatmap and confidence charts)
@@ -351,7 +409,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     plot_output_confidence,
                     tracer,  # Store tracer in state
                     download_update,  # Show download button with file path
-                    gr.update(visible=True, interactive=True),  # Show Continue button
+                    gr.update(visible=True, interactive=True),  # Enable Continue button
+                    gr.update(visible=False),  # Hide Stop button (generation complete)
                     mode,  # Store original mode
                     prompt,  # Store original prompt
                     chat_msgs,  # Store original messages
@@ -371,6 +430,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     None,
                     gr.update(),
                     gr.update(),  # Continue button
+                    gr.update(visible=False),  # Stop button
                     None,  # original_mode
                     None,  # original_prompt
                     None,  # original_messages
@@ -385,6 +445,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             topp,
             log_topk,
             heatmap_r,
+            log_all_logits_check,
+            visualize_all_ranks_check,
             stop_enabled,
             stop_token,
         ):
@@ -400,8 +462,26 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     None,
                     gr.update(),
                     gr.update(),
+                    gr.update(visible=False),
                 )
                 return
+
+            # Determine actual logging and visualization parameters based on checkboxes
+            actual_log_top_k = int(log_topk) if log_topk else 10
+            actual_heatmap_ranks = int(heatmap_r) if heatmap_r else 10
+            actual_log_all_logits = log_all_logits_check
+
+            if log_all_logits_check:
+                # Override: log entire vocabulary
+                actual_log_all_logits = True
+                # When logging all logits, we need a reasonable top_k for display
+                actual_log_top_k = (
+                    min(50, len(tracer.tokenizer)) if tracer.tokenizer else 50
+                )
+
+            if visualize_all_ranks_check:
+                # Override: visualize all logged ranks
+                actual_heatmap_ranks = actual_log_top_k
 
             start_time = time.time()
             logger.info(
@@ -409,6 +489,9 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             )
 
             try:
+                # Clear any previous stop flag
+                tracer.clear_stop_flag()
+
                 # Store how many tokens we had before continuation
                 tokens_before = len(tracer.history)
 
@@ -424,8 +507,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     temperature=temp,
                     top_k=topk,
                     top_p=topp,
-                    log_top_k=log_topk,
-                    log_all_logits=False,
+                    log_top_k=actual_log_top_k,
+                    log_all_logits=actual_log_all_logits,
                     stop_token_id=stop_token_param,
                 ):
                     # Get generated text
@@ -451,6 +534,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         None,
                         gr.update(),
                         gr.update(),
+                        gr.update(visible=True),  # Show Stop button during generation
                     )
 
                 # After completion, generate final stats and visualizations
@@ -485,6 +569,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     tracer,  # Return updated tracer
                     download_update,
                     gr.update(),  # Continue button stays visible
+                    gr.update(visible=False),  # Hide Stop button (generation complete)
                 )
 
             except Exception as e:
@@ -501,7 +586,15 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     None,
                     gr.update(),
                     gr.update(),
+                    gr.update(visible=False),
                 )
+
+        def stop_handler(tracer):
+            """Handle stop request during generation."""
+            if tracer is not None:
+                tracer.request_stop()
+                logger.info("Stop button clicked - requesting generation halt")
+            return gr.update(visible=False)  # Hide stop button
 
         def check_continue_availability(
             current_mode,
@@ -521,9 +614,9 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             - Prompt has changed (in Completion mode)
             - Messages have changed (in Chat mode)
             """
-            # No tracer = can't continue
+            # No tracer = can't continue (keep button visible but disabled)
             if tracer is None or original_mode is None:
-                return gr.update(visible=False, interactive=False)
+                return gr.update(visible=True, interactive=False)
 
             # Mode changed = can't continue
             if current_mode != original_mode:
@@ -546,7 +639,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         def prepare_download(tracer):
             """Prepare JSON file for browser download."""
             if tracer is None:
-                return gr.update(visible=False)
+                return gr.update(interactive=False)
 
             try:
                 import tempfile
@@ -567,11 +660,11 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     temp_path = f.name
 
                 # Return file path for Gradio to serve
-                return gr.update(value=temp_path, visible=True)
+                return gr.update(value=temp_path, interactive=True)
 
             except Exception as e:
                 logger.error(f"Export error: {e}")
-                return gr.update(visible=False)
+                return gr.update(interactive=False)
 
         mode_selector.change(
             fn=update_mode_visibility,
@@ -583,6 +676,19 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             fn=lambda x: gr.update(visible=x),
             inputs=[stop_at_token_enabled],
             outputs=[stop_token_id],
+        )
+
+        # Wire up number input visibility controls
+        log_all_logits_checkbox.change(
+            fn=update_number_visibility,
+            inputs=[log_all_logits_checkbox, visualize_all_ranks_checkbox],
+            outputs=[log_top_k, heatmap_ranks],
+        )
+
+        visualize_all_ranks_checkbox.change(
+            fn=update_number_visibility,
+            inputs=[log_all_logits_checkbox, visualize_all_ranks_checkbox],
+            outputs=[log_top_k, heatmap_ranks],
         )
 
         generate_button.click(
@@ -598,6 +704,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 top_p,
                 log_top_k,
                 heatmap_ranks,
+                log_all_logits_checkbox,
+                visualize_all_ranks_checkbox,
                 stop_at_token_enabled,
                 stop_token_id,
             ],
@@ -609,6 +717,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 tracer_state,
                 download_button,
                 continue_button,
+                stop_button,
                 original_mode_state,
                 original_prompt_state,
                 original_messages_state,
@@ -626,6 +735,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 top_p,
                 log_top_k,
                 heatmap_ranks,
+                log_all_logits_checkbox,
+                visualize_all_ranks_checkbox,
                 stop_at_token_enabled,
                 stop_token_id,
             ],
@@ -637,7 +748,14 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 tracer_state,
                 download_button,
                 continue_button,
+                stop_button,
             ],
+        )
+
+        stop_button.click(
+            fn=stop_handler,
+            inputs=[tracer_state],
+            outputs=[stop_button],
         )
 
         # Monitor input changes to enable/disable Continue button
