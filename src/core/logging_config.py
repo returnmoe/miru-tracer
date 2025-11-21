@@ -37,9 +37,9 @@ def setup_logging():
 
     # Log the logging configuration itself
     if debug_mode:
-        root_logger.info("Logging configured: DEBUG level enabled (MIRU_DEBUG=1)")
+        root_logger.info("Logging configured: DEBUG level enabled")
     else:
-        root_logger.info("Logging configured: INFO level (MIRU_DEBUG=0)")
+        root_logger.info("Logging configured: INFO level")
 
     return root_logger
 

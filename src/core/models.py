@@ -29,6 +29,8 @@ class TokenStep:
     top_k_probs: List[float]
     top_k_texts: List[str]
     all_logits: Optional[List[float]] = None  # Full vocabulary logits (optional)
+    token_text_raw: Optional[str] = None  # Raw token representation (visible \n, \t, etc.)
+    top_k_texts_raw: Optional[List[str]] = None  # Raw representations for top-k tokens
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""

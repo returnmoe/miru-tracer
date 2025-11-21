@@ -100,6 +100,8 @@ def create_analysis_tab() -> gr.Tab:
                         top_k_probs=step_data["top_k_probs"],
                         top_k_texts=step_data["top_k_texts"],
                         all_logits=None,  # Not needed for visualization
+                        token_text_raw=step_data.get("token_text_raw"),  # Backward compatibility
+                        top_k_texts_raw=step_data.get("top_k_texts_raw"),  # Backward compatibility
                     )
                     reconstructed_history.append(token_step)
 

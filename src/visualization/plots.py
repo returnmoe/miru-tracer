@@ -32,45 +32,62 @@ def plot_probability_visualizations(
     max_ranks = min(top_k, len(tracer.history[0].top_k_tokens))
     heatmap_data = []
     heatmap_text = []
-    heatmap_ids = []
+    heatmap_customdata = []
 
     # Build data in step-by-rank format first (before transpose)
     for step_data in tracer.history:
         row_probs = []
         row_texts = []
-        row_ids = []
+        row_customdata = []
         for i in range(max_ranks):
             if i < len(step_data.top_k_probs):
                 row_probs.append(step_data.top_k_probs[i])
-                token_text = step_data.top_k_texts[i]
-                if len(token_text) > 15:
-                    token_text = token_text[:12] + "..."
-                row_texts.append(token_text)
-                row_ids.append(step_data.top_k_tokens[i])
+                # Use raw token text for display (fallback to decoded for old JSON files)
+                token_text_raw = (
+                    step_data.top_k_texts_raw[i]
+                    if hasattr(step_data, "top_k_texts_raw")
+                    and step_data.top_k_texts_raw
+                    else step_data.top_k_texts[i]
+                )
+                # Truncate for display
+                if len(token_text_raw) > 15:
+                    token_text_raw = token_text_raw[:12] + "..."
+                row_texts.append(token_text_raw)
+                # Store both token ID and decoded text in customdata
+                token_text_decoded = step_data.top_k_texts[i]
+                row_customdata.append([step_data.top_k_tokens[i], token_text_decoded])
             else:
                 row_probs.append(0)
                 row_texts.append("")
-                row_ids.append(None)
+                row_customdata.append([None, ""])
         heatmap_data.append(row_probs)
         heatmap_text.append(row_texts)
-        heatmap_ids.append(row_ids)
+        heatmap_customdata.append(row_customdata)
 
     # Transpose data for better temporal flow (steps on X-axis)
     heatmap_data_T = list(map(list, zip(*heatmap_data)))
     heatmap_text_T = list(map(list, zip(*heatmap_text)))
-    heatmap_ids_T = list(map(list, zip(*heatmap_ids)))
+    heatmap_customdata_T = list(map(list, zip(*heatmap_customdata)))
 
     # Add SELECTED row
     selected_row_probs = []
     selected_row_texts = []
-    selected_row_ids = []
+    selected_row_customdata = []
     for step_data in tracer.history:
         selected_row_probs.append(step_data.probability)
-        token_text = step_data.token_text
-        if len(token_text) > 15:
-            token_text = token_text[:12] + "..."
-        selected_row_texts.append(token_text)
-        selected_row_ids.append(step_data.token_id)
+        # Use raw token text for display (fallback to decoded for old JSON files)
+        token_text_raw = (
+            step_data.token_text_raw
+            if hasattr(step_data, "token_text_raw") and step_data.token_text_raw
+            else step_data.token_text
+        )
+        # Truncate for display
+        if len(token_text_raw) > 15:
+            token_text_raw = token_text_raw[:12] + "..."
+        selected_row_texts.append(token_text_raw)
+        # Store both token ID and decoded text in customdata
+        token_text_decoded = step_data.token_text
+        selected_row_customdata.append([step_data.token_id, token_text_decoded])
 
     # Create heatmap figure
     fig1 = make_subplots(
@@ -87,14 +104,14 @@ def plot_probability_visualizations(
         go.Heatmap(
             z=[selected_row_probs],
             text=[selected_row_texts],
-            customdata=[selected_row_ids],
+            customdata=[selected_row_customdata],
             texttemplate="%{text}<br>%{z:.3f}",
             textfont={"size": 12},
             x=[f"Step {i}" for i in range(len(tracer.history))],
             y=["Selected"],
             colorscale=[[0, "lightgray"], [1, "darkgray"]],
             showscale=False,
-            hovertemplate="%{x}<br>Selected<br>Token: %{text}<br>Token ID: %{customdata}<br>Probability: %{z:.4f}<extra></extra>",
+            hovertemplate="%{x}<br>Selected<br>Raw: %{text}<br>Decoded: %{customdata[1]}<br>Token ID: %{customdata[0]}<br>Probability: %{z:.4f}<extra></extra>",
         ),
         row=1,
         col=1,
@@ -105,14 +122,14 @@ def plot_probability_visualizations(
         go.Heatmap(
             z=heatmap_data_T,
             text=heatmap_text_T,
-            customdata=heatmap_ids_T,
+            customdata=heatmap_customdata_T,
             texttemplate="%{text}<br>%{z:.3f}",
             textfont={"size": 12},
             x=[f"Step {i}" for i in range(len(tracer.history))],
             y=[f"Rank {i+1}" for i in range(max_ranks)],
             colorscale="YlOrRd",
             colorbar=dict(title="Probability"),
-            hovertemplate="%{x}<br>%{y}<br>Token: %{text}<br>Token ID: %{customdata}<br>Probability: %{z:.4f}<extra></extra>",
+            hovertemplate="%{x}<br>%{y}<br>Raw: %{text}<br>Decoded: %{customdata[1]}<br>Token ID: %{customdata[0]}<br>Probability: %{z:.4f}<extra></extra>",
         ),
         row=2,
         col=1,

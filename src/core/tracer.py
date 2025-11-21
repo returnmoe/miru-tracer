@@ -372,6 +372,8 @@ class LLMTracer:
                 if prob_data["all_probs"] is not None
                 else None
             ),
+            token_text_raw=token_text[1],  # Raw token representation (visible \n, \t, etc.)
+            top_k_texts_raw=[t[1] for t in prob_data["top_k_texts"]],  # Raw representations for top-k
         )
 
         # Update state
