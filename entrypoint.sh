@@ -33,7 +33,7 @@ if [ "$MIRU_ENABLE_SSH" = "1" ]; then
             ssh-keygen -lf "$keyfile"
         fi
     done
-    echo "=================================="
+    echo "================================="
     echo ""
 else
     echo "SSH server is DISABLED (set MIRU_ENABLE_SSH=1 to enable)"
