@@ -41,5 +41,5 @@ fi
 
 # Start the application
 echo "Starting Miru Tracer application..."
-cd /app/src
+cd /app
 exec python3 app.py
