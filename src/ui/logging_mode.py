@@ -49,7 +49,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 "Edit the JSON to add/remove/modify messages. Supported roles: system, user, assistant"
             )
             chat_messages = gr.Code(
-                label="Chat Messages (JSON)",
+                label="Chat (JSON)",
                 language="json",
                 lines=10,
                 value=json.dumps(
@@ -163,8 +163,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 info="Adjusted shows sampling distribution (with temperature), Raw shows model's true confidence. Hover over heatmap cells to see both values.",
             )
 
-        viz_plot_heatmap = gr.Plot(label="Probability Heatmap")
-        viz_plot_confidence = gr.Plot(label="Confidence Analysis")
+        viz_plot_heatmap = gr.Plot(label="Probability heatmap")
+        viz_plot_confidence = gr.Plot(label="Confidence analysis")
 
         # Export Section
         gr.Markdown("### Export")

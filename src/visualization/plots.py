@@ -53,7 +53,9 @@ def plot_probability_visualizations(
                 # Select display probability based on mode
                 display_prob = (
                     step_data.top_k_raw_probs[i]
-                    if use_raw and hasattr(step_data, "top_k_raw_probs") and step_data.top_k_raw_probs
+                    if use_raw
+                    and hasattr(step_data, "top_k_raw_probs")
+                    and step_data.top_k_raw_probs
                     else step_data.top_k_probs[i]
                 )
                 row_probs.append(display_prob)
@@ -74,11 +76,14 @@ def plot_probability_visualizations(
                 token_text_decoded = step_data.top_k_texts[i]
                 raw_prob = (
                     step_data.top_k_raw_probs[i]
-                    if hasattr(step_data, "top_k_raw_probs") and step_data.top_k_raw_probs
+                    if hasattr(step_data, "top_k_raw_probs")
+                    and step_data.top_k_raw_probs
                     else step_data.top_k_probs[i]  # Fallback if raw not available
                 )
                 adj_prob = step_data.top_k_probs[i]
-                row_customdata.append([step_data.top_k_tokens[i], token_text_decoded, raw_prob, adj_prob])
+                row_customdata.append(
+                    [step_data.top_k_tokens[i], token_text_decoded, raw_prob, adj_prob]
+                )
             else:
                 row_probs.append(0)
                 row_texts.append("")
@@ -124,7 +129,9 @@ def plot_probability_visualizations(
             else step_data.probability  # Fallback if raw not available
         )
         adj_prob = step_data.probability
-        selected_row_customdata.append([step_data.token_id, token_text_decoded, raw_prob, adj_prob])
+        selected_row_customdata.append(
+            [step_data.token_id, token_text_decoded, raw_prob, adj_prob]
+        )
 
     # Create heatmap figure
     fig1 = make_subplots(
@@ -192,7 +199,7 @@ def plot_probability_visualizations(
 
     mode_label = "Raw (Pre-Temperature)" if use_raw else f"Adjusted (T={temperature})"
     fig1.update_layout(
-        title=f"Rank-Based Probability Heatmap - {mode_label}<br><sub>Selected row (gray) shows chosen token | Ranks show alternatives | Hover for both values</sub>",
+        title=f"Rank-Based Probability heatmap - {mode_label}<br><sub>Selected row (gray) shows chosen token | Ranks show alternatives | Hover for both values</sub>",
         height=max(550, (max_ranks + 1) * 50),
         dragmode=False,
         hovermode="closest",
@@ -205,15 +212,19 @@ def plot_probability_visualizations(
     # Use selected probability mode
     if use_raw:
         top1_probs = [
-            step.top_k_raw_probs[0]
-            if hasattr(step, "top_k_raw_probs") and step.top_k_raw_probs
-            else step.top_k_probs[0]
+            (
+                step.top_k_raw_probs[0]
+                if hasattr(step, "top_k_raw_probs") and step.top_k_raw_probs
+                else step.top_k_probs[0]
+            )
             for step in tracer.history
         ]
         selected_probs = [
-            step.raw_probability
-            if hasattr(step, "raw_probability")
-            else step.probability
+            (
+                step.raw_probability
+                if hasattr(step, "raw_probability")
+                else step.probability
+            )
             for step in tracer.history
         ]
     else:
@@ -223,7 +234,11 @@ def plot_probability_visualizations(
     # Calculate entropy for each step (using selected mode)
     entropies = []
     for step_data in tracer.history:
-        if use_raw and hasattr(step_data, "top_k_raw_probs") and step_data.top_k_raw_probs:
+        if (
+            use_raw
+            and hasattr(step_data, "top_k_raw_probs")
+            and step_data.top_k_raw_probs
+        ):
             probs = np.array(step_data.top_k_raw_probs)
         else:
             probs = np.array(step_data.top_k_probs)
@@ -284,7 +299,7 @@ def plot_probability_visualizations(
     fig2.update_yaxes(title_text="Entropy (nats)", row=2, col=1)
 
     fig2.update_layout(
-        title=f"Model Confidence Analysis - {mode_label}<br><sub>Top: Higher is more confident | Bottom: Lower is more certain</sub>",
+        title=f"Model Confidence analysis - {mode_label}<br><sub>Top: Higher is more confident | Bottom: Lower is more certain</sub>",
         height=600,
         showlegend=False,
         dragmode=False,
@@ -328,7 +343,11 @@ def plot_probability_visualizations(
                     if token_id in step_data.top_k_tokens:
                         token_idx = step_data.top_k_tokens.index(token_id)
                         # Use selected probability mode
-                        if use_raw and hasattr(step_data, "top_k_raw_probs") and step_data.top_k_raw_probs:
+                        if (
+                            use_raw
+                            and hasattr(step_data, "top_k_raw_probs")
+                            and step_data.top_k_raw_probs
+                        ):
                             probs_over_time.append(step_data.top_k_raw_probs[token_idx])
                         else:
                             probs_over_time.append(step_data.top_k_probs[token_idx])
@@ -406,7 +425,9 @@ def plot_token_distribution(tracer: LLMTracer, step: int = 0) -> Optional[go.Fig
     return fig
 
 
-def get_generation_stats(tracer: LLMTracer, probability_mode: str = "adjusted") -> Dict[str, Any]:
+def get_generation_stats(
+    tracer: LLMTracer, probability_mode: str = "adjusted"
+) -> Dict[str, Any]:
     """
     Calculate summary statistics for a generation.
 
@@ -425,15 +446,19 @@ def get_generation_stats(tracer: LLMTracer, probability_mode: str = "adjusted") 
     # Use selected probability mode
     if use_raw:
         top1_probs = [
-            step.top_k_raw_probs[0]
-            if hasattr(step, "top_k_raw_probs") and step.top_k_raw_probs
-            else step.top_k_probs[0]
+            (
+                step.top_k_raw_probs[0]
+                if hasattr(step, "top_k_raw_probs") and step.top_k_raw_probs
+                else step.top_k_probs[0]
+            )
             for step in tracer.history
         ]
         selected_probs = [
-            step.raw_probability
-            if hasattr(step, "raw_probability")
-            else step.probability
+            (
+                step.raw_probability
+                if hasattr(step, "raw_probability")
+                else step.probability
+            )
             for step in tracer.history
         ]
     else:
@@ -442,7 +467,11 @@ def get_generation_stats(tracer: LLMTracer, probability_mode: str = "adjusted") 
 
     entropies = []
     for step_data in tracer.history:
-        if use_raw and hasattr(step_data, "top_k_raw_probs") and step_data.top_k_raw_probs:
+        if (
+            use_raw
+            and hasattr(step_data, "top_k_raw_probs")
+            and step_data.top_k_raw_probs
+        ):
             probs = np.array(step_data.top_k_raw_probs)
         else:
             probs = np.array(step_data.top_k_probs)

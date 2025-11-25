@@ -50,8 +50,8 @@ def create_analysis_tab() -> gr.Tab:
 
         # Visualizations
         gr.Markdown("### Visualizations")
-        viz_plot_heatmap = gr.Plot(label="Probability Heatmap")
-        viz_plot_confidence = gr.Plot(label="Confidence Analysis")
+        viz_plot_heatmap = gr.Plot(label="Probability heatmap")
+        viz_plot_confidence = gr.Plot(label="Confidence analysis")
 
         def analyze_json_log(filepath, heatmap_r, prob_mode):
             """Analyze an uploaded JSON log file."""

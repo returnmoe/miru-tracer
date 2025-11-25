@@ -48,7 +48,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 "Edit the JSON to add/remove/modify messages. Supported roles: system, user, assistant"
             )
             chat_messages = gr.Code(
-                label="Chat Messages (JSON)",
+                label="Chat (JSON)",
                 language="json",
                 lines=8,
                 value=json_module.dumps(
@@ -111,7 +111,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         status_output = gr.Textbox(label="Status", interactive=False, lines=2)
 
         current_text_output = gr.Textbox(
-            label="Current Generation",
+            label="Output",
             lines=6,
             interactive=False,
             show_copy_button=True,
