@@ -451,12 +451,12 @@ class LLMTracer:
         log_top_k: int = 10,
         log_all_logits: bool = False,
         show_progress: bool = True,
-        stop_token_id: Optional[int] = None,
+        stop_at_eos: bool = True,
     ) -> str:
         """Generate multiple tokens automatically.
 
         Args:
-            stop_token_id: Optional token ID to stop generation at (ignores max_new_tokens)
+            stop_at_eos: If True (default), stop at EOS token. If False, continue to max_new_tokens.
         """
         # Validate max_new_tokens
         if max_new_tokens < 1:
@@ -474,12 +474,8 @@ class LLMTracer:
                 suppress_warnings=True,
             )
 
-            # Stop on custom stop token (higher priority than EOS)
-            if stop_token_id is not None and step_data.token_id == stop_token_id:
-                break
-
-            # Stop on EOS
-            if step_data.token_id == self.tokenizer.eos_token_id:
+            # Stop on EOS (if enabled)
+            if stop_at_eos and step_data.token_id == self.tokenizer.eos_token_id:
                 logger.debug(f"EOS token reached at step {i+1}")
                 break
 
@@ -495,14 +491,14 @@ class LLMTracer:
         top_p: float = 0.9,
         log_top_k: int = 10,
         log_all_logits: bool = False,
-        stop_token_id: Optional[int] = None,
+        stop_at_eos: bool = True,
     ):
         """Generate tokens one at a time, yielding after each step.
 
         Yields tuples of (current_text, step_number, is_complete)
 
         Args:
-            stop_token_id: Optional token ID to stop generation at (ignores max_new_tokens)
+            stop_at_eos: If True (default), stop at EOS token. If False, continue to max_new_tokens.
         """
         # Validate max_new_tokens
         if max_new_tokens < 1:
@@ -530,13 +526,8 @@ class LLMTracer:
             # Get current full text
             current_text = self.get_full_text()
 
-            # Check if we hit custom stop token (higher priority than EOS)
-            if stop_token_id is not None and step_data.token_id == stop_token_id:
-                yield (current_text, i + 1, True)
-                break
-
-            # Check if we hit EOS
-            if step_data.token_id == self.tokenizer.eos_token_id:
+            # Check if we hit EOS (if enabled)
+            if stop_at_eos and step_data.token_id == self.tokenizer.eos_token_id:
                 yield (current_text, i + 1, True)
                 break
             else:

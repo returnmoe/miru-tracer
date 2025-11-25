@@ -61,11 +61,11 @@ COPY src/ ./
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Expose Gradio port
-EXPOSE 7860
-
 # Expose SSH port
 EXPOSE 22
+
+# Expose Gradio port
+EXPOSE 7860
 
 # Run the application via entrypoint script
 ENTRYPOINT ["/entrypoint.sh"]

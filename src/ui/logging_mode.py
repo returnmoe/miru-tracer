@@ -91,19 +91,11 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             )
 
         with gr.Row():
-            stop_at_token_enabled = gr.Checkbox(
-                label="Stop at Token ID",
-                value=False,
-                info="Stop generation when specific token ID is encountered",
+            stop_at_eos_checkbox = gr.Checkbox(
+                label="Stop at EOS",
+                value=True,
+                info="Stop generation when end-of-sequence token is encountered.",
             )
-
-        stop_token_id = gr.Number(
-            label="Token ID",
-            placeholder="151643 (Example stop token for Qwen3)",
-            visible=False,
-            precision=0,
-            info="Stop generation at",
-        )
 
         # Logging Settings
         gr.Markdown("### Logging & Visualization")
@@ -214,8 +206,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             temp,
             topk,
             topp,
-            stop_enabled,
-            stop_token,
+            stop_at_eos,
             log_topk,
             heatmap_r,
             log_all_logits_check,
@@ -359,12 +350,6 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     logger.debug(f"Completion mode: prompt_length={len(prompt)} chars")
 
                 # Generate with streaming
-                # Only pass stop_token_id if enabled and value is provided
-                stop_token_param = None
-                if stop_enabled and stop_token is not None:
-                    stop_token_param = int(stop_token)
-                    logger.debug(f"Stop token enabled: {stop_token_param}")
-
                 first_step = True
                 for current_text, step_num, is_complete in tracer.generate_stream(
                     max_new_tokens=max_new_tokens,
@@ -374,7 +359,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     top_p=topp,
                     log_top_k=actual_log_top_k,
                     log_all_logits=actual_log_all_logits,
-                    stop_token_id=stop_token_param,
+                    stop_at_eos=stop_at_eos,
                 ):
                     # Get generated text
                     generated_text = tracer.get_generated_text()
@@ -490,8 +475,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             temp,
             topk,
             topp,
-            stop_enabled,
-            stop_token,
+            stop_at_eos,
             log_topk,
             heatmap_r,
             log_all_logits_check,
@@ -579,11 +563,6 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 tokens_before = len(tracer.history)
 
                 # Continue generation with NEW parameters
-                stop_token_param = None
-                if stop_enabled and stop_token is not None:
-                    stop_token_param = int(stop_token)
-                    logger.debug(f"Stop token enabled: {stop_token_param}")
-
                 for current_text, step_num, is_complete in tracer.generate_stream(
                     max_new_tokens=max_new_tokens,
                     strategy=strat,
@@ -592,7 +571,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     top_p=topp,
                     log_top_k=actual_log_top_k,
                     log_all_logits=actual_log_all_logits,
-                    stop_token_id=stop_token_param,
+                    stop_at_eos=stop_at_eos,
                 ):
                     # Get generated text
                     generated_text = tracer.get_generated_text()
@@ -918,12 +897,6 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             outputs=[completion_inputs, chat_inputs],
         )
 
-        stop_at_token_enabled.change(
-            fn=lambda x: gr.update(visible=x),
-            inputs=[stop_at_token_enabled],
-            outputs=[stop_token_id],
-        )
-
         # Wire up number input visibility controls
         log_all_logits_checkbox.change(
             fn=update_number_visibility,
@@ -956,8 +929,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 temperature,
                 top_k,
                 top_p,
-                stop_at_token_enabled,
-                stop_token_id,
+                stop_at_eos_checkbox,
                 log_top_k,
                 heatmap_ranks,
                 log_all_logits_checkbox,
@@ -987,8 +959,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 temperature,
                 top_k,
                 top_p,
-                stop_at_token_enabled,
-                stop_token_id,
+                stop_at_eos_checkbox,
                 log_top_k,
                 heatmap_ranks,
                 log_all_logits_checkbox,

@@ -93,6 +93,14 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 info="Warning: Logs ENTIRE vocabulary (~600KB per step for 150K vocab). May cause memory issues!",
             )
 
+        gr.Markdown("### Generation Control")
+        with gr.Row():
+            stop_at_eos_checkbox = gr.Checkbox(
+                label="Stop at EOS",
+                value=True,
+                info="Stop generation when end-of-sequence token is encountered.",
+            )
+
         with gr.Row():
             init_button = gr.Button("Initialize", variant="primary")
             reset_button = gr.Button("Reset", variant="secondary")
@@ -524,6 +532,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             n_tokens,
             log_topk,
             log_all_logits_check,
+            stop_at_eos,
         ):
             """Continue generating for N tokens autonomously."""
             if session_id is None:
@@ -610,8 +619,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         # Get current text
                         current_text = tracer.get_full_text()
 
-                        # Check if we hit EOS
-                        if step_data.token_id == tracer.tokenizer.eos_token_id:
+                        # Check if we hit EOS (if enabled)
+                        if stop_at_eos and step_data.token_id == tracer.tokenizer.eos_token_id:
                             # Get final probabilities
                             logger.info(
                                 f"Continue generation complete (EOS): session={session_id}, total_steps={len(tracer.history)}"
@@ -684,6 +693,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             override_id,
             log_topk,
             log_all_logits_check,
+            stop_at_eos,
         ):
             """Generate the next token."""
             if session_id is None:
@@ -803,8 +813,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     # Get updated text
                     current_text = tracer.get_full_text()
 
-                    # Check if we hit EOS
-                    if step_data.token_id == tracer.tokenizer.eos_token_id:
+                    # Check if we hit EOS (if enabled)
+                    if stop_at_eos and step_data.token_id == tracer.tokenizer.eos_token_id:
                         logger.info(
                             f"EOS token reached: session={session_id}, total_steps={len(tracer.history)}"
                         )
@@ -1272,6 +1282,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 token_override,
                 log_top_k,
                 log_all_logits_checkbox,
+                stop_at_eos_checkbox,
             ],
             outputs=[
                 status_output,
@@ -1319,6 +1330,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 continue_tokens,
                 log_top_k,
                 log_all_logits_checkbox,
+                stop_at_eos_checkbox,
             ],
             outputs=[
                 status_output,
