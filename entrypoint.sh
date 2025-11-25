@@ -8,16 +8,18 @@ if [ "$MIRU_SSH_ENABLE" = "1" ]; then
     echo "SSH server is ENABLED (MIRU_SSH_ENABLE=1)"
 
     # Generate SSH host keys if they don't exist
-    echo "Generating SSH host keys..."
+    echo "Generating SSH host keys ..."
     ssh-keygen -A
 
     # Set up SSH key from environment variable
     if [ ! -z "$MIRU_SSH_AUTHORIZED_KEYS" ]; then
+        echo "Setting up authorized keys ..."
         echo "$MIRU_SSH_AUTHORIZED_KEYS" > /root/.ssh/authorized_keys
     fi
 
     # Set SSH port from environment variable
     if [ ! -z "$MIRU_SSH_PORT" ]; then
+        echo "Setting SSH server port to $MIRU_SSH_PORT ..."
         sed -i '/^#*Port /d' /etc/ssh/sshd_config
         echo "Port $MIRU_SSH_PORT" >> /etc/ssh/sshd_config
     fi
@@ -33,7 +35,7 @@ if [ "$MIRU_SSH_ENABLE" = "1" ]; then
     fi
 
     # Start SSH daemon
-    echo "Starting SSH daemon..."
+    echo "Starting SSH daemon ..."
     /usr/sbin/sshd
 
     # Print SSH key fingerprints for client verification
@@ -51,6 +53,6 @@ else
 fi
 
 # Start the application
-echo "Starting Miru Tracer application..."
+echo "Starting Miru Tracer ..."
 cd /app
 exec python3 app.py
