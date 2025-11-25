@@ -55,7 +55,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     [
                         {
                             "role": "system",
-                            "content": "You are a helpful AI assistant.",
+                            "content": "You are a helpful assistant.",
                         },
                         {"role": "user", "content": "Tell me about the future of AI."},
                     ],
@@ -369,7 +369,16 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 )
 
                 current_step = str(len(tracer.history))
-                return status, "", df, radio_update, session_id, download_update, gr.update(interactive=False), gr.update(value=current_step)
+                return (
+                    status,
+                    "",
+                    df,
+                    radio_update,
+                    session_id,
+                    download_update,
+                    gr.update(interactive=False),
+                    gr.update(value=current_step),
+                )
 
             except Exception as e:
                 import traceback
@@ -520,8 +529,19 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     import traceback
 
                     error = f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-                    current_step = str(len(tracer.history)) if tracer and tracer.history else "0"
-                    return error, "", None, gr.update(), session_id, gr.update(), gr.update(interactive=False), gr.update(value=current_step)
+                    current_step = (
+                        str(len(tracer.history)) if tracer and tracer.history else "0"
+                    )
+                    return (
+                        error,
+                        "",
+                        None,
+                        gr.update(),
+                        session_id,
+                        gr.update(),
+                        gr.update(interactive=False),
+                        gr.update(value=current_step),
+                    )
 
         def continue_generation(
             session_id,
@@ -536,7 +556,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         ):
             """Continue generating for N tokens autonomously."""
             if session_id is None:
-                yield "Error: Not initialized. Click 'Initialize' first.", "", None, gr.update(), session_id, gr.update(), gr.update(interactive=False), gr.update()
+                yield "Error: Not initialized. Click 'Initialize' first.", "", None, gr.update(), session_id, gr.update(), gr.update(
+                    interactive=False
+                ), gr.update()
                 return
 
             session_manager = get_session_manager()
@@ -547,14 +569,18 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 logger.warning(
                     f"Continue generation failed: session {session_id} not found"
                 )
-                yield "Error: Session not found. Please reinitialize.", "", None, gr.update(), None, gr.update(), gr.update(interactive=False), gr.update()
+                yield "Error: Session not found. Please reinitialize.", "", None, gr.update(), None, gr.update(), gr.update(
+                    interactive=False
+                ), gr.update()
                 return
 
             # Validate n_tokens
             if n_tokens is None or n_tokens < 1:
                 error_msg = "Error: Number of tokens must be at least 1"
                 logger.warning(f"Invalid n_tokens in continue_generation: {n_tokens}")
-                yield error_msg, "", None, gr.update(), session_id, gr.update(), gr.update(interactive=False), gr.update()
+                yield error_msg, "", None, gr.update(), session_id, gr.update(), gr.update(
+                    interactive=False
+                ), gr.update()
                 return
 
             logger.info(
@@ -570,7 +596,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     # Validate state before operation
                     is_valid, error_msg = tracer.validate_state()
                     if not is_valid:
-                        yield f"Error: State corrupted: {error_msg}\nPlease reset and reinitialize.", "", None, gr.update(), session_id, gr.update(), gr.update(interactive=False), gr.update()
+                        yield f"Error: State corrupted: {error_msg}\nPlease reset and reinitialize.", "", None, gr.update(), session_id, gr.update(), gr.update(
+                            interactive=False
+                        ), gr.update()
                         return
 
                     # Determine actual logging parameters based on checkbox
@@ -603,7 +631,11 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                             download_update = prepare_download(session_id)
                             current_step = str(len(tracer.history))
 
-                            yield status, current_text, df, radio_update, session_id, download_update, gr.update(interactive=False), gr.update(value=current_step)
+                            yield status, current_text, df, radio_update, session_id, download_update, gr.update(
+                                interactive=False
+                            ), gr.update(
+                                value=current_step
+                            )
                             return
 
                         # Generate next token
@@ -620,7 +652,10 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         current_text = tracer.get_full_text()
 
                         # Check if we hit EOS (if enabled)
-                        if stop_at_eos and step_data.token_id == tracer.tokenizer.eos_token_id:
+                        if (
+                            stop_at_eos
+                            and step_data.token_id == tracer.tokenizer.eos_token_id
+                        ):
                             # Get final probabilities
                             logger.info(
                                 f"Continue generation complete (EOS): session={session_id}, total_steps={len(tracer.history)}"
@@ -630,14 +665,22 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                             current_step = str(len(tracer.history))
                             yield status, current_text, None, gr.update(
                                 choices=[("EOS", "0")], value="0"
-                            ), session_id, download_update, gr.update(interactive=False), gr.update(value=current_step)
+                            ), session_id, download_update, gr.update(
+                                interactive=False
+                            ), gr.update(
+                                value=current_step
+                            )
                             return
 
                         # Update status
                         status = f"Generating... Step {len(tracer.history)}/{len(tracer.history) + n_tokens - i - 1}"
                         download_update = prepare_download(session_id)
                         current_step = str(len(tracer.history))
-                        yield status, current_text, None, gr.update(), session_id, download_update, gr.update(interactive=True), gr.update(value=current_step)
+                        yield status, current_text, None, gr.update(), session_id, download_update, gr.update(
+                            interactive=True
+                        ), gr.update(
+                            value=current_step
+                        )
 
                     # After completion, get next probabilities and CACHE them
                     prob_data = tracer.cache_next_probabilities(
@@ -673,14 +716,22 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     )
 
                     current_step = str(len(tracer.history))
-                    yield status, current_text, df, radio_update, session_id, download_update, gr.update(interactive=False), gr.update(value=current_step)
+                    yield status, current_text, df, radio_update, session_id, download_update, gr.update(
+                        interactive=False
+                    ), gr.update(
+                        value=current_step
+                    )
 
                 except Exception as e:
                     import traceback
 
                     error = f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
                     current_step = str(len(tracer.history)) if tracer.history else "0"
-                    yield error, "", None, gr.update(), session_id, gr.update(), gr.update(interactive=False), gr.update(value=current_step)
+                    yield error, "", None, gr.update(), session_id, gr.update(), gr.update(
+                        interactive=False
+                    ), gr.update(
+                        value=current_step
+                    )
 
         def step_generation(
             session_id,
@@ -814,7 +865,10 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     current_text = tracer.get_full_text()
 
                     # Check if we hit EOS (if enabled)
-                    if stop_at_eos and step_data.token_id == tracer.tokenizer.eos_token_id:
+                    if (
+                        stop_at_eos
+                        and step_data.token_id == tracer.tokenizer.eos_token_id
+                    ):
                         logger.info(
                             f"EOS token reached: session={session_id}, total_steps={len(tracer.history)}"
                         )
@@ -889,8 +943,19 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         f"Error in step_generation for session {session_id}: {str(e)}",
                         exc_info=True,
                     )
-                    current_step = str(len(tracer.history)) if tracer and tracer.history else "0"
-                    return error, "", None, gr.update(), session_id, gr.update(), gr.update(interactive=False), gr.update(value=current_step)
+                    current_step = (
+                        str(len(tracer.history)) if tracer and tracer.history else "0"
+                    )
+                    return (
+                        error,
+                        "",
+                        None,
+                        gr.update(),
+                        session_id,
+                        gr.update(),
+                        gr.update(interactive=False),
+                        gr.update(value=current_step),
+                    )
 
         def stop_handler(session_id):
             """Handle stop button click - request stop and disable button."""
@@ -907,7 +972,14 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             return gr.update(interactive=False)
 
         def go_to_step(
-            session_id, target_step, temp, topk, topp, strat, log_topk, log_all_logits_check
+            session_id,
+            target_step,
+            temp,
+            topk,
+            topp,
+            strat,
+            log_topk,
+            log_all_logits_check,
         ):
             """Go back to a specific step number."""
             if session_id is None:
@@ -987,7 +1059,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
                     if steps_to_undo == 0:
                         # Already at target step
-                        current_text = tracer.get_full_text() if current_steps > 0 else ""
+                        current_text = (
+                            tracer.get_full_text() if current_steps > 0 else ""
+                        )
 
                         # Determine actual logging parameters based on checkbox
                         actual_log_top_k = int(log_topk) if log_topk else 10
@@ -1040,7 +1114,11 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                             current_step = str(len(tracer.history))
                             return (
                                 f"Error: Failed to undo step {current_steps - i}. Currently at step {len(tracer.history)}",
-                                tracer.get_full_text() if len(tracer.history) > 0 else "",
+                                (
+                                    tracer.get_full_text()
+                                    if len(tracer.history) > 0
+                                    else ""
+                                ),
                                 None,
                                 gr.update(),
                                 session_id,
@@ -1050,7 +1128,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                             )
 
                     # Get current text
-                    current_text = tracer.get_full_text() if len(tracer.history) > 0 else ""
+                    current_text = (
+                        tracer.get_full_text() if len(tracer.history) > 0 else ""
+                    )
 
                     # Determine actual logging parameters based on checkbox
                     actual_log_top_k = int(log_topk) if log_topk else 10
@@ -1070,7 +1150,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     # Build display
                     df, radio_choices = _build_prob_display(prob_data)
 
-                    status = f"Went back to step {target_step} (undid {steps_to_undo} steps)"
+                    status = (
+                        f"Went back to step {target_step} (undid {steps_to_undo} steps)"
+                    )
 
                     # Prepare download
                     download_update = prepare_download(session_id)
@@ -1100,8 +1182,19 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     import traceback
 
                     error = f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
-                    current_step = str(len(tracer.history)) if tracer and tracer.history else "0"
-                    return error, "", None, gr.update(), session_id, gr.update(), gr.update(interactive=False), gr.update(value=current_step)
+                    current_step = (
+                        str(len(tracer.history)) if tracer and tracer.history else "0"
+                    )
+                    return (
+                        error,
+                        "",
+                        None,
+                        gr.update(),
+                        session_id,
+                        gr.update(),
+                        gr.update(interactive=False),
+                        gr.update(value=current_step),
+                    )
 
         def update_mode_visibility(mode):
             """Update input visibility based on mode."""

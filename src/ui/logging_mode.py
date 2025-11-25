@@ -56,7 +56,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     [
                         {
                             "role": "system",
-                            "content": "You are a helpful AI assistant.",
+                            "content": "You are a helpful assistant.",
                         },
                         {
                             "role": "user",
