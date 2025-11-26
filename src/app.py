@@ -171,8 +171,8 @@ if __name__ == "__main__":
     debug_mode = os.getenv("MIRU_DEBUG", "0") == ("1" or "true")
 
     # Get server configuration from environment variables
-    server_name = os.getenv("MIRU_SERVER_NAME", "127.0.0.1")
-    server_port = int(os.getenv("MIRU_SERVER_PORT", "7860"))
+    server_name = os.getenv("GRADIO_SERVER_NAME", "127.0.0.1")
+    server_port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
 
     logger.info("Miru Tracer application starting...")
     logger.info(f"Server configuration: host={server_name}, port={server_port}")
