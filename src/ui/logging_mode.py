@@ -845,17 +845,14 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
             # Mode changed = can't continue
             if current_mode != original_mode:
-                logger.debug("Continue disabled: mode changed")
                 return gr.update(visible=True, interactive=False)
 
             # Check if inputs changed based on mode
             if current_mode == "Completion":
                 if current_prompt != original_prompt:
-                    logger.debug("Continue disabled: prompt changed")
                     return gr.update(visible=True, interactive=False)
             elif current_mode == "Chat":
                 if current_messages != original_messages:
-                    logger.debug("Continue disabled: messages changed")
                     return gr.update(visible=True, interactive=False)
 
             # All good - enable continue
