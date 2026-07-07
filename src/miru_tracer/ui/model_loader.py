@@ -1,202 +1,155 @@
 """Model loader tab for Gradio UI."""
 
-import gradio as gr
+from __future__ import annotations
+
 import json
+
+import gradio as gr
 import torch
+
+from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.session_manager import get_session_manager
-from miru_tracer.core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
 
-def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
+def create_model_loader_tab(model_manager: ModelManager):
     """
     Create the model loader tab interface.
 
-    Args:
-        model_manager: Singleton ModelManager instance
-
     Returns:
-        Gradio Tab component
+        (tab, (load_state_fn, load_state_outputs)) — the tab plus the handler
+        the app wires to its load event so a page refresh shows current state.
     """
 
-    # Helper functions for getting current state
     def get_memory_usage() -> str:
-        """Get current GPU memory usage."""
         if torch.cuda.is_available():
-            allocated = torch.cuda.memory_allocated(0) / 1e9  # GB
-            total = torch.cuda.get_device_properties(0).total_memory / 1e9  # GB
+            allocated = torch.cuda.memory_allocated(0) / 1e9
+            total = torch.cuda.get_device_properties(0).total_memory / 1e9
             percentage = (allocated / total) * 100 if total > 0 else 0
             return f"{allocated:.2f} GB / {total:.2f} GB ({percentage:.1f}%)"
-        else:
-            return "CPU mode (no GPU)"
+        return "CPU mode (no GPU)"
 
     def get_current_model_display() -> str:
-        """Get display text for currently loaded model."""
-        model_name = model_manager.get_model_name()
-        if model_name:
-            return model_name
-        else:
-            return "No model loaded"
-
-    # Get initial values
-    initial_model = get_current_model_display()
-    initial_memory = get_memory_usage()
+        return model_manager.get_model_name() or "No model loaded"
 
     with gr.Tab("Model Loader") as tab:
         gr.Markdown("Load a language model from HuggingFace.")
 
-        # Status display row
         with gr.Row():
             current_model_display = gr.Textbox(
                 label="Current",
-                value=initial_model,
+                value=get_current_model_display(),
                 interactive=False,
                 scale=3,
             )
             memory_usage_display = gr.Textbox(
                 label="VRAM usage",
-                value=initial_memory,
+                value=get_memory_usage(),
                 interactive=False,
                 scale=2,
             )
 
         with gr.Row():
             model_info_display = gr.Code(
-                label="Details",
-                language="json",
-                interactive=False,
-                value="",
+                label="Details", language="json", interactive=False, value=""
             )
 
-        with gr.Row():
-            with gr.Column(scale=3):
-                model_name = gr.Textbox(
-                    label="Load a new model",
-                    placeholder="e.g., Qwen/Qwen3-1.7B",
-                    info="Load a model using its HF identifier",
+        with gr.Row(), gr.Column(scale=3):
+            model_name = gr.Textbox(
+                label="Load a new model",
+                placeholder="e.g., Qwen/Qwen3-0.6B",
+                info="Load a model using its HF identifier",
+            )
+            with gr.Row():
+                quantization = gr.Radio(
+                    choices=["none", "4bit", "8bit"],
+                    value="none",
+                    label="Quantization",
+                    info="Reduce memory usage (requires CUDA)",
                 )
-
-                with gr.Row():
-                    quantization = gr.Radio(
-                        choices=["none", "4bit", "8bit"],
-                        value="none",
-                        label="Quantization",
-                        info="Reduce memory usage (requires CUDA)",
-                    )
-
-                    trust_remote_code = gr.Checkbox(
-                        label="Trust remote code",
-                        value=False,
-                        info="Security risk: allows model to execute arbitrary code",
-                    )
-
-                    minimize_ram = gr.Checkbox(
-                        label="Minimize RAM usage",
-                        value=False,
-                        info="Load directly to GPU with minimal RAM (slower loading)",
-                    )
+                trust_remote_code = gr.Checkbox(
+                    label="Trust remote code",
+                    value=False,
+                    info="Security risk: allows model to execute arbitrary code",
+                )
+                minimize_ram = gr.Checkbox(
+                    label="Minimize RAM usage",
+                    value=False,
+                    info="Load directly to GPU with minimal RAM (slower loading)",
+                )
 
         with gr.Row():
             status_output = gr.Textbox(
                 label="Status",
                 lines=5,
                 interactive=False,
-                show_copy_button=True,
+                buttons=["copy"],
             )
 
         with gr.Row():
             load_button = gr.Button("Load Model", variant="primary", size="lg")
             unload_button = gr.Button("Unload Model", variant="stop", size="lg")
 
-        def unload_model_handler():
-            """Handle model unloading."""
-            try:
-                session_manager = get_session_manager()
-                session_count = session_manager.get_session_count()
+        outputs = [
+            status_output,
+            model_info_display,
+            current_model_display,
+            memory_usage_display,
+            load_button,
+            unload_button,
+        ]
 
-                # Check if there are active sessions
-                if session_count > 0:
-                    # Clear sessions with warning
-                    logger.warning(
-                        f"Clearing {session_count} active session(s) before unload"
-                    )
-                    cleared_count = session_manager.clear_all_sessions()
+        def buttons_enabled():
+            return gr.update(interactive=True), gr.update(interactive=True)
 
-                    # Unload model
-                    result = model_manager.unload_model()
-
-                    status_msg = result["message"]
-                    status_msg += f"\n\n{cleared_count} active Interactive Mode session(s) were cleared."
-                    status_msg += "\nAny in-progress generation work has been lost."
-                else:
-                    # No sessions, just unload
-                    result = model_manager.unload_model()
-                    status_msg = result["message"]
-
-                # Add memory freed info if available
-                if torch.cuda.is_available():
-                    status_msg += f"\n\nGPU memory has been freed."
-
-                # Warn about Logging Mode
-                status_msg += "\n\nNote: Any Logging Mode sessions in other tabs will be invalidated."
-                status_msg += "\nYou will need to start a new generation in those tabs."
-
-                logger.info(f"Model unload completed via UI")
-
-                # Return updated displays
-                return (
-                    status_msg,  # status_output
-                    "",  # model_info_display (clear it)
-                    "No model loaded",  # current_model_display
-                    "N/A",  # memory_usage_display
-                    gr.update(interactive=True),  # load_button (re-enable)
-                    gr.update(interactive=True),  # unload_button (re-enable)
-                )
-
-            except RuntimeError as e:
-                # Handle concurrent operation error
-                error_msg = f"Error: {str(e)}"
-                logger.warning(f"Unload blocked: {str(e)}")
-                return (
-                    error_msg,
-                    gr.update(),  # model_info_display (no change)
-                    gr.update(),  # current_model_display (no change)
-                    gr.update(),  # memory_usage_display (no change)
-                    gr.update(interactive=True),  # load_button (re-enable)
-                    gr.update(interactive=True),  # unload_button (re-enable)
-                )
+        def buttons_disabled():
+            return gr.update(interactive=False), gr.update(interactive=False)
 
         def load_model_handler(model_name_val, quant_val, trust_val, minimize_ram_val):
-            """Handle model loading."""
+            """Load a model, streaming status so the user sees progress."""
             if not model_name_val:
                 logger.warning("Model load attempted with empty model name")
-                return (
+                yield (
                     "Error: Please enter a model name",
                     "",
                     get_current_model_display(),
                     get_memory_usage(),
-                    gr.update(interactive=True),  # load_button
-                    gr.update(interactive=True),  # unload_button
+                    *buttons_enabled(),
                 )
+                return
 
             logger.info(
-                f"Model load requested via UI: {model_name_val} (quantization={quant_val}, trust_remote_code={trust_val}, minimize_ram={minimize_ram_val})"
+                f"Model load requested via UI: {model_name_val} "
+                f"(quantization={quant_val}, trust_remote_code={trust_val}, "
+                f"minimize_ram={minimize_ram_val})"
             )
-
             if trust_val:
                 logger.warning("trust_remote_code=True enabled (security risk)")
 
-            try:
-                status = f"Loading model: {model_name_val}\n"
-                status += f"Quantization: {quant_val}\n"
-                if trust_val:
-                    status += "Warning: trust_remote_code=True\n"
-                if minimize_ram_val:
-                    status += "RAM optimization: enabled (slower loading)\n"
-                status += "\nPlease wait...\n"
+            # Immediate feedback while the (long) download/load runs.
+            progress_lines = [f"Loading model: {model_name_val}"]
+            if quant_val != "none":
+                progress_lines.append(f"Quantization: {quant_val}")
+            if trust_val:
+                progress_lines.append("Warning: trust_remote_code=True")
+            if minimize_ram_val:
+                progress_lines.append("RAM optimization: enabled (slower loading)")
+            progress_lines.append("")
+            progress_lines.append(
+                "Downloading/loading weights — this can take a while "
+                "for large models. Please wait..."
+            )
+            yield (
+                "\n".join(progress_lines),
+                gr.update(),
+                gr.update(),
+                gr.update(),
+                *buttons_disabled(),
+            )
 
+            try:
                 model, tokenizer, device, info = model_manager.load_model(
                     model_name=model_name_val,
                     quantization=quant_val,
@@ -204,126 +157,124 @@ def create_model_loader_tab(model_manager: ModelManager) -> gr.Tab:
                     minimize_ram_usage=minimize_ram_val,
                 )
 
-                success_msg = f"Model loaded successfully.\n"
-                success_msg += f"Device: {info['device_name']}\n"
-                success_msg += f"Vocabulary size: {info['vocab_size']:,}\n"
-                success_msg += f"Parameters: {info['num_parameters_b']:.2f}B"
-
+                success_lines = [
+                    "Model loaded successfully.",
+                    f"Device: {info['device_name']}",
+                    f"Vocabulary size: {info['vocab_size']:,}",
+                    f"Parameters: {info['num_parameters_b']:.2f}B",
+                ]
                 if info["device"] == "cuda":
-                    success_msg += f"\nVRAM: {info['vram_gb']:.2f} GB"
-
-                # Display VLM warning
+                    success_lines.append(f"VRAM: {info['vram_gb']:.2f} GB")
+                if info.get("quantization_note"):
+                    success_lines.append(f"\n⚠️ {info['quantization_note']}")
                 if info.get("is_vlm"):
-                    success_msg += f"\n\n⚠️ {info['vlm_warning']}"
+                    success_lines.append(f"\n⚠️ {info['vlm_warning']}")
 
                 logger.info(f"Model load successful via UI: {model_name_val}")
-
-                return (
-                    success_msg,
+                yield (
+                    "\n".join(success_lines),
                     json.dumps(info, indent=2),
-                    model_name_val,  # current_model_display
-                    get_memory_usage(),  # memory_usage_display
-                    gr.update(interactive=True),  # load_button (re-enable)
-                    gr.update(interactive=True),  # unload_button (re-enable)
+                    model_name_val,
+                    get_memory_usage(),
+                    *buttons_enabled(),
                 )
 
             except RuntimeError as e:
-                # Handle concurrent operation error
-                error_msg = f"Error: {str(e)}"
-                logger.warning(f"Load blocked: {str(e)}")
-                return (
-                    error_msg,
-                    gr.update(),  # model_info_display (no change)
-                    gr.update(),  # current_model_display (no change)
-                    gr.update(),  # memory_usage_display (no change)
-                    gr.update(interactive=True),  # load_button (re-enable)
-                    gr.update(interactive=True),  # unload_button (re-enable)
+                # Concurrent load/unload in progress
+                logger.warning(f"Load blocked: {e}")
+                yield (
+                    f"Error: {e}",
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    *buttons_enabled(),
                 )
-
             except Exception as e:
-                error_msg = f"Error loading model:\n\n{str(e)}"
                 logger.error(
-                    f"Model load failed via UI: {model_name_val} - {str(e)}",
-                    exc_info=True,
+                    f"Model load failed via UI: {model_name_val} - {e}", exc_info=True
                 )
-                return (
-                    error_msg,
+                yield (
+                    f"Error loading model:\n\n{e}",
                     "",
                     get_current_model_display(),
                     get_memory_usage(),
-                    gr.update(interactive=True),  # load_button (re-enable)
-                    gr.update(interactive=True),  # unload_button (re-enable)
+                    *buttons_enabled(),
+                )
+
+        def unload_model_handler():
+            try:
+                session_manager = get_session_manager()
+                cleared_count = session_manager.clear_all_sessions()
+
+                result = model_manager.unload_model()
+                status_msg = result["message"]
+                if cleared_count:
+                    status_msg += (
+                        f"\n\n{cleared_count} active Interactive Mode session(s) "
+                        "were cleared.\nAny in-progress generation work has been lost."
+                    )
+                if torch.cuda.is_available():
+                    status_msg += "\n\nGPU memory has been freed."
+                status_msg += (
+                    "\n\nNote: Any Logging Mode sessions in other tabs will be "
+                    "invalidated.\nYou will need to start a new generation in those tabs."
+                )
+
+                logger.info("Model unload completed via UI")
+                return (
+                    status_msg,
+                    "",
+                    "No model loaded",
+                    get_memory_usage(),
+                    *buttons_enabled(),
+                )
+            except RuntimeError as e:
+                logger.warning(f"Unload blocked: {e}")
+                return (
+                    f"Error: {e}",
+                    gr.update(),
+                    gr.update(),
+                    gr.update(),
+                    *buttons_enabled(),
                 )
 
         load_button.click(
             fn=load_model_handler,
             inputs=[model_name, quantization, trust_remote_code, minimize_ram],
-            outputs=[
-                status_output,
-                model_info_display,
-                current_model_display,
-                memory_usage_display,
-                load_button,
-                unload_button,
-            ],
+            outputs=outputs,
         )
-
-        unload_button.click(
-            fn=unload_model_handler,
-            inputs=[],
-            outputs=[
-                status_output,
-                model_info_display,
-                current_model_display,
-                memory_usage_display,
-                load_button,
-                unload_button,
-            ],
-        )
+        unload_button.click(fn=unload_model_handler, inputs=[], outputs=outputs)
 
         def load_current_state():
-            """Load current model state when page loads/reloads."""
-            current_model = get_current_model_display()
-            current_memory = get_memory_usage()
-
-            # Generate status message based on current state
+            """Restore displays after a page refresh."""
             status = ""
             model_info = ""
-
             if model_manager.is_loaded():
                 model = model_manager.get_model()
                 tokenizer = model_manager.get_tokenizer()
-                device = model_manager.get_device()
-                model_name = model_manager.get_model_name()
-
-                if model is not None:
-                    num_params = model.num_parameters() / 1e9
-
-                    # Build status message
-                    status += f"Device: {device}\n"
-                    status += f"Parameters: {num_params:.2f}B\n"
-                    status += f"Vocabulary size: {len(tokenizer):,}"
-
-                    # Build model info JSON
-                    info = {
-                        "model_name": model_name,
-                        "device": device,
-                        "vocab_size": len(tokenizer) if tokenizer else 0,
+                num_params = model.num_parameters() / 1e9
+                status = (
+                    f"Device: {model_manager.get_device()}\n"
+                    f"Parameters: {num_params:.2f}B\n"
+                    f"Vocabulary size: {len(tokenizer):,}"
+                )
+                model_info = json.dumps(
+                    {
+                        "model_name": model_manager.get_model_name(),
+                        "device": model_manager.get_device(),
+                        "vocab_size": len(tokenizer),
                         "num_parameters_b": num_params,
-                    }
-                    model_info = json.dumps(info, indent=2)
+                    },
+                    indent=2,
+                )
             else:
-                status = "No model currently loaded.\n\nLoad a model using the controls above."
+                status = (
+                    "No model currently loaded.\n\n"
+                    "Load a model using the controls above."
+                )
+            return status, get_current_model_display(), get_memory_usage(), model_info
 
-            return status, current_model, current_memory, model_info
-
-    # Return tab and state components for app-level load event
     return tab, (
         load_current_state,
-        [
-            status_output,
-            current_model_display,
-            memory_usage_display,
-            model_info_display,
-        ],
+        [status_output, current_model_display, memory_usage_display, model_info_display],
     )

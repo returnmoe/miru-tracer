@@ -52,7 +52,6 @@ else
     echo "SSH server is DISABLED (set MIRU_SSH_ENABLE=1 to enable)"
 fi
 
-# Start the application
+# Start the application (installed as a package; no working-directory dependency)
 echo "Starting Miru Tracer ..."
-cd /app
-exec python3 app.py
+exec python3 -m miru_tracer

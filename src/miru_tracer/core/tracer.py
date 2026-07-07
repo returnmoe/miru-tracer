@@ -22,8 +22,9 @@ the prompt is never re-tokenized after ``reset()``.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime
-from typing import Any, Iterator, Optional
+from typing import Any
 
 import torch
 
@@ -130,7 +131,7 @@ class LLMTracer:
     def reset(
         self,
         prompt: str = "",
-        messages: Optional[list[dict[str, str]]] = None,
+        messages: list[dict[str, str]] | None = None,
         mode: str = "auto",
     ) -> None:
         """Reset generation state with a new prompt or chat messages.
@@ -283,7 +284,7 @@ class LLMTracer:
     def step(
         self,
         params: SamplingParams | None = None,
-        token_id: Optional[int] = None,
+        token_id: int | None = None,
         log_top_k: int = 10,
         log_full_probs: bool = False,
     ) -> TokenStep:
@@ -433,7 +434,7 @@ class LLMTracer:
 
     # ------------------------------------------------------------ diagnostics
 
-    def validate_state(self) -> tuple[bool, Optional[str]]:
+    def validate_state(self) -> tuple[bool, str | None]:
         """Cheap internal consistency checks (no re-tokenization)."""
         expected_len = self._prompt_len + len(self.history)
         if self.seq_len != expected_len:

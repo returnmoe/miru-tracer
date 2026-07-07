@@ -1,10 +1,11 @@
 """Token Lookup tab for Gradio UI."""
 
 import gradio as gr
+
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.tokenizer_utils import (
-    safe_decode_token,
     extract_token_bytes,
+    safe_decode_token,
 )
 
 
@@ -59,7 +60,7 @@ def create_token_lookup_tab(model_manager: ModelManager) -> gr.Tab:
                 if decoded:
                     result += f"Decoded: {decoded!r}\n\n"
                 else:
-                    result += f"Decoded: [error]\n\n"
+                    result += "Decoded: [error]\n\n"
 
                 # Try to show the raw bytes
                 token_bytes = extract_token_bytes(tokenizer, token_str)
@@ -81,7 +82,7 @@ def create_token_lookup_tab(model_manager: ModelManager) -> gr.Tab:
                     if (
                         decoded and decoded in special_tokens
                     ) or token_str in special_tokens:
-                        result += f"\nThis is a special token."
+                        result += "\nThis is a special token."
 
                 return result
 

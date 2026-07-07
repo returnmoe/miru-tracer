@@ -12,7 +12,6 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional
 
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.tracer import LLMTracer
@@ -71,7 +70,7 @@ class SessionManager:
         logger.info(f"Session created: {session_id} (device={device})")
         return session_id
 
-    def get_session(self, session_id: str) -> Optional[Session]:
+    def get_session(self, session_id: str) -> Session | None:
         """
         Get a session (tracer + lock) in a single lock acquisition.
 
@@ -88,7 +87,7 @@ class SessionManager:
             session.last_access = datetime.now()
             return session
 
-    def get_tracer(self, session_id: str) -> Optional[LLMTracer]:
+    def get_tracer(self, session_id: str) -> LLMTracer | None:
         """Get the tracer for a session (prefer get_session for lock access)."""
         session = self.get_session(session_id)
         return session.tracer if session else None
@@ -141,7 +140,7 @@ class SessionManager:
         with self._global_lock:
             return len(self._sessions)
 
-    def get_session_info(self, session_id: str) -> Optional[dict]:
+    def get_session_info(self, session_id: str) -> dict | None:
         """Get bookkeeping info about a session, or None if it doesn't exist."""
         with self._global_lock:
             session = self._sessions.get(session_id)
@@ -179,7 +178,7 @@ class SessionManager:
 
 
 # Global singleton instance
-_session_manager: Optional[SessionManager] = None
+_session_manager: SessionManager | None = None
 
 
 def get_session_manager() -> SessionManager:

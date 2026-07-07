@@ -17,7 +17,7 @@ Tracer remain loadable in the Log Analysis tab.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 SCHEMA_VERSION = 2
 
@@ -34,17 +34,17 @@ class TokenStep:
     top_k_probs: list[float]  # Post-temperature (adjusted) probabilities
     top_k_texts: list[str]
     raw_probability: float = 0.0  # Pre-temperature (raw model) probability
-    top_k_raw_probs: Optional[list[float]] = None  # Pre-temperature probabilities
-    full_probs: Optional[list[float]] = None  # Full-vocabulary probabilities (optional)
-    token_text_raw: Optional[str] = None  # Raw token representation (visible \n, \t, ...)
-    top_k_texts_raw: Optional[list[str]] = None  # Raw representations for top-k tokens
+    top_k_raw_probs: list[float] | None = None  # Pre-temperature probabilities
+    full_probs: list[float] | None = None  # Full-vocabulary probabilities (optional)
+    token_text_raw: str | None = None  # Raw token representation (visible \n, \t, ...)
+    top_k_texts_raw: list[str] | None = None  # Raw representations for top-k tokens
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TokenStep":
+    def from_dict(cls, data: dict[str, Any]) -> TokenStep:
         """Build a TokenStep from a v1 or v2 log entry."""
         return cls(
             step=data["step"],
@@ -70,7 +70,7 @@ class GenerationLog:
 
     mode: str = "unknown"
     prompt: str = ""
-    messages: Optional[list[dict[str, str]]] = None
+    messages: list[dict[str, str]] | None = None
     generated_text: str = ""
     full_text: str = ""
     timestamp: str = "unknown"

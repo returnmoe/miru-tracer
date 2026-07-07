@@ -1,7 +1,6 @@
 """Tokenizer utility functions for handling byte-level BPE tokens."""
 
 from functools import lru_cache
-from typing import Optional, Tuple
 
 
 @lru_cache(maxsize=1)
@@ -19,10 +18,10 @@ def _gpt2_byte_decoder() -> dict[str, int]:
             bs.append(b)
             cs.append(2**8 + n)
             n += 1
-    return {chr(c): b for b, c in zip(bs, cs)}
+    return {chr(c): b for b, c in zip(bs, cs, strict=True)}
 
 
-def extract_token_bytes(tokenizer, token_str: str) -> Optional[bytes]:
+def extract_token_bytes(tokenizer, token_str: str) -> bytes | None:
     """
     Extract the actual byte values from a byte-level BPE token string.
 
@@ -52,7 +51,7 @@ def extract_token_bytes(tokenizer, token_str: str) -> Optional[bytes]:
 
 def safe_decode_token(
     tokenizer, token_id: int
-) -> Tuple[Optional[str], str, Optional[str]]:
+) -> tuple[str | None, str, str | None]:
     """
     Safely decode a single token ID for display.
 
@@ -101,9 +100,10 @@ def detect_byte_level_bpe(tokenizer) -> bool:
         True if byte-level BPE, False otherwise
     """
     # Check for common indicators
-    if hasattr(tokenizer, "backend_tokenizer"):
-        if hasattr(tokenizer.backend_tokenizer, "decoder"):
-            decoder_type = type(tokenizer.backend_tokenizer.decoder).__name__
-            if "ByteLevel" in decoder_type:
-                return True
+    if hasattr(tokenizer, "backend_tokenizer") and hasattr(
+        tokenizer.backend_tokenizer, "decoder"
+    ):
+        decoder_type = type(tokenizer.backend_tokenizer.decoder).__name__
+        if "ByteLevel" in decoder_type:
+            return True
     return False

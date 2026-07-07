@@ -2,10 +2,11 @@
 
 import gradio as gr
 import pandas as pd
+
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.tokenizer_utils import (
-    safe_decode_token,
     detect_byte_level_bpe,
+    safe_decode_token,
 )
 
 
@@ -62,20 +63,7 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
                 # Tokenize with add_special_tokens=False (don't auto-add BOS/EOS)
                 token_ids = tokenizer.encode(text, add_special_tokens=False)
 
-                # Detect special token injection
-                vocab = tokenizer.get_vocab()
-                special_tokens_found = []
-                special_token_ids = set()
-
-                # Get special token IDs
-                if hasattr(tokenizer, "all_special_ids"):
-                    special_token_ids = set(tokenizer.all_special_ids)
-
-                # Check for special tokens that aren't in the main vocab
-                if hasattr(tokenizer, "all_special_tokens"):
-                    for special_token in tokenizer.all_special_tokens:
-                        if special_token in text and special_token not in vocab:
-                            special_tokens_found.append(special_token)
+                special_token_ids = set(getattr(tokenizer, "all_special_ids", []))
 
                 # Build dataframe
                 rows = []

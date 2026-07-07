@@ -6,7 +6,7 @@ import gc
 import os
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 import torch
 from transformers import (
@@ -229,15 +229,15 @@ class ModelManager:
             with self._lock:
                 self._is_loading = False
 
-    def get_model(self) -> Optional[Any]:
+    def get_model(self) -> Any | None:
         """Get currently loaded model."""
         return self._model
 
-    def get_tokenizer(self) -> Optional[Any]:
+    def get_tokenizer(self) -> Any | None:
         """Get currently loaded tokenizer."""
         return self._tokenizer
 
-    def get_device(self) -> Optional[str]:
+    def get_device(self) -> str | None:
         """Get current device."""
         return self._device
 
@@ -245,7 +245,7 @@ class ModelManager:
         """Check if a model is currently loaded."""
         return self._model is not None and self._tokenizer is not None
 
-    def get_model_name(self) -> Optional[str]:
+    def get_model_name(self) -> str | None:
         """Get currently loaded model name."""
         return self._model_name
 
