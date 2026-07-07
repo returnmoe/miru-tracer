@@ -1,30 +1,5 @@
- # Default to CPU-only Pytorch
+# Thin shim for `pip install -r requirements.txt` muscle memory.
+# The real dependency specification lives in pyproject.toml;
+# constraints.txt pins the fully verified environment.
 --extra-index-url https://download.pytorch.org/whl/cpu
-
-# Core ML/DL dependencies
-torch~=2.9.1
-transformers~=4.57.1
-triton~=3.5.1
-accelerate~=1.11.0
-bitsandbytes~=0.48.2
-
-# Gradio for UI
-gradio~=5.49.1
-
-# Required for Python 3.13+ compatibility (audioop was removed)
-audioop-lts~=0.2.2
-
-# Environment variables
-python-dotenv~=1.2.1
-
-# Visualization
-plotly~=6.5.0
-pandas~=2.3.3
-numpy~=2.3.5
-
-# Tokenization & Serialization
-sentencepiece~=0.2.1
-protobuf~=6.33.1
-
-# Flash attention for performance (requires CUDA)
-# flash-attn~=2.8.3
+-e .

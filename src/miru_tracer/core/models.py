@@ -7,13 +7,18 @@ import torch
 import threading
 from transformers import (
     AutoModelForCausalLM,
-    AutoModelForVision2Seq,
     AutoTokenizer,
     BitsAndBytesConfig,
 )
+
+try:
+    # transformers >= 5 renamed AutoModelForVision2Seq
+    from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
+except ImportError:  # pragma: no cover - transformers 4.x
+    from transformers import AutoModelForVision2Seq
 import warnings
 import time
-from core.logging_config import get_logger
+from miru_tracer.core.logging_config import get_logger
 
 warnings.filterwarnings("ignore")
 logger = get_logger(__name__)

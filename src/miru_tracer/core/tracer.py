@@ -3,9 +3,9 @@
 from typing import Optional, List, Dict, Any
 import torch
 from datetime import datetime
-from core.models import TokenStep
-from core.tokenizer_utils import safe_decode_token
-from core.logging_config import get_logger
+from miru_tracer.core.models import TokenStep
+from miru_tracer.core.tokenizer_utils import safe_decode_token
+from miru_tracer.core.logging_config import get_logger
 
 logger = get_logger(__name__)
 

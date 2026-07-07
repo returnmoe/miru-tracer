@@ -4,8 +4,8 @@ from typing import Optional, List, Dict, Any
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from core.tracer import LLMTracer
-from core.tokenizer_utils import safe_decode_token
+from miru_tracer.core.tracer import LLMTracer
+from miru_tracer.core.tokenizer_utils import safe_decode_token
 
 
 def plot_probability_visualizations(

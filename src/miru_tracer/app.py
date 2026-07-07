@@ -6,32 +6,31 @@ token.
 """
 
 from __future__ import annotations
-from typing import Iterable
-import os
+
 from dotenv import load_dotenv
 import gradio as gr
+
+from miru_tracer import __version__
+from miru_tracer.config import Settings
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Setup logging before importing other modules
-from core.logging_config import setup_logging, get_logger
+from miru_tracer.core.logging_config import setup_logging, get_logger
 
 setup_logging()
 logger = get_logger(__name__)
 
 from gradio.themes.base import Base
 from gradio.themes.utils import colors, fonts, sizes
-from core.models import ModelManager
-from ui.model_loader import create_model_loader_tab
-from ui.tokenize_text import create_tokenize_text_tab
-from ui.token_lookup import create_token_lookup_tab
-from ui.logging_mode import create_logging_mode_tab
-from ui.interactive_mode import create_interactive_mode_tab
-from ui.analysis import create_analysis_tab
-
-# Application version
-__version__ = "0.0.1"
+from miru_tracer.core.models import ModelManager
+from miru_tracer.ui.model_loader import create_model_loader_tab
+from miru_tracer.ui.tokenize_text import create_tokenize_text_tab
+from miru_tracer.ui.token_lookup import create_token_lookup_tab
+from miru_tracer.ui.logging_mode import create_logging_mode_tab
+from miru_tracer.ui.interactive_mode import create_interactive_mode_tab
+from miru_tracer.ui.analysis import create_analysis_tab
 
 
 class MiruTheme(Base):
@@ -164,27 +163,29 @@ def create_app() -> gr.Blocks:
     return app
 
 
-demo = create_app()
-
-if __name__ == "__main__":
-    # Check if debug mode is enabled via environment variable
-    debug_mode = os.getenv("MIRU_DEBUG", "0") == ("1" or "true")
-
-    # Get server configuration from environment variables
-    server_name = os.getenv("GRADIO_SERVER_NAME", "127.0.0.1")
-    server_port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
+def main() -> None:
+    """Launch the Miru Tracer web application."""
+    settings = Settings.from_env()
 
     logger.info("Miru Tracer application starting...")
-    logger.info(f"Server configuration: host={server_name}, port={server_port}")
-    logger.info(f"Debug mode: {'enabled' if debug_mode else 'disabled'}")
+    logger.info(
+        f"Server configuration: host={settings.server_name}, port={settings.server_port}"
+    )
+    logger.info(f"Debug mode: {'enabled' if settings.debug else 'disabled'}")
+
+    demo = create_app()
 
     # Enable queue for event cancellation support
     demo.queue()
 
     demo.launch(
-        server_name=server_name,
-        server_port=server_port,
+        server_name=settings.server_name,
+        server_port=settings.server_port,
         share=False,
         show_error=True,
-        debug=debug_mode,
+        debug=settings.debug,
     )
+
+
+if __name__ == "__main__":
+    main()

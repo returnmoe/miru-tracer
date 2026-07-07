@@ -2,8 +2,8 @@
 
 import gradio as gr
 import pandas as pd
-from core.models import ModelManager
-from core.tokenizer_utils import (
+from miru_tracer.core.models import ModelManager
+from miru_tracer.core.tokenizer_utils import (
     safe_decode_token,
     detect_byte_level_bpe,
 )

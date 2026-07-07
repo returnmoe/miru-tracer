@@ -4,8 +4,8 @@ import gradio as gr
 import json
 import numpy as np
 from typing import Optional, List
-from visualization.plots import plot_probability_visualizations
-from core.tracer import TokenStep
+from miru_tracer.visualization.plots import plot_probability_visualizations
+from miru_tracer.core.tracer import TokenStep
 
 
 def create_analysis_tab() -> gr.Tab:

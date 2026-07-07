@@ -4,10 +4,10 @@ import gradio as gr
 import json
 import time
 from typing import Dict, List
-from core.models import ModelManager
-from core.tracer import LLMTracer
-from visualization.plots import plot_probability_visualizations, get_generation_stats
-from core.logging_config import get_logger
+from miru_tracer.core.models import ModelManager
+from miru_tracer.core.tracer import LLMTracer
+from miru_tracer.visualization.plots import plot_probability_visualizations, get_generation_stats
+from miru_tracer.core.logging_config import get_logger
 
 logger = get_logger(__name__)
 

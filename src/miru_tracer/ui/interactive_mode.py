@@ -3,10 +3,10 @@
 import gradio as gr
 import pandas as pd
 from typing import Optional, Tuple
-from core.models import ModelManager
-from core.tracer import LLMTracer
-from core.session_manager import get_session_manager
-from core.logging_config import get_logger
+from miru_tracer.core.models import ModelManager
+from miru_tracer.core.tracer import LLMTracer
+from miru_tracer.core.session_manager import get_session_manager
+from miru_tracer.core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
