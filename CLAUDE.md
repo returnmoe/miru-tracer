@@ -8,192 +8,122 @@ Miru Tracer is an experimental Gradio-based web application for interactive anal
 
 **Target users**: Researchers, educators, and developers debugging LLM prompts and generation behavior.
 
-**Tech stack**: Python 3.10+, PyTorch, Transformers (HuggingFace), Gradio 5.x, Plotly
+**Tech stack**: Python 3.11+, PyTorch 2.x, Transformers 5.x, Gradio 6.x, Plotly. Installable package (`pip install -e .`), src layout.
 
 ## Development Commands
 
-### Running the application
 ```bash
-# Activate virtual environment
-source venv/bin/activate  # Windows: venv\Scripts\activate
+# Install (CPU torch; the venv lives at .venv)
+pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/cpu
 
-# Run locally (opens at http://127.0.0.1:7860)
-cd src && python app.py
+# Run the app (opens at http://127.0.0.1:7860)
+miru-tracer            # or: python -m miru_tracer
+MIRU_DEBUG=1 miru-tracer   # debug logging
 
-# Enable debug mode
-cd src && MIRU_DEBUG=1 python app.py
+# Tests
+pytest                     # unit tests: fast, offline, tiny in-code model
+pytest -m integration      # Qwen/Qwen3-0.6B end-to-end (downloads ~1.4GB once)
 
-# Run with Gradio hot reload (for UI development)
-cd src && gradio app.py
+# Lint
+ruff check src tests
 ```
 
-### Dependencies
-```bash
-# Install dependencies
-pip install -r requirements.txt
+Never `cd src` — the package is installed and imported as `miru_tracer.*`.
 
-# Note: flash-attn is commented out by default (requires CUDA)
-# Uncomment in requirements.txt if you have CUDA and want performance optimization
-```
+## Architecture
 
-### Docker
-```bash
-# Build image
-docker build -t miru-tracer .
+### Core (`src/miru_tracer/core/`)
 
-# Run container (GPU required)
-docker run --gpus all -p 7860:7860 miru-tracer
-```
+**LLMTracer (tracer.py)** — the generation engine. Key design invariant:
+`_next_raw_logits()` is the ONLY place the model is called. It keeps the KV
+cache length equal to the sequence length after every forward and recovers
+(crop or recompute) if they ever disagree — do not add model calls elsewhere.
+Raw (pre-temperature) logits for the current position are memoized once per
+position; `peek()` and `step()` derive temperature/top-k/top-p views from them
+as cheap tensor ops, so changing display parameters never re-runs the model.
+`undo(n)` crops the cache (`DynamicCache.crop`) and truncates `input_ids`; the
+prompt is never re-tokenized after `reset()`. EOS is a frozenset built from
+BOTH `tokenizer.eos_token_id` and `model.generation_config.eos_token_id`
+(either may be an int, list, or None) — always check via `tracer.is_eos()`.
 
-## Architecture Overview
+**sampling.py** — pure tensor functions (`SamplingParams`, `filter_top_k`,
+`filter_top_p`, `select_token`, `entropy`). No model, no cache; this is the
+easiest place to unit test sampling behavior. Reused by the tracer AND the
+interactive-mode preview.
 
-### Core Components
+**schema.py** — `TokenStep` and the export JSON schema. Current is v2
+(`schema_version: 2`, field `full_probs`); v1 logs used the misnamed
+`all_logits` (values were probabilities). `parse_log()` reads both — keep it
+backward compatible when evolving the schema.
 
-**ModelManager (src/core/models.py)**
-- Singleton pattern for model/tokenizer loading
-- Handles quantization (4-bit/8-bit via bitsandbytes)
-- Device detection (CUDA/CPU) and memory management
-- Shared across all UI tabs
+**model_manager.py** — singleton loader. transformers 5: use `dtype=` (not
+`torch_dtype=`) and `AutoModelForImageTextToText` (Vision2Seq was removed).
+Quantization requires CUDA; on CPU it is skipped with an explicit
+`quantization_note` in the returned info.
 
-**LLMTracer (src/core/tracer.py)**
-- Main generation engine with step-by-step token control
-- Supports two modes: completion (direct text) and chat (applies tokenizer chat template)
-- KV cache optimization: only processes last token when past_key_values exists
-- Probability caching: `cache_next_probabilities()` avoids redundant forward passes
-- Key methods:
-  - `reset()`: Initialize with prompt or messages
-  - `step()`: Generate one token (greedy or sampling), returns TokenStep
-  - `generate()` / `generate_stream()`: Auto-generate multiple tokens
-  - `undo_step()`: Remove last token and rebuild state
-  - `export_to_dict()`: Export history to JSON
+**session_manager.py** — thread-safe session store for Interactive Mode.
+Gradio state carries only the session-id string; handlers call
+`get_session(id)` once and hold `session.lock` while touching the tracer.
+Lock ordering is global → session; never call manager methods while holding a
+session lock.
 
-**SessionManager (src/core/session_manager.py)**
-- Thread-safe session isolation for Interactive Mode
-- Each session has unique UUID, LLMTracer instance, and thread lock
-- Prevents race conditions from rapid Gradio interactions
-- Auto-cleanup of inactive sessions (30min timeout)
+### UI (`src/miru_tracer/ui/`)
 
-### UI Structure (src/ui/)
+One module per tab plus:
+- **helpers.py** — shared chat-JSON validation, `ExportManager` (ONE stable
+  export file per tab, overwritten in place — never create per-call temp
+  files), numeric probability table, param clamping. Add shared logic here,
+  not in tabs.
+- **theme.py** — `MiruTheme`, CSS, footer JS. Gradio 6 takes these at
+  `launch()`, not in the Blocks constructor; `launch_kwargs(version)` bundles
+  them for app and tests.
 
-Each tab is a separate module returning a `gr.Tab`:
+Gradio 6 notes: `show_copy_button=` is now `buttons=["copy"]`; `gr.update()`
+still works; generator handlers + `cancels=[...]` power the Stop buttons
+(requires `demo.queue()`).
 
-1. **model_loader.py**: Load HuggingFace models with quantization options
-2. **tokenize_text.py**: Tokenize input and inspect individual tokens
-3. **token_lookup.py**: Lookup tokens by ID or text
-4. **interactive_mode.py**: Step-through generation with manual token override
-5. **logging_mode.py**: Auto-generate with full probability logging (export as JSON)
-6. **analysis.py**: Visualize logged generations (heatmaps, probability curves)
+### Visualization (`src/miru_tracer/visualization/plots.py`)
 
-### Visualization (src/visualization/plots.py)
+Functions take a plain `list[TokenStep]` (live `tracer.history` or
+`parse_log(...).history`) — never a tracer. Entropy is exact when
+`full_probs` was logged, otherwise a renormalized top-k entropy and labeled
+as such ("Top-k entropy") — keep that labeling honest.
 
-Plotly-based charts for log analysis:
-- **Heatmap**: Token probabilities over generation steps
-- **Probability curve**: Selected token probability over time
-- **Top-K evolution**: How top candidates change each step
+## Testing Conventions
 
-### State Management Pattern
-
-**Interactive Mode uses session-based state**:
-- Gradio state only stores `session_id` (string)
-- Actual LLMTracer lives in SessionManager
-- All operations acquire session lock before modifying tracer
-- This prevents Gradio's serialization issues with complex objects
-
-**Logging Mode uses direct state**:
-- Stores LLMTracer in Gradio state (simpler, no multi-step interaction)
-
-## Key Implementation Details
-
-### Temperature Handling
-- Guard against temperature <= 0 (use 1e-10 minimum) to avoid division by zero in softmax
-- Applied in `get_next_token_probabilities()` and `step()`
-
-### Dual Probability Storage
-- **Raw Probabilities** (pre-temperature): Model's true confidence, stored in `TokenStep.raw_probability` and `TokenStep.top_k_raw_probs`
-- **Adjusted Probabilities** (post-temperature): Sampling distribution, stored in `TokenStep.probability` and `TokenStep.top_k_probs`
-- Both are computed in `get_next_token_probabilities()`:
-  - `raw_probs = torch.softmax(logits, dim=-1)` - model's true distribution
-  - `adjusted_probs = torch.softmax(logits / temperature, dim=-1)` - sampling distribution
-- Visualization functions accept `probability_mode` parameter ("raw" or "adjusted")
-- Heatmap tooltips always show both values regardless of selected mode
-- JSON exports include both probability types for full fidelity analysis
-
-### Token Decoding
-- Use `safe_decode_token()` (src/core/tokenizer_utils.py) which handles byte fallback tokens
-- Returns tuple: (decoded_string, raw_fallback) for display
-
-### Probability Cache Optimization
-- Interactive mode caches next token probabilities at end of step
-- Reused at start of next step to avoid redundant forward pass
-- Invalidated on state change (undo, manual override)
-
-### Warning System
-- `suppress_warnings=True` in `step()` collects warnings instead of logging immediately
-- Retrieved via `get_warnings()` - useful for batch generation
-- Warns once per session about: memory usage (log_all_logits), deterministic sampling
-
-### Chat vs Completion Mode
-- Auto-detected based on input type (messages vs prompt)
-- Chat mode applies tokenizer.chat_template if available, else concatenates messages
-- Both modes share same generation logic after tokenization
+- Unit tests use a session-scoped tiny random Llama (2 layers, vocab 260)
+  built from config in `tests/conftest.py` — offline, <1s to build, same
+  cache/GQA machinery as Qwen3. The byte-level tokenizer is built in-code.
+- `tests/unit/test_tracer_cache.py` is the regression suite for the historical
+  KV-cache desync bug: forward counting, manufactured desync, randomized op
+  sequences compared against no-cache ground truth. If you touch tracer
+  internals, these must stay green.
+- Integration tests (`-m integration`, excluded by default via pytest
+  addopts) use `Qwen/Qwen3-0.6B` in fp32 on CPU and drive the real app with
+  `gradio_client`.
+- `tests/data/legacy_log_v1.json` pins the v1 export format; schema changes
+  must keep it parseable.
 
 ## Configuration
 
-### Environment Variables (.env)
-```bash
-MIRU_DEBUG=0        # Set to 1 for debug logging
-HF_TOKEN=...        # Only needed for gated models
-```
+Environment parsing lives ONLY in `config.py` (`env_bool`/`env_int`/
+`env_str` + `Settings.from_env`). `MIRU_DEBUG` accepts 1/true/yes/on;
+`MIRU_SERVER_NAME`/`MIRU_SERVER_PORT` bind the server (GRADIO_SERVER_* work
+as fallbacks). Docker: `MIRU_SSH_ENABLE=1` (+ `MIRU_SSH_AUTHORIZED_KEYS`,
+`MIRU_SSH_PORT`) enables the optional SSH server in the container.
 
-### Generation Parameters
-- **Temperature**: Controls randomness (lower = deterministic, higher = creative)
-- **Top-K**: Limits sampling to K most likely tokens
-- **Top-P**: Nucleus sampling - cumulative probability threshold
-- **Strategy**: "greedy" (always top-1) or "sampling" (random from distribution)
+## Gotchas
 
-### Memory Considerations
-- `log_all_logits=True` uses ~600KB per step for 150K vocab (avoid unless needed)
-- Use quantization (4-bit/8-bit) for models 7B+ parameters
-- Test with small models first (e.g., Qwen/Qwen3-1.7B)
-
-## Common Gotchas
-
-1. **KV Cache Invalidation**: Always reset `past_key_values = None` and call `invalidate_probability_cache()` when modifying input_ids (undo, reset)
-
-2. **Thread Safety**: In Interactive Mode, always acquire session lock before tracer operations
-
-3. **Gradio State**: Don't store complex objects (model, tokenizer, tracer) directly in Gradio state for multi-step interactions - use SessionManager pattern instead
-
-4. **Tokenizer Padding**: ModelManager sets `pad_token = eos_token` if missing (common issue)
-
-5. **Chat Template Fallback**: If tokenizer lacks chat_template, concatenate messages manually
-
-## Testing Workflow
-
-1. Load a small model (Qwen/Qwen3-1.7B recommended for testing)
-2. Try "Tokenize Text" tab to verify model loaded correctly
-3. Use "Interactive Mode" to step through generation manually
-4. Try "Logging Mode" to record full generation trace
-5. Analyze logged trace in "Log Analysis" tab
-
-## File Organization
-
-```
-src/
-  app.py                        # Main Gradio app entry point
-  core/
-    models.py                   # ModelManager, TokenStep dataclass
-    tracer.py                   # LLMTracer generation engine
-    session_manager.py          # Thread-safe session isolation
-    tokenizer_utils.py          # Token decoding utilities
-    logging_config.py           # Python logging setup
-  ui/
-    model_loader.py             # Tab: Load models
-    tokenize_text.py            # Tab: Inspect tokenization
-    token_lookup.py             # Tab: Token ID/text lookup
-    interactive_mode.py         # Tab: Step-through generation
-    logging_mode.py             # Tab: Auto-generate with logging
-    analysis.py                 # Tab: Visualize generation logs
-  visualization/
-    plots.py                    # Plotly visualization functions
-```
+1. **Never call the model outside `_next_raw_logits()`** — the KV cache is
+   mutated in place by forwards; a stray forward corrupts it. (Tests catch
+   this.)
+2. **Interactive handlers**: resolve the session once, hold `session.lock`
+   for the whole operation, and return/yield the shared output tuple via
+   `render_state`/`error_state`.
+3. **Exports**: go through `ExportManager.prepare()` — and only at the end of
+   an operation, never inside a per-token loop.
+4. **Temperature 0** is fine: `SamplingParams` clamps it and torch softmax is
+   numerically stable, but always build params via
+   `helpers.ui_sampling_params` from widget values.
+5. **Gradio State**: complex objects (model/tracer) only in Logging Mode's
+   single-run state; Interactive Mode must keep using session ids.

@@ -141,3 +141,4 @@ Thumbs.db
 # Project specific
 generation_log.json
 *.log
+model_offload/
