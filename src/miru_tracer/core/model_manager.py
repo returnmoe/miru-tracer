@@ -1,10 +1,14 @@
-"""Data models and model loading utilities for Miru Tracer."""
+"""Model and tokenizer loading for Miru Tracer."""
 
-from dataclasses import dataclass, asdict
-from typing import Optional, List, Dict, Any, Tuple
+from __future__ import annotations
+
+import gc
 import os
-import torch
 import threading
+import time
+from typing import Any, Optional
+
+import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -13,37 +17,13 @@ from transformers import (
 
 try:
     # transformers >= 5 renamed AutoModelForVision2Seq
-    from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
+    from transformers import AutoModelForImageTextToText
 except ImportError:  # pragma: no cover - transformers 4.x
-    from transformers import AutoModelForVision2Seq
-import warnings
-import time
+    from transformers import AutoModelForVision2Seq as AutoModelForImageTextToText
+
 from miru_tracer.core.logging_config import get_logger
 
-warnings.filterwarnings("ignore")
 logger = get_logger(__name__)
-
-
-@dataclass
-class TokenStep:
-    """Records information about a single token generation step."""
-
-    step: int
-    token_id: int
-    token_text: str
-    probability: float  # Post-temperature (adjusted) probability
-    top_k_tokens: List[int]
-    top_k_probs: List[float]  # Post-temperature (adjusted) probabilities
-    top_k_texts: List[str]
-    raw_probability: float = 0.0  # Pre-temperature (raw model) probability
-    top_k_raw_probs: Optional[List[float]] = None  # Pre-temperature (raw model) probabilities
-    all_logits: Optional[List[float]] = None  # Full vocabulary logits (optional)
-    token_text_raw: Optional[str] = None  # Raw token representation (visible \n, \t, etc.)
-    top_k_texts_raw: Optional[List[str]] = None  # Raw representations for top-k tokens
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
 
 
 class ModelManager:
@@ -59,7 +39,7 @@ class ModelManager:
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super(ModelManager, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def load_model(
@@ -68,7 +48,7 @@ class ModelManager:
         quantization: str = "none",
         trust_remote_code: bool = False,
         minimize_ram_usage: bool = False,
-    ) -> Tuple[Any, Any, str, Dict[str, Any]]:
+    ) -> tuple[Any, Any, str, dict[str, Any]]:
         """
         Load a model and tokenizer.
 
@@ -86,7 +66,9 @@ class ModelManager:
         """
         with self._lock:
             if self._is_loading:
-                raise RuntimeError("Model operation already in progress. Please wait for it to complete.")
+                raise RuntimeError(
+                    "Model operation already in progress. Please wait for it to complete."
+                )
             self._is_loading = True
 
         try:
@@ -97,6 +79,8 @@ class ModelManager:
             if self._model is not None:
                 logger.warning(f"Clearing previous model from memory: {self._model_name}")
                 del self._model
+                self._model = None
+                gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
@@ -133,8 +117,19 @@ class ModelManager:
                 "low_cpu_mem_usage": True,  # Critical: load directly to GPU, minimal RAM
             }
 
+            # Quantization needs CUDA (bitsandbytes); tell the user instead of
+            # silently loading full precision.
+            quantization_note = None
+            if quantization != "none" and not torch.cuda.is_available():
+                quantization_note = (
+                    f"{quantization} quantization requires CUDA; "
+                    "loaded full precision on CPU instead."
+                )
+                logger.warning(quantization_note)
+                quantization = "none"
+
             # Add quantization or dtype
-            if quantization != "none" and torch.cuda.is_available():
+            if quantization != "none":
                 logger.debug(
                     f"Using quantization: {quantization} (load_in_{quantization[0]}bit=True)"
                 )
@@ -149,47 +144,47 @@ class ModelManager:
             else:
                 # Set dtype based on available hardware
                 model_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-                load_kwargs["torch_dtype"] = model_dtype  # Fixed: was "dtype"
+                load_kwargs["dtype"] = model_dtype
                 logger.debug(
-                    f"Loading model with torch_dtype={model_dtype}, device_map={load_kwargs['device_map']}"
+                    f"Loading model with dtype={model_dtype}, device_map={load_kwargs['device_map']}"
                 )
 
             # Apply RAM optimization if requested
             if minimize_ram_usage and torch.cuda.is_available():
-                logger.info("Applying RAM optimization settings (slower loading, minimal RAM usage)")
-                # Calculate available GPU memory
+                logger.info(
+                    "Applying RAM optimization settings (slower loading, minimal RAM usage)"
+                )
                 gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
                 # Reserve 80% of GPU memory, limit CPU RAM to 2GB
-                load_kwargs["max_memory"] = {
-                    0: f"{int(gpu_mem_gb * 0.8)}GiB",
-                    "cpu": "2GiB"
-                }
+                load_kwargs["max_memory"] = {0: f"{int(gpu_mem_gb * 0.8)}GiB", "cpu": "2GiB"}
                 # Stream weights directly to device without full RAM allocation
                 load_kwargs["offload_state_dict"] = True
-                # Create offload folder for overflow weights
                 offload_dir = "./model_offload"
                 os.makedirs(offload_dir, exist_ok=True)
                 load_kwargs["offload_folder"] = offload_dir
-                logger.debug(f"RAM optimization: max_memory={load_kwargs['max_memory']}, offload_folder={offload_dir}")
+                logger.debug(
+                    f"RAM optimization: max_memory={load_kwargs['max_memory']}, "
+                    f"offload_folder={offload_dir}"
+                )
 
-            # Try loading as CausalLM, fallback to Vision2Seq for VLMs
+            # Try loading as CausalLM, fallback to image-text-to-text for VLMs
             is_vlm = False
             try:
-                logger.debug(f"Attempting to load with AutoModelForCausalLM")
-                self._model = AutoModelForCausalLM.from_pretrained(
-                    model_name, **load_kwargs
-                )
+                logger.debug("Attempting to load with AutoModelForCausalLM")
+                self._model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
             except (ValueError, KeyError) as e:
                 if "Unrecognized configuration class" in str(e) or "does not support" in str(e):
                     logger.warning(
-                        f"AutoModelForCausalLM failed. Retrying with AutoModelForVision2Seq (VLM detected)..."
+                        "AutoModelForCausalLM failed. Retrying as image-text-to-text "
+                        "model (VLM detected)..."
                     )
-                    self._model = AutoModelForVision2Seq.from_pretrained(
+                    self._model = AutoModelForImageTextToText.from_pretrained(
                         model_name, **load_kwargs
                     )
                     is_vlm = True
                     logger.info(
-                        "Loaded Vision-Language Model in text-only mode. Image inputs not supported."
+                        "Loaded Vision-Language Model in text-only mode. "
+                        "Image inputs not supported."
                     )
                 else:
                     raise
@@ -211,9 +206,10 @@ class ModelManager:
                 "device": self._device,
                 "device_name": device_name,
                 "vram_gb": vram,
-                "vocab_size": len(self._tokenizer),
+                "vocab_size": vocab_size,
                 "num_parameters_b": num_params,
                 "quantization": quantization,
+                "quantization_note": quantization_note,
                 "pytorch_version": torch.__version__,
                 "is_vlm": is_vlm,
                 "vlm_warning": (
@@ -225,7 +221,7 @@ class ModelManager:
 
             logger.info(
                 f"Model loaded successfully: {num_params:.2f}B parameters in {load_time:.2f}s"
-                + (f" [VLM - text-only mode]" if is_vlm else "")
+                + (" [VLM - text-only mode]" if is_vlm else "")
             )
 
             return self._model, self._tokenizer, self._device, info
@@ -253,7 +249,7 @@ class ModelManager:
         """Get currently loaded model name."""
         return self._model_name
 
-    def unload_model(self) -> Dict[str, Any]:
+    def unload_model(self) -> dict[str, Any]:
         """
         Unload the currently loaded model and free memory.
 
@@ -265,49 +261,41 @@ class ModelManager:
         """
         with self._lock:
             if self._is_loading:
-                raise RuntimeError("Model operation already in progress. Please wait for it to complete.")
+                raise RuntimeError(
+                    "Model operation already in progress. Please wait for it to complete."
+                )
             self._is_loading = True
 
         try:
             if self._model is None and self._tokenizer is None:
-                return {
-                    "status": "warning",
-                    "message": "No model currently loaded"
-                }
+                return {"status": "warning", "message": "No model currently loaded"}
 
             model_name = self._model_name
 
-            # Clear model
             if self._model is not None:
                 logger.info(f"Unloading model: {model_name}")
                 del self._model
                 self._model = None
 
-            # Clear tokenizer
             if self._tokenizer is not None:
                 del self._tokenizer
                 self._tokenizer = None
 
-            # Clear device info
             self._device = None
             self._model_name = None
 
-            # Free GPU memory if CUDA available
+            gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()  # Wait for GPU operations to complete
                 logger.debug("GPU cache cleared and synchronized")
-
-            # Python garbage collection
-            import gc
-            gc.collect()
 
             logger.info(f"Model unloaded successfully: {model_name}")
 
             return {
                 "status": "success",
                 "message": f"Model '{model_name}' unloaded successfully",
-                "previous_model": model_name
+                "previous_model": model_name,
             }
         finally:
             with self._lock:

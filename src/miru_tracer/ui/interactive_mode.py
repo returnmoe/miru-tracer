@@ -3,7 +3,7 @@
 import gradio as gr
 import pandas as pd
 from typing import Optional, Tuple
-from miru_tracer.core.models import ModelManager
+from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.tracer import LLMTracer
 from miru_tracer.core.session_manager import get_session_manager
 from miru_tracer.core.logging_config import get_logger

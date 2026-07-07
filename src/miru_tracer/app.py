@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 
 from gradio.themes.base import Base
 from gradio.themes.utils import colors, fonts, sizes
-from miru_tracer.core.models import ModelManager
+from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.ui.model_loader import create_model_loader_tab
 from miru_tracer.ui.tokenize_text import create_tokenize_text_tab
 from miru_tracer.ui.token_lookup import create_token_lookup_tab

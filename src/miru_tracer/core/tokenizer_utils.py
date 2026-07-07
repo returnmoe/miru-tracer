@@ -1,7 +1,25 @@
 """Tokenizer utility functions for handling byte-level BPE tokens."""
 
+from functools import lru_cache
 from typing import Optional, Tuple
-import sys
+
+
+@lru_cache(maxsize=1)
+def _gpt2_byte_decoder() -> dict[str, int]:
+    """The standard GPT-2 byte-level BPE unicode-to-byte mapping."""
+    bs = (
+        list(range(ord("!"), ord("~") + 1))
+        + list(range(ord("¡"), ord("¬") + 1))
+        + list(range(ord("®"), ord("ÿ") + 1))
+    )
+    cs = bs[:]
+    n = 0
+    for b in range(2**8):
+        if b not in bs:
+            bs.append(b)
+            cs.append(2**8 + n)
+            n += 1
+    return {chr(c): b for b, c in zip(bs, cs)}
 
 
 def extract_token_bytes(tokenizer, token_str: str) -> Optional[bytes]:
@@ -18,42 +36,18 @@ def extract_token_bytes(tokenizer, token_str: str) -> Optional[bytes]:
     Returns:
         Bytes if extraction successful, None otherwise
     """
-    # Try to get the byte-to-unicode mapping from the tokenizer
-    if hasattr(tokenizer, "backend_tokenizer"):
-        # For Fast tokenizers, try to access the byte mapping
-        try:
-            # GPT-2 style byte encoder/decoder
-            if sys.version_info >= (3, 0):
-                # Build the standard GPT-2 byte encoder
-                bs = (
-                    list(range(ord("!"), ord("~") + 1))
-                    + list(range(ord("¡"), ord("¬") + 1))
-                    + list(range(ord("®"), ord("ÿ") + 1))
-                )
-                cs = bs[:]
-                n = 0
-                for b in range(2**8):
-                    if b not in bs:
-                        bs.append(b)
-                        cs.append(2**8 + n)
-                        n += 1
-                byte_decoder = {chr(c): b for b, c in zip(bs, cs)}
+    if not hasattr(tokenizer, "backend_tokenizer"):
+        return None
 
-                # Try to decode using this mapping
-                byte_values = []
-                for char in token_str:
-                    if char in byte_decoder:
-                        byte_values.append(byte_decoder[char])
-                    else:
-                        # Character not in standard mapping
-                        return None
+    byte_decoder = _gpt2_byte_decoder()
+    byte_values = []
+    for char in token_str:
+        if char not in byte_decoder:
+            # Character not in the standard byte-level mapping
+            return None
+        byte_values.append(byte_decoder[char])
 
-                if byte_values:
-                    return bytes(byte_values)
-        except Exception:
-            pass
-
-    return None
+    return bytes(byte_values) if byte_values else None
 
 
 def safe_decode_token(

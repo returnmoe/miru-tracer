@@ -1,706 +1,494 @@
-"""LLMTracer class for interactive LLM debugging and generation tracing."""
+"""LLMTracer: step-through LLM generation with a single source of truth.
 
-from typing import Optional, List, Dict, Any
-import torch
+Design
+------
+The tracer separates the expensive part (model forward passes) from the cheap
+part (turning logits into distributions):
+
+- ``_next_raw_logits()`` is the only place the model is called. It maintains
+  the KV cache with an explicit length invariant — ``cache length == seq_len``
+  immediately after any forward — and *recovers* (crop or recompute) when the
+  cache disagrees with ``input_ids`` instead of silently corrupting state.
+  The raw (pre-temperature) logits for the current position are memoized in a
+  single slot keyed by sequence length.
+- ``peek()`` and ``step()`` derive everything else (temperature scaling,
+  top-k/top-p, probabilities) from those raw logits via
+  :mod:`miru_tracer.core.sampling`. Peeking repeatedly with different display
+  parameters therefore never triggers another forward pass.
+
+Undo crops the KV cache (``DynamicCache.crop``) and truncates ``input_ids``;
+the prompt is never re-tokenized after ``reset()``.
+"""
+
+from __future__ import annotations
+
 from datetime import datetime
-from miru_tracer.core.models import TokenStep
-from miru_tracer.core.tokenizer_utils import safe_decode_token
+from typing import Any, Iterator, Optional
+
+import torch
+
 from miru_tracer.core.logging_config import get_logger
+from miru_tracer.core.sampling import (
+    SamplingParams,
+    apply_temperature,
+    select_token,
+)
+from miru_tracer.core.schema import SCHEMA_VERSION, TokenStep
+from miru_tracer.core.tokenizer_utils import safe_decode_token
 
 logger = get_logger(__name__)
+
+
+class CacheDesyncError(RuntimeError):
+    """The KV cache length disagrees with input_ids after a forward pass."""
+
+
+def _collect_eos_ids(tokenizer, model) -> frozenset[int]:
+    """Union of EOS token ids from the tokenizer and the model's generation config.
+
+    Either source may expose ``eos_token_id`` as None, an int, or a list of ints
+    (e.g. Qwen chat models declare both ``<|im_end|>`` and ``<|endoftext|>``).
+    """
+    ids: set[int] = set()
+    sources = [
+        getattr(tokenizer, "eos_token_id", None),
+        getattr(getattr(model, "generation_config", None), "eos_token_id", None),
+    ]
+    for source in sources:
+        if source is None:
+            continue
+        if isinstance(source, int):
+            ids.add(source)
+        else:
+            ids.update(int(token_id) for token_id in source)
+    return frozenset(ids)
+
+
+class NextTokenDistribution:
+    """The distribution over the next token at a fixed position.
+
+    Wraps the raw logits so probabilities under any temperature can be derived
+    without touching the model.
+    """
+
+    def __init__(self, raw_logits: torch.Tensor, temperature: float, top_k: int, tokenizer):
+        self.raw_logits = raw_logits
+        self.temperature = temperature
+
+        raw_probs = torch.softmax(raw_logits, dim=-1)
+        adjusted_probs = torch.softmax(apply_temperature(raw_logits, temperature), dim=-1)
+        k = min(top_k, raw_logits.shape[-1])
+        top_probs, top_indices = torch.topk(adjusted_probs, k)
+
+        self.top_k_tokens: list[int] = top_indices.cpu().tolist()
+        self.top_k_probs: list[float] = top_probs.cpu().tolist()
+        self.top_k_raw_probs: list[float] = raw_probs[top_indices].cpu().tolist()
+        decoded = [safe_decode_token(tokenizer, t) for t in self.top_k_tokens]
+        self.top_k_texts: list[str] = [d[0] if d[0] else d[1] for d in decoded]
+        self.top_k_texts_raw: list[str] = [d[1] for d in decoded]
+
+    def prob_of(self, token_id: int) -> tuple[float, float]:
+        """Return (adjusted, raw) probability of a token — no model call."""
+        raw = torch.softmax(self.raw_logits, dim=-1)[token_id].item()
+        adjusted = torch.softmax(
+            apply_temperature(self.raw_logits, self.temperature), dim=-1
+        )[token_id].item()
+        return float(adjusted), float(raw)
+
+    def full_probs(self) -> list[float]:
+        """Full-vocabulary adjusted probabilities (large: ~vocab_size floats)."""
+        return torch.softmax(
+            apply_temperature(self.raw_logits, self.temperature), dim=-1
+        ).cpu().tolist()
 
 
 class LLMTracer:
     """Interactive LLM tracer with step-through and logging capabilities."""
 
-    def __init__(self, model, tokenizer, device="cuda"):
+    def __init__(self, model, tokenizer, device: str = "cpu", seed: int | None = None):
         self.model = model
         self.tokenizer = tokenizer
         self.device = device
-        self._warned_about_logits = False  # Track if we've warned about memory usage
-        self._warned_about_deterministic_sampling = False  # Track sampling warnings
-        self.warnings = []  # Collect warnings to display later
-        self._cached_next_probs = (
-            None  # Cache for next token probabilities (optimization)
-        )
-        self._stop_requested = False  # Flag to request early termination of generation
+        self.eos_ids = _collect_eos_ids(tokenizer, model)
+        self._generator: torch.Generator | None = None
+        if seed is not None:
+            self._generator = torch.Generator(device=device).manual_seed(seed)
 
-        # Detect if model supports chat templates
         self.has_chat_template = (
             hasattr(tokenizer, "chat_template") and tokenizer.chat_template is not None
         )
 
         logger.info(
-            f"LLMTracer initialized (device={device}, chat_template={'available' if self.has_chat_template else 'not available'})"
+            f"LLMTracer initialized (device={device}, eos_ids={sorted(self.eos_ids)}, "
+            f"chat_template={'available' if self.has_chat_template else 'not available'})"
         )
 
         self.reset()
 
+    # ------------------------------------------------------------------ state
+
     def reset(
         self,
         prompt: str = "",
-        messages: Optional[List[Dict[str, str]]] = None,
+        messages: Optional[list[dict[str, str]]] = None,
         mode: str = "auto",
-    ):
-        """Reset the generation state.
+    ) -> None:
+        """Reset generation state with a new prompt or chat messages.
 
         Args:
-            prompt: Direct text prompt (for completion mode)
-            messages: Chat messages in format [{"role": "system/user/assistant", "content": "..."}]
-            mode: "completion", "chat", or "auto" (auto-detect based on inputs)
+            prompt: Direct text prompt (completion mode).
+            messages: Chat messages [{"role": ..., "content": ...}, ...].
+            mode: "completion", "chat", or "auto" (detect from inputs).
         """
-        self.generated_tokens = []
-        self.history: List[TokenStep] = []
-        self.current_step = 0
-        self.past_key_values = None  # KV cache for efficient generation
-        self.warnings = []  # Reset warnings
-        self._cached_next_probs = None  # Clear probability cache
+        self.history: list[TokenStep] = []
+        self._kv = None
+        self._logits_slot: tuple[int, torch.Tensor] | None = None
+        self._stop_requested = False
+        self.warnings: list[str] = []
 
-        # Determine mode
         if mode == "auto":
-            if messages is not None:
-                mode = "chat"
-            else:
-                mode = "completion"
-
+            mode = "chat" if messages is not None else "completion"
         self.mode = mode
+        self.messages = messages if mode == "chat" else None
 
-        # Process input based on mode
         if mode == "chat" and messages is not None:
-            if not self.has_chat_template:
-                # Fallback: concatenate messages
-                prompt = "\n".join([f"{m['role']}: {m['content']}" for m in messages])
-                self.prompt = prompt
-                self.input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(
-                    self.device
-                )
-                logger.info(
-                    f"Reset in chat mode (fallback, no template): {len(messages)} messages, prompt_length={len(prompt)} chars"
-                )
-            else:
-                # Use chat template
-                self.messages = messages
-                formatted_prompt = self.tokenizer.apply_chat_template(
+            if self.has_chat_template:
+                text = self.tokenizer.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True
                 )
-                self.prompt = formatted_prompt
-                self.input_ids = self.tokenizer.encode(
-                    formatted_prompt, return_tensors="pt"
-                ).to(self.device)
-                logger.info(
-                    f"Reset in chat mode: {len(messages)} messages, prompt_tokens={self.input_ids.shape[1]}"
-                )
-        elif prompt:
+            else:
+                text = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+            self.prompt = text
+        else:
             self.prompt = prompt
-            self.messages = None
-            self.input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(
-                self.device
-            )
+
+        if self.prompt:
+            self.input_ids = self.tokenizer.encode(
+                self.prompt, return_tensors="pt"
+            ).to(self.device)
             logger.info(
-                f"Reset in completion mode: prompt_length={len(prompt)} chars, prompt_tokens={self.input_ids.shape[1]}"
+                f"Reset in {mode} mode: prompt_tokens={self.input_ids.shape[1]}"
             )
         else:
-            self.prompt = ""
-            self.messages = None
             self.input_ids = None
             logger.debug("Reset with empty prompt")
 
-    def get_next_token_probabilities(
-        self,
-        top_k: int = 10,
-        temperature: float = 1.0,
-        return_all_logits: bool = False,
-        use_cache: bool = True,
-    ) -> Dict[str, Any]:
-        """Get probabilities for the next token without generating.
+        self._prompt_len = self.input_ids.shape[1] if self.input_ids is not None else 0
 
-        Uses KV cache for efficient computation - only processes the last token
-        when past_key_values is available.
+    @property
+    def seq_len(self) -> int:
+        """Current total sequence length (prompt + generated tokens)."""
+        return 0 if self.input_ids is None else int(self.input_ids.shape[1])
 
-        Args:
-            top_k: Number of top tokens to return
-            temperature: Sampling temperature
-            return_all_logits: Whether to return full vocabulary probabilities
-            use_cache: If True, use cached results if available (optimization)
+    @property
+    def current_step(self) -> int:
+        """Number of generated tokens (derived, cannot desync)."""
+        return len(self.history)
 
-        Returns:
-            Dictionary containing top_k_tokens, top_k_probs, top_k_texts, etc.
+    @property
+    def generated_tokens(self) -> list[int]:
+        return [step.token_id for step in self.history]
+
+    def is_eos(self, token_id: int) -> bool:
+        return token_id in self.eos_ids
+
+    def request_stop(self) -> None:
+        """Request that ongoing generation stop after the current token."""
+        self._stop_requested = True
+        logger.info("Stop requested for ongoing generation")
+
+    def clear_stop_flag(self) -> None:
+        self._stop_requested = False
+
+    # ---------------------------------------------------------------- forward
+
+    def _cache_len(self) -> int:
+        return int(self._kv.get_seq_length()) if self._kv is not None else 0
+
+    def _invalidate_kv(self) -> None:
+        self._kv = None
+        self._logits_slot = None
+
+    def _next_raw_logits(self) -> torch.Tensor:
+        """Raw (pre-temperature) logits for the next token.
+
+        The single enforcement point for the cache invariant: on return, the
+        KV cache covers exactly ``seq_len`` positions and the memo slot holds
+        the logits for this position. Never call the model anywhere else.
         """
         if self.input_ids is None:
             raise ValueError("No prompt set. Call reset(prompt) first.")
 
-        # Use cached results if available and requested
-        if use_cache and self._cached_next_probs is not None:
-            cached = self._cached_next_probs
-            # Verify cache parameters match
-            if (
-                cached.get("top_k") == top_k
-                and cached.get("temperature") == temperature
-                and cached.get("return_all_logits") == return_all_logits
-            ):
-                return cached["data"]
+        seq_len = self.seq_len
+        if self._logits_slot is not None and self._logits_slot[0] == seq_len:
+            return self._logits_slot[1]
 
-        # Guard against temperature <= 0
-        if temperature <= 0:
-            temperature = 1e-10  # Use very small value instead of 0
+        cache_len = self._cache_len()
+        if cache_len >= seq_len:
+            # The cache is ahead of input_ids (interrupted operation, undo
+            # without crop support, external mutation). Recover instead of
+            # assuming: trim to just before the last token, or start over.
+            logger.warning(
+                f"KV cache length {cache_len} >= sequence length {seq_len}; recovering"
+            )
+            if self._kv is not None and hasattr(self._kv, "crop"):
+                self._kv.crop(seq_len - 1)
+                cache_len = self._cache_len()
+            else:
+                self._kv = None
+                cache_len = 0
 
         with torch.inference_mode():
-            # Use KV cache: only pass last token if we have past_key_values
-            if self.past_key_values is not None:
-                # Only process the last token
-                model_input = self.input_ids[:, -1:]
-                outputs = self.model(
-                    model_input, past_key_values=self.past_key_values, use_cache=True
-                )
-            else:
-                # First call: process full sequence and initialize cache
+            if self._kv is None:
                 outputs = self.model(self.input_ids, use_cache=True)
+            else:
+                outputs = self.model(
+                    self.input_ids[:, cache_len:],
+                    past_key_values=self._kv,
+                    use_cache=True,
+                    cache_position=torch.arange(
+                        cache_len, seq_len, device=self.input_ids.device
+                    ),
+                )
+            self._kv = outputs.past_key_values
 
-            # Get raw logits (pre-temperature)
-            raw_logits = outputs.logits[:, -1, :]
+        actual = self._cache_len()
+        if actual != seq_len:
+            self._invalidate_kv()
+            raise CacheDesyncError(
+                f"KV cache covers {actual} positions after forward, expected {seq_len}"
+            )
 
-            # Compute RAW probabilities (pre-temperature, model's true distribution)
-            raw_probs = torch.softmax(raw_logits, dim=-1)
+        raw_logits = outputs.logits[0, -1, :].float().clone()
+        self._logits_slot = (seq_len, raw_logits)
+        return raw_logits
 
-            # Compute ADJUSTED probabilities (post-temperature, for sampling)
-            adjusted_logits = raw_logits / temperature
-            adjusted_probs = torch.softmax(adjusted_logits, dim=-1)
+    # ------------------------------------------------------------- inspection
 
-        # Get top-k from ADJUSTED distribution (used for sampling/display by default)
-        top_k_probs, top_k_indices = torch.topk(adjusted_probs[0], k=min(top_k, len(adjusted_probs[0])))
+    def peek(
+        self,
+        top_k: int = 10,
+        temperature: float = 1.0,
+    ) -> NextTokenDistribution:
+        """Inspect the next-token distribution without generating.
 
-        top_k_tokens = top_k_indices.cpu().tolist()
-        top_k_probs_list = top_k_probs.cpu().tolist()
-        top_k_texts = [safe_decode_token(self.tokenizer, t) for t in top_k_tokens]
-
-        # Extract raw probabilities for the same top-K tokens (for comparison)
-        top_k_raw_probs_list = [raw_probs[0, token_id].item() for token_id in top_k_tokens]
-
-        result = {
-            "top_k_tokens": top_k_tokens,
-            "top_k_probs": top_k_probs_list,  # Adjusted (post-temperature)
-            "top_k_raw_probs": top_k_raw_probs_list,  # Raw (pre-temperature)
-            "top_k_texts": top_k_texts,
-            "all_probs": adjusted_probs[0].cpu() if return_all_logits else None,
-            "past_key_values": outputs.past_key_values,  # Return updated cache
-            "logits": adjusted_logits.clone(),  # Return logits for sampling reuse
-        }
-
-        return result
-
-    def cache_next_probabilities(
-        self, top_k: int = 10, temperature: float = 1.0, return_all_logits: bool = False
-    ) -> Dict[str, Any]:
+        Free to call repeatedly with different ``top_k``/``temperature`` —
+        only the first call at a given position runs the model.
         """
-        Compute and cache next token probabilities for efficient reuse.
+        raw_logits = self._next_raw_logits()
+        return NextTokenDistribution(raw_logits, temperature, top_k, self.tokenizer)
 
-        This is useful in interactive mode where we peek at next tokens at the end
-        of one step and then need them again at the start of the next step.
-
-        Args:
-            top_k: Number of top tokens to return
-            temperature: Sampling temperature
-            return_all_logits: Whether to return full vocabulary probabilities
-
-        Returns:
-            Dictionary containing top_k_tokens, top_k_probs, top_k_texts, etc.
-        """
-        result = self.get_next_token_probabilities(
-            top_k=top_k,
-            temperature=temperature,
-            return_all_logits=return_all_logits,
-            use_cache=False,  # Force recomputation
-        )
-
-        # Store in cache with parameters
-        self._cached_next_probs = {
-            "top_k": top_k,
-            "temperature": temperature,
-            "return_all_logits": return_all_logits,
-            "data": result,
-        }
-
-        return result
-
-    def invalidate_probability_cache(self):
-        """Clear the cached next token probabilities."""
-        self._cached_next_probs = None
-
-    def request_stop(self):
-        """Request that ongoing generation stop at the next token."""
-        self._stop_requested = True
-        logger.info("Stop requested for ongoing generation")
-
-    def clear_stop_flag(self):
-        """Clear the stop request flag (call before starting new generation)."""
-        self._stop_requested = False
+    # ------------------------------------------------------------- generation
 
     def step(
         self,
+        params: SamplingParams | None = None,
         token_id: Optional[int] = None,
-        strategy: str = "greedy",
-        top_k: int = 50,
-        top_p: float = 0.9,
-        temperature: float = 1.0,
         log_top_k: int = 10,
-        log_all_logits: bool = False,
-        suppress_warnings: bool = False,
+        log_full_probs: bool = False,
     ) -> TokenStep:
-        """Generate one token and record the step.
+        """Generate (or force) one token and record the step.
 
         Args:
-            token_id: If provided, use this token instead of generating
-            strategy: Generation strategy - "greedy" or "sampling"
-            top_k: Top-k sampling parameter
-            top_p: Nucleus sampling parameter
-            temperature: Sampling temperature
-            log_top_k: How many top tokens to log
-            log_all_logits: Whether to log all vocabulary logits
-                           (WARNING: uses ~600KB per step for 150k vocab)
-            suppress_warnings: If True, collect warnings instead of printing them immediately
+            params: Sampling configuration (defaults to greedy).
+            token_id: If provided, use this token instead of sampling.
+            log_top_k: How many top candidates to record in the step.
+            log_full_probs: Record the full-vocabulary distribution
+                (~4 bytes x vocab_size per step; large).
         """
-        # Guard against temperature <= 0
-        if temperature <= 0:
-            temperature = 1e-10
+        params = params or SamplingParams()
+        dist = self.peek(top_k=log_top_k, temperature=params.temperature)
 
-        # Warn about memory usage for log_all_logits (once per session)
-        if log_all_logits and not self._warned_about_logits:
-            vocab_size = len(self.tokenizer)
-            mem_per_step_mb = (vocab_size * 4) / 1024 / 1024  # 4 bytes per float32
-            warning_msg = f"log_all_logits=True will use ~{mem_per_step_mb:.1f}MB per step (~{mem_per_step_mb * 100:.0f}MB for 100 steps)"
-            if suppress_warnings:
-                self.warnings.append(warning_msg)
-            else:
-                logger.warning(warning_msg)
-            self._warned_about_logits = True
+        if token_id is None:
+            token_id = select_token(dist.raw_logits, params, self._generator)
+        adjusted_prob, raw_prob = dist.prob_of(token_id)
 
-        # Get probabilities first
-        prob_data = self.get_next_token_probabilities(
-            top_k=log_top_k, temperature=temperature, return_all_logits=log_all_logits
-        )
-
-        # Update KV cache
-        self.past_key_values = prob_data["past_key_values"]
-
-        # Determine next token
-        if token_id is not None:
-            # User override
-            next_token = token_id
-            # Try to get adjusted probability from returned data
-            if prob_data["all_probs"] is not None:
-                token_prob = prob_data["all_probs"][token_id].item()
-            elif token_id in prob_data["top_k_tokens"]:
-                token_idx = prob_data["top_k_tokens"].index(token_id)
-                token_prob = prob_data["top_k_probs"][token_idx]
-            else:
-                # Token not in top-k and we don't have all probs, need to compute it
-                # Process full sequence from scratch for this rare case
-                with torch.inference_mode():
-                    outputs = self.model(self.input_ids, use_cache=False)
-                    next_token_logits = outputs.logits[:, -1, :] / temperature
-                    probs = torch.softmax(next_token_logits, dim=-1)
-                    token_prob = probs[0, token_id].item()
-
-            # Get raw probability for the same token
-            if token_id in prob_data["top_k_tokens"]:
-                token_idx = prob_data["top_k_tokens"].index(token_id)
-                token_raw_prob = prob_data["top_k_raw_probs"][token_idx]
-            else:
-                # Need to compute raw probability
-                with torch.inference_mode():
-                    outputs = self.model(self.input_ids, use_cache=False)
-                    raw_logits = outputs.logits[:, -1, :]
-                    raw_probs = torch.softmax(raw_logits, dim=-1)
-                    token_raw_prob = raw_probs[0, token_id].item()
-        else:
-            # Generate based on strategy
-            if strategy == "greedy":
-                next_token = prob_data["top_k_tokens"][0]
-                token_prob = prob_data["top_k_probs"][0]
-                token_raw_prob = prob_data["top_k_raw_probs"][0]
-            elif strategy == "sampling":
-                # Sample from distribution using the logits from get_next_token_probabilities()
-                next_token_logits = prob_data["logits"].clone()
-
-                # Apply top-k filtering
-                if top_k > 0:
-                    # Clamp top_k to vocabulary size to prevent crashes
-                    actual_top_k = min(top_k, next_token_logits.shape[-1])
-                    indices_to_remove = (
-                        next_token_logits
-                        < torch.topk(next_token_logits, actual_top_k)[0][..., -1, None]
-                    )
-                    next_token_logits[indices_to_remove] = float("-inf")
-
-                # Apply top-p (nucleus) filtering
-                if top_p < 1.0:
-                    sorted_logits, sorted_indices = torch.sort(
-                        next_token_logits, descending=True
-                    )
-                    cumulative_probs = torch.cumsum(
-                        torch.softmax(sorted_logits, dim=-1), dim=-1
-                    )
-
-                    # Remove tokens with cumulative probability above the threshold
-                    sorted_indices_to_remove = cumulative_probs > top_p
-                    # Shift the mask to the right to keep the first token above threshold
-                    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[
-                        ..., :-1
-                    ].clone()
-                    sorted_indices_to_remove[..., 0] = 0
-
-                    # Scatter back to original indexing
-                    indices_to_remove = sorted_indices_to_remove.scatter(
-                        1, sorted_indices, sorted_indices_to_remove
-                    )
-                    next_token_logits[indices_to_remove] = float("-inf")
-
-                # Compute final probabilities for sampling
-                probs = torch.softmax(next_token_logits, dim=-1)
-
-                # Check for deterministic sampling (warn once)
-                if not self._warned_about_deterministic_sampling:
-                    valid_probs = probs[probs > 0]
-                    if len(valid_probs) == 1:
-                        warning_msg = "Only 1 token has non-zero probability after filtering (deterministic sampling)"
-                        if suppress_warnings:
-                            self.warnings.append(warning_msg)
-                        else:
-                            logger.warning(warning_msg)
-                        self._warned_about_deterministic_sampling = True
-
-                # Sample from the distribution
-                next_token = torch.multinomial(probs[0], num_samples=1).item()
-
-                # Get adjusted probability from ORIGINAL distribution (before filtering)
-                # to match what's displayed in the heatmap ranks
-                if prob_data["all_probs"] is not None:
-                    token_prob = prob_data["all_probs"][next_token].item()
-                elif next_token in prob_data["top_k_tokens"]:
-                    token_idx = prob_data["top_k_tokens"].index(next_token)
-                    token_prob = prob_data["top_k_probs"][token_idx]
-                else:
-                    # Fallback: recompute from original logits if not in logged top-k
-                    # Note: prob_data["logits"] already has temperature applied
-                    original_probs = torch.softmax(prob_data["logits"], dim=-1)
-                    token_prob = original_probs[0, next_token].item()
-
-                # Get raw probability for the same token
-                if next_token in prob_data["top_k_tokens"]:
-                    token_idx = prob_data["top_k_tokens"].index(next_token)
-                    token_raw_prob = prob_data["top_k_raw_probs"][token_idx]
-                else:
-                    # Fallback: recompute raw probability
-                    with torch.inference_mode():
-                        outputs = self.model(self.input_ids, use_cache=False)
-                        raw_logits = outputs.logits[:, -1, :]
-                        raw_probs = torch.softmax(raw_logits, dim=-1)
-                        token_raw_prob = raw_probs[0, next_token].item()
-            else:
-                raise ValueError(
-                    f"Unknown strategy: {strategy}. Use 'greedy' or 'sampling'."
-                )
-
-        # Record step
-        token_text = safe_decode_token(self.tokenizer, next_token)
+        decoded, raw_text, _ = safe_decode_token(self.tokenizer, token_id)
         step_data = TokenStep(
-            step=self.current_step,
-            token_id=next_token,
-            token_text=(
-                token_text[0] if token_text[0] else token_text[1]
-            ),  # Use decoded or raw token
-            probability=token_prob,  # Adjusted (post-temperature) probability
-            top_k_tokens=prob_data["top_k_tokens"],
-            top_k_probs=prob_data["top_k_probs"],  # Adjusted (post-temperature) probabilities
-            top_k_texts=[t[0] if t[0] else t[1] for t in prob_data["top_k_texts"]],
-            raw_probability=token_raw_prob,  # Raw (pre-temperature) probability
-            top_k_raw_probs=prob_data["top_k_raw_probs"],  # Raw (pre-temperature) probabilities
-            all_logits=(
-                prob_data["all_probs"].tolist()
-                if prob_data["all_probs"] is not None
-                else None
-            ),
-            token_text_raw=token_text[1],  # Raw token representation (visible \n, \t, etc.)
-            top_k_texts_raw=[t[1] for t in prob_data["top_k_texts"]],  # Raw representations for top-k
+            step=len(self.history),
+            token_id=token_id,
+            token_text=decoded if decoded else raw_text,
+            probability=adjusted_prob,
+            top_k_tokens=dist.top_k_tokens,
+            top_k_probs=dist.top_k_probs,
+            top_k_texts=dist.top_k_texts,
+            raw_probability=raw_prob,
+            top_k_raw_probs=dist.top_k_raw_probs,
+            full_probs=dist.full_probs() if log_full_probs else None,
+            token_text_raw=raw_text,
+            top_k_texts_raw=dist.top_k_texts_raw,
         )
 
-        # Update state
-        self.generated_tokens.append(next_token)
         self.history.append(step_data)
         self.input_ids = torch.cat(
-            [self.input_ids, torch.tensor([[next_token]]).to(self.device)], dim=1
+            [
+                self.input_ids,
+                torch.tensor([[token_id]], device=self.input_ids.device),
+            ],
+            dim=1,
         )
-        self.current_step += 1
-
-        # Invalidate probability cache since state changed
-        self.invalidate_probability_cache()
+        # The memo slot intentionally survives: it is keyed by sequence length,
+        # so it is simply stale now — and becomes valid again after undo(1).
 
         logger.debug(
-            f"Step {self.current_step}: token_id={next_token}, text={repr(token_text)}, prob={token_prob:.4f}"
+            f"Step {len(self.history)}: token_id={token_id}, "
+            f"text={step_data.token_text!r}, prob={adjusted_prob:.4f}"
         )
-
         return step_data
-
-    def generate(
-        self,
-        max_new_tokens: int = 50,
-        strategy: str = "greedy",
-        temperature: float = 1.0,
-        top_k: int = 50,
-        top_p: float = 0.9,
-        log_top_k: int = 10,
-        log_all_logits: bool = False,
-        show_progress: bool = True,
-        stop_at_eos: bool = True,
-    ) -> str:
-        """Generate multiple tokens automatically.
-
-        Args:
-            stop_at_eos: If True (default), stop at EOS token. If False, continue to max_new_tokens.
-        """
-        # Validate max_new_tokens
-        if max_new_tokens < 1:
-            logger.error(f"Invalid max_new_tokens: {max_new_tokens}")
-            raise ValueError(f"max_new_tokens must be at least 1, got {max_new_tokens}")
-
-        for i in range(max_new_tokens):
-            step_data = self.step(
-                strategy=strategy,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                log_top_k=log_top_k,
-                log_all_logits=log_all_logits,
-                suppress_warnings=True,
-            )
-
-            # Stop on EOS (if enabled)
-            if stop_at_eos and step_data.token_id == self.tokenizer.eos_token_id:
-                logger.debug(f"EOS token reached at step {i+1}")
-                break
-
-        logger.info(f"Generation complete: {len(self.history)} tokens generated")
-        return self.get_generated_text()
 
     def generate_stream(
         self,
         max_new_tokens: int = 50,
-        strategy: str = "greedy",
-        temperature: float = 1.0,
-        top_k: int = 50,
-        top_p: float = 0.9,
+        params: SamplingParams | None = None,
         log_top_k: int = 10,
-        log_all_logits: bool = False,
+        log_full_probs: bool = False,
         stop_at_eos: bool = True,
-    ):
-        """Generate tokens one at a time, yielding after each step.
+    ) -> Iterator[TokenStep]:
+        """Generate tokens one at a time, yielding each recorded step.
 
-        Yields tuples of (current_text, step_number, is_complete)
-
-        Args:
-            stop_at_eos: If True (default), stop at EOS token. If False, continue to max_new_tokens.
+        Stops at ``max_new_tokens``, on EOS (when ``stop_at_eos``), or when
+        ``request_stop()`` was called.
         """
-        # Validate max_new_tokens
         if max_new_tokens < 1:
-            logger.error(f"Invalid max_new_tokens: {max_new_tokens}")
             raise ValueError(f"max_new_tokens must be at least 1, got {max_new_tokens}")
-
-        for i in range(max_new_tokens):
-            # Check if stop was requested (highest priority)
-            if self._stop_requested:
-                current_text = self.get_full_text()
-                yield (current_text, i, True)
-                logger.info(f"Generation stopped by user request after {i} tokens")
-                break
-
+        self.clear_stop_flag()
+        for _ in range(max_new_tokens):
             step_data = self.step(
-                strategy=strategy,
-                temperature=temperature,
-                top_k=top_k,
-                top_p=top_p,
-                log_top_k=log_top_k,
-                log_all_logits=log_all_logits,
-                suppress_warnings=True,
+                params=params, log_top_k=log_top_k, log_full_probs=log_full_probs
             )
-
-            # Get current full text
-            current_text = self.get_full_text()
-
-            # Check if we hit EOS (if enabled)
-            if stop_at_eos and step_data.token_id == self.tokenizer.eos_token_id:
-                yield (current_text, i + 1, True)
+            yield step_data
+            if stop_at_eos and self.is_eos(step_data.token_id):
+                logger.debug(f"EOS token reached at step {len(self.history)}")
                 break
+            if self._stop_requested:
+                logger.info(f"Generation stopped by request at step {len(self.history)}")
+                break
+
+    def generate(
+        self,
+        max_new_tokens: int = 50,
+        params: SamplingParams | None = None,
+        log_top_k: int = 10,
+        log_full_probs: bool = False,
+        stop_at_eos: bool = True,
+    ) -> str:
+        """Generate multiple tokens and return the generated text."""
+        for _ in self.generate_stream(
+            max_new_tokens=max_new_tokens,
+            params=params,
+            log_top_k=log_top_k,
+            log_full_probs=log_full_probs,
+            stop_at_eos=stop_at_eos,
+        ):
+            pass
+        logger.info(f"Generation complete: {len(self.history)} tokens generated")
+        return self.get_generated_text()
+
+    # ------------------------------------------------------------------- undo
+
+    def undo(self, n: int = 1) -> bool:
+        """Undo the last ``n`` generated tokens.
+
+        Returns False (without changing state) if fewer than ``n`` steps exist.
+        """
+        if n < 1 or len(self.history) < n:
+            logger.debug(f"Undo failed: requested {n}, have {len(self.history)}")
+            return False
+
+        del self.history[-n:]
+        self.input_ids = self.input_ids[:, :-n]
+
+        if self._kv is not None:
+            if hasattr(self._kv, "crop") and self.seq_len > 0:
+                # Trim to just before the (new) last position so the next
+                # forward recomputes exactly one token.
+                self._kv.crop(self.seq_len - 1)
             else:
-                yield (current_text, i + 1, False)
+                self._kv = None
+        # The memo slot stays: if it matches the new seq_len it is valid again.
+
+        logger.debug(f"Undo({n}) successful: steps={len(self.history)}")
+        return True
+
+    def goto_step(self, step: int) -> bool:
+        """Rewind so that exactly ``step`` generated tokens remain."""
+        if step < 0 or step > len(self.history):
+            return False
+        if step == len(self.history):
+            return True
+        return self.undo(len(self.history) - step)
+
+    # ------------------------------------------------------------------- text
 
     def get_generated_text(self) -> str:
-        """Get the currently generated text."""
         return self.tokenizer.decode(self.generated_tokens)
 
     def get_full_text(self) -> str:
-        """Get prompt + generated text."""
+        if self.input_ids is None:
+            return ""
         return self.tokenizer.decode(self.input_ids[0])
 
-    def get_warnings(self) -> List[str]:
-        """Get collected warnings."""
+    def get_warnings(self) -> list[str]:
         return self.warnings.copy()
 
-    def undo_step(self) -> bool:
-        """Undo the last generated token.
-
-        Returns:
-            True if successful, False if no steps to undo
-        """
-        if not self.history or not self.generated_tokens:
-            logger.debug("Undo failed: no steps to undo")
-            return False
-
-        # Remove last token from history and generated tokens
-        self.history.pop()
-        self.generated_tokens.pop()
-
-        # Rebuild input_ids from prompt + remaining generated tokens
-        if self.messages is not None:
-            # Chat mode - reapply template
-            if self.has_chat_template:
-                formatted_prompt = self.tokenizer.apply_chat_template(
-                    self.messages, tokenize=False, add_generation_prompt=True
-                )
-                prompt_ids = self.tokenizer.encode(
-                    formatted_prompt, return_tensors="pt"
-                ).to(self.device)
-            else:
-                prompt = "\n".join(
-                    [f"{m['role']}: {m['content']}" for m in self.messages]
-                )
-                prompt_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(
-                    self.device
-                )
-        else:
-            # Completion mode
-            prompt_ids = self.tokenizer.encode(self.prompt, return_tensors="pt").to(
-                self.device
-            )
-
-        # Rebuild input_ids with remaining tokens
-        if self.generated_tokens:
-            generated_ids = torch.tensor([self.generated_tokens]).to(self.device)
-            self.input_ids = torch.cat([prompt_ids, generated_ids], dim=1)
-        else:
-            self.input_ids = prompt_ids
-
-        # Reset KV cache (will be rebuilt on next step)
-        self.past_key_values = None
-
-        # Invalidate probability cache since state changed
-        self.invalidate_probability_cache()
-
-        # Decrement step counter
-        self.current_step -= 1
-
-        logger.debug(f"Undo successful: current_step={self.current_step}")
-
-        return True
+    # ------------------------------------------------------------ diagnostics
 
     def validate_state(self) -> tuple[bool, Optional[str]]:
-        """
-        Validate internal state consistency.
+        """Cheap internal consistency checks (no re-tokenization)."""
+        expected_len = self._prompt_len + len(self.history)
+        if self.seq_len != expected_len:
+            return False, (
+                f"input_ids length ({self.seq_len}) != prompt + steps ({expected_len})"
+            )
+        if self._cache_len() > self.seq_len:
+            return False, (
+                f"KV cache ({self._cache_len()}) longer than sequence ({self.seq_len})"
+            )
+        return True, None
 
-        Returns:
-            (is_valid, error_message): True if state is valid, False with error message otherwise
-        """
-        try:
-            # Check history length matches generated tokens
-            if len(self.history) != len(self.generated_tokens):
-                error_msg = f"History length ({len(self.history)}) doesn't match generated tokens ({len(self.generated_tokens)})"
-                logger.warning(f"State validation failed: {error_msg}")
-                return False, error_msg
-
-            # Check current step matches history
-            if self.current_step != len(self.history):
-                error_msg = f"Current step ({self.current_step}) doesn't match history length ({len(self.history)})"
-                logger.warning(f"State validation failed: {error_msg}")
-                return False, error_msg
-
-            # Check input_ids consistency
-            if self.input_ids is not None:
-                # Recompute expected length
-                if self.messages is not None and self.has_chat_template:
-                    formatted_prompt = self.tokenizer.apply_chat_template(
-                        self.messages, tokenize=False, add_generation_prompt=True
-                    )
-                    prompt_ids = self.tokenizer.encode(
-                        formatted_prompt, return_tensors="pt"
-                    )
-                elif self.messages is not None:
-                    prompt = "\n".join(
-                        [f"{m['role']}: {m['content']}" for m in self.messages]
-                    )
-                    prompt_ids = self.tokenizer.encode(prompt, return_tensors="pt")
-                else:
-                    prompt_ids = self.tokenizer.encode(self.prompt, return_tensors="pt")
-
-                expected_length = prompt_ids.shape[1] + len(self.generated_tokens)
-                actual_length = self.input_ids.shape[1]
-
-                if expected_length != actual_length:
-                    error_msg = f"input_ids length ({actual_length}) doesn't match expected ({expected_length})"
-                    logger.warning(f"State validation failed: {error_msg}")
-                    return False, error_msg
-
-            logger.debug("State validation passed")
-            return True, None
-
-        except Exception as e:
-            error_msg = f"Validation error: {str(e)}"
-            logger.error(error_msg)
-            return False, error_msg
-
-    def get_state_info(self) -> Dict[str, Any]:
-        """
-        Get detailed state information for debugging.
-
-        Returns:
-            Dictionary with state details
-        """
+    def get_state_info(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
             "current_step": self.current_step,
             "history_length": len(self.history),
-            "generated_tokens_count": len(self.generated_tokens),
-            "input_ids_length": (
-                self.input_ids.shape[1] if self.input_ids is not None else None
-            ),
-            "has_kv_cache": self.past_key_values is not None,
-            "has_cached_probs": self._cached_next_probs is not None,
+            "generated_tokens_count": len(self.history),
+            "input_ids_length": self.seq_len if self.input_ids is not None else None,
+            "kv_cache_length": self._cache_len(),
+            "has_cached_logits": self._logits_slot is not None
+            and self._logits_slot[0] == self.seq_len,
             "warnings_count": len(self.warnings),
         }
 
-    def export_to_dict(self) -> dict:
-        """
-        Export generation history as a dictionary.
+    # ----------------------------------------------------------------- export
 
-        Returns:
-            Dictionary containing generation data
-        """
+    def export_to_dict(self, params: SamplingParams | None = None) -> dict:
+        """Export generation history (schema v2)."""
         return {
+            "schema_version": SCHEMA_VERSION,
             "mode": self.mode,
             "prompt": self.prompt,
-            "messages": self.messages if self.mode == "chat" else None,
+            "messages": self.messages,
             "generated_text": self.get_generated_text(),
             "full_text": self.get_full_text(),
             "timestamp": datetime.now().isoformat(),
             "num_steps": len(self.history),
+            "sampling_params": (
+                {
+                    "strategy": params.strategy,
+                    "temperature": params.temperature,
+                    "top_k": params.top_k,
+                    "top_p": params.top_p,
+                }
+                if params is not None
+                else {}
+            ),
             "history": [step.to_dict() for step in self.history],
         }
 
-    def export_history(self, filename: str):
-        """Export generation history to JSON file."""
+    def export_history(self, filename: str) -> str:
+        """Export generation history to a JSON file."""
         import json
 
-        data = self.export_to_dict()
-
         with open(filename, "w") as f:
-            json.dump(data, f, indent=2)
-
+            json.dump(self.export_to_dict(), f, indent=2)
         return f"Exported history to {filename}"

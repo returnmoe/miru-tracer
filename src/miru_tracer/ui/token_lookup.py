@@ -1,7 +1,7 @@
 """Token Lookup tab for Gradio UI."""
 
 import gradio as gr
-from miru_tracer.core.models import ModelManager
+from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.tokenizer_utils import (
     safe_decode_token,
     extract_token_bytes,
