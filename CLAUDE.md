@@ -117,6 +117,11 @@ as such ("Top-k entropy") — keep that labeling honest.
 - Unit tests use a session-scoped tiny random Llama (2 layers, vocab 260)
   built from config in `tests/conftest.py` — offline, <1s to build, same
   cache/GQA machinery as Qwen3. The byte-level tokenizer is built in-code.
+- `tests/unit/test_arch_matrix.py` is the cross-architecture gate: tracer,
+  lens, and interventions parametrized over tiny Llama, Gemma 4, and GLM
+  MoE-DSA models. New architecture support goes there. MLA-style attention
+  (glm_dsa) legitimately differs prefill-vs-decode by ~1e-3 — the matrix
+  uses per-arch tolerances plus rank-identity, not exact equality.
 - `tests/unit/test_tracer_cache.py` is the regression suite for the historical
   KV-cache desync bug: forward counting, manufactured desync, randomized op
   sequences compared against no-cache ground truth. If you touch tracer

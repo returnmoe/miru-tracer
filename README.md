@@ -118,6 +118,13 @@ also reflected in the readouts. Interactive Mode has a "Layer Lens" panel
 showing the per-layer readout of the current next-token position and can
 apply the Lens tab's interventions to its session.
 
+Architecture support: the Llama/Qwen/Mistral/Gemma family, **Gemma 4**
+(text-only and multimodal wrappers, softcapping included), **GLM MoE-DSA**
+(GLM-5/5.2 style), GPT-2/Phi/NeoX — auto-detected, with a per-architecture
+test matrix at tiny scale. See the support table in
+[docs/lens-tutorial.md](docs/lens-tutorial.md) for practical caveats
+(model sizes, quantization, MLA numerical notes).
+
 ## Configuration
 
 Optional `.env` file (see `.env.example`):

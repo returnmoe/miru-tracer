@@ -72,6 +72,71 @@ def tracer(tiny_model, tiny_tokenizer):
     return LLMTracer(tiny_model, tiny_tokenizer, device="cpu", seed=0)
 
 
+def build_tiny_gemma4():
+    """Tiny Gemma 4 text model: hybrid attention, logit softcapping,
+    per-layer input embeddings — the gemma4 architecture at toy scale.
+    Gemma 4 unifies K/V in global-attention layers, so kv_heads == heads."""
+    from transformers import Gemma4ForCausalLM, Gemma4TextConfig
+
+    config = Gemma4TextConfig(
+        vocab_size=TINY_VOCAB_SIZE,
+        hidden_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        intermediate_size=64,
+        head_dim=8,
+        final_logit_softcapping=30.0,  # exercise the softcap path in unembed
+    )
+    torch.manual_seed(0)
+    model = Gemma4ForCausalLM(config).eval()
+    model.generation_config.eos_token_id = None
+    return model
+
+
+def build_tiny_glm_dsa():
+    """Tiny GLM MoE-DSA model (GLM-5.2 architecture): MoE MLPs, MLA-style
+    sparse attention with indexer — all dims scaled down consistently."""
+    from transformers import GlmMoeDsaConfig, GlmMoeDsaForCausalLM
+
+    config = GlmMoeDsaConfig(
+        vocab_size=TINY_VOCAB_SIZE,
+        hidden_size=32,
+        num_hidden_layers=3,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        intermediate_size=64,
+        moe_intermediate_size=32,
+        n_routed_experts=4,
+        num_experts_per_tok=2,
+        n_shared_experts=1,
+        first_k_dense_replace=1,
+        kv_lora_rank=16,
+        q_lora_rank=32,
+        qk_rope_head_dim=8,
+        qk_nope_head_dim=8,
+        v_head_dim=8,
+        head_dim=8,
+        index_topk=16,
+        index_head_dim=8,
+        index_n_heads=2,
+    )
+    torch.manual_seed(0)
+    model = GlmMoeDsaForCausalLM(config).eval()
+    model.generation_config.eos_token_id = None
+    return model
+
+
+@pytest.fixture(scope="session")
+def tiny_gemma4():
+    return build_tiny_gemma4()
+
+
+@pytest.fixture(scope="session")
+def tiny_glm_dsa():
+    return build_tiny_glm_dsa()
+
+
 @pytest.fixture(scope="session")
 def qwen3():
     """Qwen/Qwen3-0.6B for integration tests. Skips if unavailable."""

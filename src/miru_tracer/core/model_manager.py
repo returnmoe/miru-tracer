@@ -16,10 +16,14 @@ from transformers import (
 )
 
 try:
-    # transformers >= 5 renamed AutoModelForVision2Seq
-    from transformers import AutoModelForImageTextToText
-except ImportError:  # pragma: no cover - transformers 4.x
-    from transformers import AutoModelForVision2Seq as AutoModelForImageTextToText
+    # transformers >= 5: the broadest multimodal auto-class (superset of
+    # image-text-to-text; needed for e.g. Gemma 4's unified multimodal models)
+    from transformers import AutoModelForMultimodalLM as AutoModelForMultimodal
+except ImportError:  # pragma: no cover - older transformers
+    try:
+        from transformers import AutoModelForImageTextToText as AutoModelForMultimodal
+    except ImportError:  # pragma: no cover - transformers 4.x
+        from transformers import AutoModelForVision2Seq as AutoModelForMultimodal
 
 from miru_tracer.core.logging_config import get_logger
 
@@ -178,7 +182,7 @@ class ModelManager:
                         "AutoModelForCausalLM failed. Retrying as image-text-to-text "
                         "model (VLM detected)..."
                     )
-                    self._model = AutoModelForImageTextToText.from_pretrained(
+                    self._model = AutoModelForMultimodal.from_pretrained(
                         model_name, **load_kwargs
                     )
                     is_vlm = True

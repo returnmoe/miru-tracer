@@ -150,7 +150,25 @@ Suggested first experiment: prompt `The capital of France is`, add
 basis jacobian`, regenerate, and watch both the output text and where
 " Berlin" enters the readout heatmap.
 
-## 6. Troubleshooting
+## 6. Architecture support
+
+The lens/intervention stack auto-detects where the residual blocks, final
+norm, embedding, and LM head live. Verified architectures (via tiny random
+models of each family in the test suite — `tests/unit/test_arch_matrix.py` —
+plus Qwen3-0.6B end-to-end):
+
+| Family | Example | Notes |
+|---|---|---|
+| Llama / Qwen / Mistral / Gemma ≤3 / OLMo | `Qwen/Qwen3-0.6B` (integration-tested for real) | Standard `model.layers` layout. |
+| **Gemma 4** | `google/gemma-4-31B` | Text-only and multimodal-wrapper classes both detected; logit softcapping handled; per-layer input embeddings are internal to blocks and don't affect readouts. Multimodal models run in text-only mode. 31B ⇒ GPU (4-bit is fine: quantization skips the LM head, so lens directions stay full-precision). |
+| **GLM MoE-DSA** | `zai-org/GLM-5.2` | Standard layout; MoE and sparse attention are internal to blocks; MTP layers are not part of the traced stack. Note: MLA-style attention computes prefill and decode slightly differently, so cached logits can differ from a from-scratch forward by ~1e-3 (rankings unaffected). At 753B parameters this is multi-GPU-server territory — architectural support is verified at tiny scale. |
+| GPT-2 / Phi / GPT-NeoX (Pythia) | `gpt2` | Covered by the vendored layout table. |
+
+Unknown architectures: if the model exposes a text decoder with
+`layers`/`norm`/`embed_tokens` and an `lm_head`, detection usually works; the
+error message tells you when it doesn't.
+
+## 7. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
