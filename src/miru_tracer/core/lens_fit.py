@@ -153,6 +153,11 @@ def main(argv: list[str] | None = None) -> int:
         help="where to run the model (auto = cuda if available)",
     )
     parser.add_argument(
+        "--device-map", default=None,
+        help='shard the model across devices, e.g. "auto" for multi-GPU '
+        "(needed for models that don't fit on one GPU); overrides --device",
+    )
+    parser.add_argument(
         "--dtype", default="auto", choices=["auto", "float32", "bfloat16", "float16"],
         help="model dtype (auto = bfloat16 on cuda, float32 on cpu)",
     )
@@ -186,15 +191,24 @@ def main(argv: list[str] | None = None) -> int:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype_name = args.dtype
     if dtype_name == "auto":
-        dtype_name = "bfloat16" if device == "cuda" else "float32"
+        cuda = device == "cuda" or (args.device_map and torch.cuda.is_available())
+        dtype_name = "bfloat16" if cuda else "float32"
     dtype = getattr(torch, dtype_name)
 
-    echo(f"Loading {args.model} ({dtype_name} on {device})...")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = (
-        AutoModelForCausalLM.from_pretrained(args.model, dtype=dtype).to(device).eval()
-    )
-    if device == "cpu" and dtype_name == "float32":
+    if args.device_map:
+        echo(f"Loading {args.model} ({dtype_name}, device_map={args.device_map})...")
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=dtype, device_map=args.device_map
+        ).eval()
+    else:
+        echo(f"Loading {args.model} ({dtype_name} on {device})...")
+        model = (
+            AutoModelForCausalLM.from_pretrained(args.model, dtype=dtype)
+            .to(device)
+            .eval()
+        )
+    if not args.device_map and device == "cpu" and dtype_name == "float32":
         echo(
             "Note: fitting on CPU is slow (minutes per prompt). "
             "A GPU instance with --dim-batch 32 is strongly recommended; "

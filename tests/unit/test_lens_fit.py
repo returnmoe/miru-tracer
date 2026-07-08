@@ -78,3 +78,45 @@ class TestPromptSources:
         f = tmp_path / "prompts.txt"
         f.write_text("first prompt\n\n  second prompt  \n")
         assert prompts_from_file(f) == ["first prompt", "second prompt"]
+
+
+class TestCliMain:
+    def test_device_map_and_prompts_file_flow(
+        self, tiny_model, tiny_tokenizer, tmp_path, monkeypatch
+    ):
+        """main() end-to-end with mocked HF loaders: --device-map must reach
+        from_pretrained, and the fit must produce a loadable artifact."""
+        import transformers
+
+        recorded = {}
+
+        class FakeModel:
+            @staticmethod
+            def from_pretrained(name, **kwargs):
+                recorded.update(kwargs)
+                return tiny_model
+
+        class FakeTokenizer:
+            @staticmethod
+            def from_pretrained(name, **kwargs):
+                return tiny_tokenizer
+
+        monkeypatch.setattr(transformers, "AutoModelForCausalLM", FakeModel)
+        monkeypatch.setattr(transformers, "AutoTokenizer", FakeTokenizer)
+
+        prompts_file = tmp_path / "prompts.txt"
+        prompts_file.write_text("\n".join(PROMPTS))
+        out = tmp_path / "lens.pt"
+
+        from miru_tracer.core.lens_fit import main
+
+        code = main([
+            "tiny/test-model",
+            "--prompts-file", str(prompts_file),
+            "--out", str(out),
+            "--device-map", "auto",
+            "--dim-batch", "8",
+        ])
+        assert code == 0
+        assert recorded.get("device_map") == "auto"
+        assert JacobianLens.load(str(out)).n_prompts == len(PROMPTS)

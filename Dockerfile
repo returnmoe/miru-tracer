@@ -48,6 +48,8 @@ RUN mkdir -p /var/run/sshd && \
 # Copy installed packages (miru_tracer is installed as a package)
 COPY --from=builder /usr/local/lib/python3.12/dist-packages /usr/local/lib/python3.12/dist-packages
 COPY --from=builder /usr/local/bin/miru-tracer /usr/local/bin/miru-tracer
+# Fit CLI ships in the image so GPU cloud platforms can fit lenses in-container
+COPY --from=builder /usr/local/bin/miru-tracer-fit-lens /usr/local/bin/miru-tracer-fit-lens
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

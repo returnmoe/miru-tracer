@@ -74,6 +74,54 @@ Practical notes:
   prompt still moves the running average. Once it's consistently small, more
   prompts buy little.
 
+### Model-specific notes
+
+The fitting **method is identical for every architecture** — the fitter only
+needs residual blocks, a final norm, and an unembedding, all auto-detected.
+What differs is logistics:
+
+- **Llama / Qwen / Mistral / Gemma ≤3** (e.g. `Qwen/Qwen3-0.6B`): nothing
+  special. One consumer GPU fits models in this size class.
+- **Gemma 4** (e.g. `google/gemma-4-31B`): loads through the same command —
+  transformers resolves the multimodal checkpoint automatically and the
+  fitter locates the text decoder inside it (`model.language_model`); the
+  vision tower is simply unused. 31B in bf16 needs ~62GB: use one large GPU
+  (H100/A100-80GB) or shard with `--device-map auto` across smaller ones.
+- **GLM-5/5.2-style MoE** (e.g. `zai-org/GLM-5.2`): same command, but at
+  753B total parameters this requires a multi-GPU node —
+  `--device-map auto` is mandatory, and expect a long run. The MTP
+  (speculative-decoding) layers are not part of the traced stack and are
+  ignored by the fit. Do not fit MoE giants in fp32; keep the default
+  bf16.
+
+```bash
+# multi-GPU sharding for models that don't fit on one device
+miru-tracer-fit-lens zai-org/GLM-5.2 --device-map auto --dim-batch 16
+```
+
+### Fitting inside Docker (GPU cloud platforms)
+
+Some GPU platforms only run Docker images. The Miru image ships the fit CLI,
+so you can run a fitting job with the same image you deploy the app with —
+just override the entrypoint and mount somewhere persistent for the output
+and checkpoint:
+
+```bash
+docker run --gpus all \
+  -v /path/on/host/lenses:/lenses \
+  -v /path/on/host/hf-cache:/root/.cache/huggingface \
+  --entrypoint miru-tracer-fit-lens \
+  miru-tracer \
+  Qwen/Qwen3-0.6B --dim-batch 32 --out /lenses/Qwen--Qwen3-0.6B/lens.pt
+
+# resume after an interruption/preemption: identical command, it picks up
+# from the checkpoint next to the --out path
+```
+
+If the platform doesn't let you override the entrypoint, `docker run ...
+miru-tracer bash -c "miru-tracer-fit-lens ..."` via `--entrypoint bash`
+equivalents, or set `MIRU_LENS_DIR=/lenses` and omit `--out`.
+
 ## 3. Loading a fit file into Miru Tracer
 
 Miru looks for fit files at:
