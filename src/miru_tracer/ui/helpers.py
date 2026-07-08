@@ -7,6 +7,7 @@ export-file management, probability tables, and visibility toggles.
 
 from __future__ import annotations
 
+import html
 import json
 import tempfile
 from pathlib import Path
@@ -167,6 +168,39 @@ class ExportManager:
 
     def disabled(self):
         return gr.update(interactive=False)
+
+
+def static_table_html(headers: list[str], rows: list[list]) -> str:
+    """Server-rendered read-only table (see lens_views.py for why: Gradio 6's
+    virtualized gr.Dataframe keeps the previous row count when its value
+    changes shape, so growing results stay hidden until the user interacts
+    with the table). Cells are escaped; the header sticks while the scroll
+    container caps the height."""
+    if not rows:
+        return ""
+    table_style = (
+        "border:0; border-collapse:collapse; font-size:0.9em; line-height:1.5; "
+        "font-family:var(--font-mono, monospace); white-space:pre;"
+    )
+    th = (
+        'style="position:sticky; top:0; z-index:1; text-align:left; '
+        "background:var(--body-background-fill, #fff); padding:5px 14px; "
+        'font-weight:600; border:0;"'
+    )
+    td = (
+        'style="padding:5px 14px; border:0; '
+        'border-bottom:1px solid rgba(127,127,127,0.18);"'
+    )
+    header = "".join(f"<th {th}>{html.escape(str(h))}</th>" for h in headers)
+    body = "".join(
+        "<tr>" + "".join(f"<td {td}>{html.escape(str(c))}</td>" for c in row) + "</tr>"
+        for row in rows
+    )
+    return (
+        '<div style="overflow:auto; max-height:75vh; max-width:100%; '
+        'padding-bottom:6px; margin-top:6px;">'
+        f'<table style="{table_style}"><tr>{header}</tr>{body}</table></div>'
+    )
 
 
 def build_prob_table(dist: NextTokenDistribution) -> pd.DataFrame:

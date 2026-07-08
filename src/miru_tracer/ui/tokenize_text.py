@@ -1,13 +1,13 @@
 """Tokenize Text tab for Gradio UI."""
 
 import gradio as gr
-import pandas as pd
 
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.tokenizer_utils import (
     detect_byte_level_bpe,
     safe_decode_token,
 )
+from miru_tracer.ui.helpers import static_table_html
 
 
 def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
@@ -32,13 +32,10 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
 
         gr.Markdown("### Results")
 
-        tokens_output = gr.Dataframe(
-            headers=["Position", "Type", "ID", "Representation"],
-            datatype=["number", "str", "number", "str"],
-            interactive=False,
-            wrap=True,
-            elem_classes="token-table",
-        )
+        # Server-rendered HTML rather than gr.Dataframe: Gradio 6's
+        # virtualized dataframe keeps the previous row count when a new
+        # value changes the table's shape (see helpers.static_table_html).
+        tokens_output = gr.HTML(elem_classes="token-table")
 
         additional_info = gr.Textbox(
             elem_classes="miru-textbox-mono",
@@ -54,10 +51,10 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
             tokenizer = model_manager.get_tokenizer()
 
             if tokenizer is None:
-                return None, "Error: No model loaded. Please load a model first."
+                return "", "Error: No model loaded. Please load a model first."
 
             if not text:
-                return None, "Error: Please enter text to tokenize"
+                return "", "Error: Please enter text to tokenize"
 
             try:
                 # Tokenize with add_special_tokens=False (don't auto-add BOS/EOS)
@@ -65,7 +62,7 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
 
                 special_token_ids = set(getattr(tokenizer, "all_special_ids", []))
 
-                # Build dataframe
+                # Build table rows
                 rows = []
                 for i, token_id in enumerate(token_ids):
                     # Get only the raw token (second return value from safe_decode_token)
@@ -79,8 +76,8 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
 
                     rows.append([i, token_type, token_id, raw_token])
 
-                df = pd.DataFrame(
-                    rows, columns=["Position", "Type", "ID", "Representation"]
+                table = static_table_html(
+                    ["Position", "Type", "ID", "Representation"], rows
                 )
                 count_msg = f"Total tokens: {len(token_ids)}"
 
@@ -88,10 +85,10 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
                 if detect_byte_level_bpe(tokenizer):
                     count_msg += "\nThis is a byte-level BPE tokenizer. Some tokens may show as incomplete UTF-8 sequences."
 
-                return df, count_msg
+                return table, count_msg
 
             except Exception as e:
-                return None, f"Error: {str(e)}"
+                return "", f"Error: {str(e)}"
 
         tokenize_button.click(
             fn=tokenize_handler,

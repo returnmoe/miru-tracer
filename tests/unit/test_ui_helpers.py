@@ -12,6 +12,7 @@ from miru_tracer.ui.helpers import (
     build_radio_choices,
     parse_chat_messages,
     prob_mode_key,
+    static_table_html,
     thinking_key,
     toggle_mode_visibility,
     toggle_temperature,
@@ -140,3 +141,19 @@ class TestProbModeKey:
         assert prob_mode_key("Raw (pre-temperature)") == "raw"
         assert prob_mode_key("Adjusted (post-temperature)") == "adjusted"
         assert prob_mode_key(None) == "adjusted"
+
+
+class TestStaticTableHtml:
+    def test_rows_and_headers_rendered(self):
+        out = static_table_html(["ID", "Token"], [[65, "A"], [66, "B"]])
+        assert out.count("<tr>") == 3  # header + 2 rows
+        assert "<th" in out and "ID" in out and "Token" in out
+        assert "65" in out and "B" in out
+
+    def test_cells_escaped(self):
+        out = static_table_html(["T"], [["<script>alert(1)</script>"]])
+        assert "<script>" not in out
+        assert "&lt;script&gt;" in out
+
+    def test_empty_rows(self):
+        assert static_table_html(["A"], []) == ""
