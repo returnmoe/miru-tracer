@@ -199,7 +199,7 @@ class TestLensViews:
         assert out.index(">L2<") < out.index(">L0<")
         assert ">g<" in out  # top-1 cell text
         assert "2. h (0.050)" in out  # hover lists the top-k
-        assert "<table" in out and "overflow-x:auto" in out
+        assert "<table" in out and "overflow:auto" in out  # scrolls both ways
         empty = LensSlice(
             mode="logit", layers=[], positions=[], position_texts=[],
             tokens=[], probs=[], texts=[],

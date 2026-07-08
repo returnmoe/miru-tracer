@@ -5,8 +5,14 @@ Lens tab: at (layers x positions) scale, Plotly's per-cell SVG text and
 Gradio's virtualized dataframe both misbehave in the browser (relayout
 freezes; the table blanking while scrolling). Static HTML has neither
 failure mode, renders instantly, and — unlike self-resizing Plotly figures
-(see the ResizeObserver note in theme.py) — is safe inside a horizontal
-scroll container.
+(see the ResizeObserver note in theme.py) — is safe inside a scroll
+container.
+
+Layout notes: each view lives in an ``overflow:auto`` div capped at 75vh, so
+wide grids scroll horizontally inside it (the scrollbar sits on the div's
+edge, always reachable). Header rows stick to the top and label columns
+stick to the left while panning. Colors are self-contained bg+fg pairs or
+theme-variable-based, so both light and dark themes stay readable.
 
 The pinned-ranks line chart stays Plotly (small, no per-cell text), as does
 the Interactive Mode lens panel (single position).
@@ -26,15 +32,35 @@ _YLORRD = [
     (253, 141, 60), (252, 78, 42), (227, 26, 28), (189, 0, 38), (128, 0, 38),
 ]
 
-_SCROLL_DIV = '<div style="overflow-x:auto; max-height:70vh; overflow-y:auto;">'
-_TABLE_STYLE = (
-    "border-collapse:collapse; font-size:0.8em; line-height:1.2; "
+_BG = "var(--body-background-fill, #fff)"
+
+# One accent encodes "how many readouts" everywhere: counts-grid cell fill
+# AND the sparkline glyphs in the readouts table, so more ink = more
+# readouts in both themes (the old grayscale grid read inverted vs the
+# sparklines in dark mode).
+_ACCENT = "79,70,229"  # indigo
+_ACCENT_SPARK = "#7c7ff2"  # mid indigo, legible on light and dark
+
+_SCROLL_DIV = (
+    '<div style="overflow:auto; max-height:75vh; max-width:100%; '
+    'padding-bottom:6px; margin-top:6px;">'
+)
+# Grids (heatmap, counts): spaced rounded cells. List (readouts): collapsed
+# rows with subtle separators.
+_GRID_STYLE = (
+    "border-collapse:separate; border-spacing:3px; font-size:0.8em; "
+    "line-height:1.35; font-family:var(--font-mono, monospace); "
+    "white-space:nowrap;"
+)
+_LIST_STYLE = (
+    "border-collapse:collapse; font-size:0.8em; line-height:1.4; "
     "font-family:var(--font-mono, monospace); white-space:nowrap;"
 )
-_HEADER_STYLE = (
-    "position:sticky; top:0; background:var(--body-background-fill, #fff); "
-    "padding:2px 6px; text-align:left; z-index:1;"
-)
+_TH = f"background:{_BG}; padding:3px 10px; font-weight:600;"
+_COL_TH = f'style="position:sticky; top:0; z-index:1; text-align:left; {_TH}"'
+_ROW_TH = f'style="position:sticky; left:0; z-index:1; text-align:right; {_TH}"'
+_CORNER_TH = f'style="position:sticky; top:0; left:0; z-index:2; {_TH}"'
+_CAPTION = 'style="margin:2px 0 4px 0; font-size:0.85em; opacity:0.9;"'
 
 
 def _color(v: float) -> tuple[int, int, int]:
@@ -51,7 +77,10 @@ def _cell_style(v: float) -> str:
     r, g, b = _color(v)
     # Explicit fg per bg keeps cells readable in light AND dark themes.
     fg = "#111" if (0.299 * r + 0.587 * g + 0.114 * b) > 140 else "#fff"
-    return f"background:rgb({r},{g},{b}); color:{fg}; padding:2px 6px;"
+    return (
+        f"background:rgb({r},{g},{b}); color:{fg}; padding:3px 8px; "
+        "border-radius:4px; text-align:center;"
+    )
 
 
 def _tok(text: str) -> str:
@@ -64,7 +93,7 @@ def heatmap_html(slice_: LensSlice) -> str:
         return ""
 
     header = "".join(
-        f'<th style="{_HEADER_STYLE}">{p}<br>{_tok(text)}</th>'
+        f"<th {_COL_TH}>{p}<br>{_tok(text)}</th>"
         for p, text in zip(slice_.positions, slice_.position_texts, strict=True)
     )
 
@@ -80,7 +109,7 @@ def heatmap_html(slice_: LensSlice) -> str:
 
     body = []
     for i in reversed(range(len(slice_.layers))):  # final layer on top
-        cells = [f'<th style="{_HEADER_STYLE}">L{slice_.layers[i]}</th>']
+        cells = [f"<th {_ROW_TH}>L{slice_.layers[i]}</th>"]
         for j in range(len(slice_.positions)):
             probs, texts = slice_.probs[i][j], slice_.texts[i][j]
             top1 = _tok(texts[0]) if texts else ""
@@ -96,12 +125,12 @@ def heatmap_html(slice_: LensSlice) -> str:
     caption = (
         f"<b>Lens readouts — {slice_.mode}</b> · each cell predicts the NEXT "
         f"token after the column's input token · color = top-1 {value_name} · "
-        "hover a cell for its top-k"
+        "hover a cell for its top-k · scroll sideways for more positions"
     )
     return (
-        f'<p style="margin:0 0 4px 0; font-size:0.85em;">{caption}</p>'
-        f'{_SCROLL_DIV}<table style="{_TABLE_STYLE}">'
-        f'<tr><th style="{_HEADER_STYLE}"></th>{header}</tr>{"".join(body)}'
+        f"<p {_CAPTION}>{caption}</p>"
+        f'{_SCROLL_DIV}<table style="{_GRID_STYLE}">'
+        f"<tr><th {_CORNER_TH}></th>{header}</tr>{''.join(body)}"
         "</table></div>"
     )
 
@@ -110,21 +139,30 @@ def readouts_table_html(rows: list[ReadoutRow]) -> str:
     """Aggregated readouts table with a per-layer sparkline column."""
     if not rows:
         return ""
+    cell = (
+        'style="padding:4px 14px; '
+        'border-bottom:1px solid rgba(127,127,127,0.18);"'
+    )
+    cell_num = (
+        'style="padding:4px 14px; text-align:right; '
+        'border-bottom:1px solid rgba(127,127,127,0.18);"'
+    )
     body = "".join(
         "<tr>"
-        f'<td style="padding:2px 8px;">{_tok(row.text)}</td>'
-        f'<td style="padding:2px 8px; text-align:right;">{row.token_id}</td>'
-        f'<td style="padding:2px 8px; text-align:right;">{row.count}</td>'
-        f'<td style="padding:2px 8px;">{sparkline(row.count_by_layer)}</td>'
+        f"<td {cell}>{_tok(row.text)}</td>"
+        f"<td {cell_num}>{row.token_id}</td>"
+        f"<td {cell_num}>{row.count}</td>"
+        f'<td {cell} title="count per layer, low to high">'
+        f'<span style="color:{_ACCENT_SPARK};">{sparkline(row.count_by_layer)}'
+        "</span></td>"
         "</tr>"
         for row in rows
     )
     header = "".join(
-        f'<th style="{_HEADER_STYLE}">{name}</th>'
-        for name in ("Token", "ID", "Count", "By layer")
+        f"<th {_COL_TH}>{name}</th>" for name in ("Token", "ID", "Count", "By layer")
     )
     return (
-        f'{_SCROLL_DIV}<table style="{_TABLE_STYLE}">'
+        f'{_SCROLL_DIV}<table style="{_LIST_STYLE}">'
         f"<tr>{header}</tr>{body}</table></div>"
     )
 
@@ -132,35 +170,41 @@ def readouts_table_html(rows: list[ReadoutRow]) -> str:
 def distribution_html(
     rows: list[ReadoutRow], layers: list[int], *, limit: int = 20
 ) -> str:
-    """Token x layer grid of readout counts (grayscale)."""
+    """Token x layer grid of readout counts (theme-aware accent scale)."""
     rows = rows[:limit]
     if not rows or not layers:
         return ""
     peak = max(max(row.count_by_layer) for row in rows) or 1
 
-    header = "".join(
-        f'<th style="{_HEADER_STYLE}">L{layer}</th>' for layer in layers
-    )
+    header = "".join(f"<th {_COL_TH}>L{layer}</th>" for layer in layers)
     body = []
     for row in rows:
-        cells = [
-            f'<th style="{_HEADER_STYLE}">{_tok(row.text)} ({row.count})</th>'
-        ]
+        cells = [f"<th {_ROW_TH}>{_tok(row.text)} ({row.count})</th>"]
         for layer, count in zip(layers, row.count_by_layer, strict=True):
-            shade = round(255 * (1 - count / peak))
-            fg = "#111" if shade > 140 else "#fff"
+            if count:
+                alpha = 0.15 + 0.85 * count / peak
+                fg = "#fff" if alpha > 0.55 else "var(--body-text-color, inherit)"
+                style = (
+                    f"background:rgba({_ACCENT},{alpha:.2f}); color:{fg}; "
+                    "padding:3px 8px; border-radius:4px; text-align:center; "
+                    "min-width:1.6em;"
+                )
+                label = str(count)
+            else:
+                style = (
+                    "background:rgba(127,127,127,0.08); padding:3px 8px; "
+                    "border-radius:4px; min-width:1.6em;"
+                )
+                label = ""
             cells.append(
-                f'<td style="background:rgb({shade},{shade},{shade}); '
-                f'color:{fg}; padding:2px 6px; text-align:right;" '
-                f'title="L{layer}: {count} cells">{count or ""}</td>'
+                f'<td style="{style}" title="L{layer}: {count} cells">{label}</td>'
             )
         body.append("<tr>" + "".join(cells) + "</tr>")
 
     return (
-        '<p style="margin:8px 0 4px 0; font-size:0.85em;"><b>Readout counts '
-        "by layer</b> · how often each token appears in the selected cells' "
-        "top-k</p>"
-        f'{_SCROLL_DIV}<table style="{_TABLE_STYLE}">'
-        f'<tr><th style="{_HEADER_STYLE}"></th>{header}</tr>{"".join(body)}'
+        f"<p {_CAPTION}><b>Readout counts by layer</b> · how often each "
+        "token appears in the selected cells' top-k</p>"
+        f'{_SCROLL_DIV}<table style="{_GRID_STYLE}">'
+        f"<tr><th {_CORNER_TH}></th>{header}</tr>{''.join(body)}"
         "</table></div>"
     )
