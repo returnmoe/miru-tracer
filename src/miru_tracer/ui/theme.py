@@ -35,12 +35,15 @@ class MiruTheme(Base):
 
 MIRU_CSS = """
 /* Custom layout only - theme handles colors, fonts, and component styling.
-   Gradio 6 no longer centers <main> itself (its fill_width logic centers a
-   wider outer wrapper), so the width cap needs explicit auto margins. */
-main {
-    max-width: 1024px !important;
-    margin-left: auto !important;
-    margin-right: auto !important;
+   IMPORTANT: never put width constraints on Gradio-owned layout elements
+   (e.g. <main>) — Gradio 6's tab bar re-measures available width on every
+   tab switch, and a capped+centered main feeds it a smaller number each
+   time (ratcheting shrink). We constrain our own wrapper column instead. */
+#miru-shell {
+    max-width: 1024px;
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
 }
 
 /* Monospace textboxes - use theme's monospace font */

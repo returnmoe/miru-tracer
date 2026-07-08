@@ -38,7 +38,9 @@ def create_app() -> gr.Blocks:
     model_manager = ModelManager()
 
     with gr.Blocks(title="Miru Tracer", analytics_enabled=False) as app:
-        with gr.Tabs():
+        # Width is constrained on this wrapper, not on Gradio's own layout
+        # elements — see the note in ui/theme.py.
+        with gr.Column(elem_id="miru-shell"), gr.Tabs():
             _, model_loader_state = create_model_loader_tab(model_manager)
             create_tokenize_text_tab(model_manager)
             create_token_lookup_tab(model_manager)
