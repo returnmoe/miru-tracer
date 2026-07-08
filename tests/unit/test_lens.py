@@ -13,6 +13,7 @@ from miru_tracer.core.lens import (
     record_lens_activations,
     sanitize_model_name,
 )
+from miru_tracer.core.lens_io import save_lens
 
 
 @pytest.fixture(scope="module")
@@ -196,23 +197,44 @@ class TestLensStore:
     def test_roundtrip_discovery(self, tmp_path, tiny_lens):
         store = LensStore(base_dir=tmp_path)
         path = store.lens_path("Qwen/Qwen3-0.6B")
+        assert path.name == "lens.safetensors"
         path.parent.mkdir(parents=True)
-        tiny_lens.save(str(path))
+        save_lens(tiny_lens, path)
         loaded = store.get("Qwen/Qwen3-0.6B")
         assert loaded is not None
         assert loaded.source_layers == tiny_lens.source_layers
         # cached object returned on second call
         assert store.get("Qwen/Qwen3-0.6B") is loaded
 
+    def test_legacy_pt_fallback(self, tmp_path, tiny_lens):
+        store = LensStore(base_dir=tmp_path)
+        legacy = store.lens_path("m").with_name("lens.pt")
+        legacy.parent.mkdir(parents=True)
+        tiny_lens.save(str(legacy))
+        assert store.existing_lens_path("m") == legacy
+        loaded = store.get("m")
+        assert loaded is not None
+        assert loaded.source_layers == tiny_lens.source_layers
+
+    def test_prefers_safetensors_over_legacy(self, tmp_path, tiny_lens):
+        store = LensStore(base_dir=tmp_path)
+        path = store.lens_path("m")
+        path.parent.mkdir(parents=True)
+        tiny_lens.save(str(path.with_name("lens.pt")))
+        save_lens(tiny_lens, path)
+        assert store.existing_lens_path("m") == path
+        assert store.get("m") is not None
+
     def test_sanitize(self):
         assert "/" not in sanitize_model_name("Qwen/Qwen3-0.6B")
         assert sanitize_model_name("Qwen/Qwen3-0.6B") == "Qwen--Qwen3-0.6B"
 
-    def test_corrupt_file_returns_none(self, tmp_path):
+    @pytest.mark.parametrize("filename", ["lens.safetensors", "lens.pt"])
+    def test_corrupt_file_returns_none(self, tmp_path, filename):
         store = LensStore(base_dir=tmp_path)
-        path = store.lens_path("m")
+        path = store.lens_path("m").with_name(filename)
         path.parent.mkdir(parents=True)
-        path.write_text("not a torch file")
+        path.write_text("neither safetensors nor a torch file")
         assert store.get("m") is None
 
 

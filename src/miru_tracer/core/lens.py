@@ -30,6 +30,7 @@ import torch
 from miru_tracer.core._jlens import HFLensModel, JacobianLens, from_hf
 from miru_tracer.core._jlens.hooks import ActivationRecorder
 from miru_tracer.core.interventions import InterventionSet, apply_interventions
+from miru_tracer.core.lens_io import load_lens
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.tokenizer_utils import safe_decode_token
 
@@ -50,6 +51,10 @@ def is_word_token(text: str) -> bool:
     return bool(_WORD_RE.search(text))
 
 
+LENS_FILENAME = "lens.safetensors"
+LEGACY_LENS_FILENAME = "lens.pt"
+
+
 def default_lens_dir() -> Path:
     return Path(
         os.getenv("MIRU_LENS_DIR", str(Path.home() / ".cache" / "miru-tracer" / "lenses"))
@@ -65,31 +70,40 @@ class LensStore:
 
     def __init__(self, base_dir: Path | None = None):
         self._base_dir = base_dir
-        self._cache: dict[str, tuple[float, JacobianLens]] = {}
+        self._cache: dict[str, tuple[tuple[str, float], JacobianLens]] = {}
 
     @property
     def base_dir(self) -> Path:
         return self._base_dir if self._base_dir is not None else default_lens_dir()
 
     def lens_path(self, model_name: str) -> Path:
-        """Where the fitted lens for a model lives (whether or not it exists)."""
-        return self.base_dir / sanitize_model_name(model_name) / "lens.pt"
+        """Where a NEW fit/install for a model is written (whether or not it exists)."""
+        return self.base_dir / sanitize_model_name(model_name) / LENS_FILENAME
+
+    def existing_lens_path(self, model_name: str) -> Path | None:
+        """The fitted artifact on disk, preferring safetensors over legacy lens.pt."""
+        model_dir = self.base_dir / sanitize_model_name(model_name)
+        for name in (LENS_FILENAME, LEGACY_LENS_FILENAME):
+            path = model_dir / name
+            if path.is_file():
+                return path
+        return None
 
     def get(self, model_name: str) -> JacobianLens | None:
         """Load the fitted lens for a model, or None if not fitted yet."""
-        path = self.lens_path(model_name)
-        if not path.is_file():
+        path = self.existing_lens_path(model_name)
+        if path is None:
             return None
-        mtime = path.stat().st_mtime
+        key = (str(path), path.stat().st_mtime)
         cached = self._cache.get(model_name)
-        if cached is not None and cached[0] == mtime:
+        if cached is not None and cached[0] == key:
             return cached[1]
         try:
-            lens = JacobianLens.load(str(path))
+            lens = load_lens(path)
         except Exception as e:
             logger.error(f"Failed to load lens at {path}: {e}")
             return None
-        self._cache[model_name] = (mtime, lens)
+        self._cache[model_name] = (key, lens)
         logger.info(f"Loaded Jacobian lens for {model_name}: {lens}")
         return lens
 

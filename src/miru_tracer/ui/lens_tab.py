@@ -23,15 +23,16 @@ import traceback
 
 import gradio as gr
 
-from miru_tracer.core._jlens import JacobianLens
 from miru_tracer.core.interventions import Intervention
 from miru_tracer.core.lens import (
+    LEGACY_LENS_FILENAME,
     aggregate_readouts,
     compute_lens_slice,
     decode_token,
     get_lens_store,
     record_lens_activations,
 )
+from miru_tracer.core.lens_io import load_lens, save_lens
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.sampling import SamplingParams
@@ -273,15 +274,15 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     gr.Markdown(
                         "Fit `J_ℓ` matrices once per model — on a **GPU "
                         "instance**: `miru-tracer-fit-lens <model> "
-                        "--dim-batch 32` — then load the `lens.pt` here. "
-                        "Logit-lens mode never needs a fit file."
+                        "--dim-batch 32` — then load the `lens.safetensors` "
+                        "here. Logit-lens mode never needs a fit file."
                     )
                     lens_file_status = gr.Textbox(
                         label="Fit file status", interactive=False, lines=3
                     )
                     lens_file_upload = gr.File(
-                        label="Load fit file (lens.pt)",
-                        file_types=[".pt"],
+                        label="Load fit file (lens.safetensors or legacy lens.pt)",
+                        file_types=[".safetensors", ".pt"],
                         type="filepath",
                     )
                     lens_file_check_button = gr.Button("Check status", size="sm")
@@ -664,22 +665,22 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 return "No model loaded."
             store = get_lens_store()
             lens = store.get(model_name)
-            path = store.lens_path(model_name)
             if lens is None:
                 return (
                     f"No fitted lens for {model_name}.\n"
-                    f"Expected at: {path}\n"
+                    f"Expected at: {store.lens_path(model_name)}\n"
                     f"Fit one on a GPU instance: miru-tracer-fit-lens {model_name}"
                 )
             return (
                 f"Fitted lens loaded for {model_name}: "
                 f"{len(lens.source_layers)} layers "
                 f"(L{lens.source_layers[0]}..L{lens.source_layers[-1]}), "
-                f"averaged over {lens.n_prompts} prompts.\nPath: {path}"
+                f"averaged over {lens.n_prompts} prompts.\n"
+                f"Path: {store.existing_lens_path(model_name)}"
             )
 
         def install_fit_file(filepath):
-            """Validate an uploaded lens.pt and install it for the loaded model."""
+            """Validate an uploaded fit file and install it for the loaded model."""
             if filepath is None:
                 return fit_file_status()
             model = model_manager.get_model()
@@ -687,7 +688,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             if model is None:
                 return "Error: Load a model first — the fit file is stored per model."
             try:
-                lens = JacobianLens.load(filepath)
+                lens = load_lens(filepath)
             except Exception as e:
                 return f"Error: not a valid lens file: {e}"
 
@@ -707,7 +708,10 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
             path = get_lens_store().lens_path(model_name)
             path.parent.mkdir(parents=True, exist_ok=True)
-            lens.save(str(path))
+            save_lens(lens, path)
+            # A stale legacy pickle next to the fresh safetensors would keep
+            # the unsafe copy around — drop it.
+            path.with_name(LEGACY_LENS_FILENAME).unlink(missing_ok=True)
             logger.info(f"Installed fit file for {model_name} at {path}")
             return f"Installed.\n{fit_file_status()}"
 

@@ -26,9 +26,9 @@ it once you have it.
 
 ## 1. What a fit file is
 
-A fit file (`lens.pt`) contains one `d_model × d_model` matrix per layer —
-the model's input–output Jacobian averaged over a text corpus — plus a little
-metadata (layer indices, prompt count, `d_model`). For a 0.6B model that's
+A fit file (`lens.safetensors`) contains one `d_model × d_model` matrix per
+layer — the model's input–output Jacobian averaged over a text corpus — plus a
+little metadata (layer indices, prompt count, `d_model`). For a 0.6B model that's
 ~50MB (fp16); for larger models it scales with `n_layers × d_model²`, not
 with parameter count, so even a 27B-class model's fit file stays in the
 single-digit GB range.
@@ -60,16 +60,21 @@ Useful flags:
 | `--dim-batch K` | Jacobian rows per backward pass. Higher = fewer backward passes but more memory. 4–8 on CPU, 16–64 on GPU. |
 | `--max-length N` | Truncate prompts to N tokens (default 128). Longer = more positions averaged per prompt, more memory. |
 | `--device cuda --dtype bfloat16` | Defaults resolve to this automatically when CUDA is available. |
-| `--out path/lens.pt` | Write somewhere specific (default: Miru's lens cache). |
+| `--out path/lens.safetensors` | Write somewhere specific (default: Miru's lens cache). A `.pt` extension writes the legacy torch.save format instead. |
 | `--fresh` | Discard the checkpoint and start over. |
 
 Practical notes:
 
 - **Interrupt freely.** Fitting checkpoints after every prompt. Ctrl-C (or a
   spot-instance reclaim) loses nothing; re-running the same command resumes.
-- **Partial fits work.** The output `lens.pt` is (re)written after every
-  chunk and is a valid lens averaged over the prompts so far. You can start
-  using it while the rest of the corpus finishes.
+- **Partial fits work.** The output `lens.safetensors` is (re)written after
+  every chunk and is a valid lens averaged over the prompts so far. You can
+  start using it while the rest of the corpus finishes.
+- **Safe to share.** Fit files are safetensors — no pickle, so copying one
+  from an untrusted source can't execute code. Legacy `lens.pt` artifacts
+  from older versions still load, and
+  `miru-tracer-convert-lens lens.pt` rewrites one as `lens.safetensors`
+  (uploading a `.pt` in the app converts it too).
 - Watch the per-prompt log line `max_d_mean` — it tracks how much each new
   prompt still moves the running average. Once it's consistently small, more
   prompts buy little.
@@ -112,7 +117,7 @@ docker run --gpus all \
   -v /path/on/host/hf-cache:/root/.cache/huggingface \
   --entrypoint miru-tracer-fit-lens \
   miru-tracer \
-  Qwen/Qwen3-0.6B --dim-batch 32 --out /lenses/Qwen--Qwen3-0.6B/lens.pt
+  Qwen/Qwen3-0.6B --dim-batch 32 --out /lenses/Qwen--Qwen3-0.6B/lens.safetensors
 
 # resume after an interruption/preemption: identical command, it picks up
 # from the checkpoint next to the --out path
@@ -127,18 +132,19 @@ equivalents, or set `MIRU_LENS_DIR=/lenses` and omit `--out`.
 Miru looks for fit files at:
 
 ```
-$MIRU_LENS_DIR/<model-name-sanitized>/lens.pt
-# default: ~/.cache/miru-tracer/lenses/Qwen--Qwen3-0.6B/lens.pt
+$MIRU_LENS_DIR/<model-name-sanitized>/lens.safetensors
+# default: ~/.cache/miru-tracer/lenses/Qwen--Qwen3-0.6B/lens.safetensors
+# a legacy lens.pt in the same directory still loads (safetensors wins if both exist)
 ```
 
 Three equivalent ways to get your file there:
 
 1. **Upload in the app**: Lens tab → *"Jacobian lens fit file"* accordion →
-   drop the `lens.pt` in. Miru validates it against the loaded model
-   (`d_model`, layer count) and installs it in the cache. "Check status"
-   shows what's currently loaded.
+   drop the `lens.safetensors` (or a legacy `lens.pt`) in. Miru validates it
+   against the loaded model (`d_model`, layer count) and installs it in the
+   cache — always as safetensors. "Check status" shows what's currently loaded.
 2. **Copy it yourself**:
-   `scp gpu-box:lens.pt ~/.cache/miru-tracer/lenses/Qwen--Qwen3-0.6B/lens.pt`
+   `scp gpu-box:lens.safetensors ~/.cache/miru-tracer/lenses/Qwen--Qwen3-0.6B/lens.safetensors`
    (the directory name is the model name with `/` replaced by `--`).
 3. **Fit directly into place**: if you run `miru-tracer-fit-lens` on the same
    machine without `--out`, it already writes to the cache path.

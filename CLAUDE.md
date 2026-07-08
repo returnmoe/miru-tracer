@@ -73,7 +73,9 @@ as close to upstream as possible — it is exempt from some lint rules).
 `compute_lens_slice` captures block outputs with hooks (NOT
 `output_hidden_states`, whose last entry is post-final-norm) and derives
 logit/jacobian/diff readouts per (layer, position); `LensStore` finds fitted
-artifacts under `MIRU_LENS_DIR`. Fitting runs OFFLINE via
+artifacts (`lens.safetensors`, legacy `lens.pt`) under `MIRU_LENS_DIR` —
+artifact I/O goes through `lens_io.py` (safetensors default, vendored
+torch.save codec for `.pt`). Fitting runs OFFLINE via
 `miru-tracer-fit-lens` (deliberately not in-app — do it on a GPU box; see
 docs/lens-tutorial.md); the Lens tab only loads/validates fit files. Fitting
 is chunk-checkpointed and a partial artifact is a valid lens. `decode_token`

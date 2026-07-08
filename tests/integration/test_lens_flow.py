@@ -9,6 +9,7 @@ import pytest
 from gradio_client import Client
 
 from miru_tracer.core._jlens import fit, from_hf
+from miru_tracer.core.lens_io import save_lens
 
 pytestmark = pytest.mark.integration
 
@@ -39,7 +40,7 @@ def lens_app(tiny_model, tiny_tokenizer, tmp_path, monkeypatch):
     )
     path = store.lens_path("tiny/test-model")
     path.parent.mkdir(parents=True, exist_ok=True)
-    lens.save(str(path))
+    save_lens(lens, path)
 
     set_active_interventions([])
     from miru_tracer.app import create_app

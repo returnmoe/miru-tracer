@@ -7,7 +7,10 @@ cancellation, and resumable checkpoints, and exposes the
 ``miru-tracer-fit-lens`` console command.
 
 The lens artifact saved after every chunk is a valid (partially averaged)
-lens, so the app can pick it up before the full corpus is done.
+lens, so the app can pick it up before the full corpus is done. Artifacts
+are written as safetensors by default (safe to share between machines);
+passing an ``--out`` path ending in ``.pt`` writes the legacy torch.save
+format instead.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from pathlib import Path
 
 from miru_tracer.core._jlens import JacobianLens, fit, from_hf
 from miru_tracer.core.lens import get_lens_store
+from miru_tracer.core.lens_io import save_lens
 from miru_tracer.core.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -110,7 +114,7 @@ def iter_fit_lens(
             checkpoint_path=str(checkpoint_path),
             resume=True,
         )
-        lens.save(str(out_path))
+        save_lens(lens, out_path)
         yield FitProgress(
             prompts_done=end,
             prompts_total=len(prompts),
@@ -162,7 +166,8 @@ def main(argv: list[str] | None = None) -> int:
         help="model dtype (auto = bfloat16 on cuda, float32 on cpu)",
     )
     parser.add_argument(
-        "--out", help="output lens path (default: the app's lens cache dir)"
+        "--out", help="output lens path (default: the app's lens cache dir); "
+        "a .pt extension writes the legacy torch.save format",
     )
     parser.add_argument(
         "--fresh", action="store_true",
@@ -212,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         echo(
             "Note: fitting on CPU is slow (minutes per prompt). "
             "A GPU instance with --dim-batch 32 is strongly recommended; "
-            "copy the resulting lens.pt back afterwards."
+            "copy the resulting lens.safetensors back afterwards."
         )
 
     if args.prompts_file:

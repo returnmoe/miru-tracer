@@ -101,8 +101,9 @@ the file back:
 ```bash
 # on the GPU box
 miru-tracer-fit-lens Qwen/Qwen3-0.6B --dim-batch 32
-# then load lens.pt via the Lens tab's "fit file" section, or copy it to
-# ~/.cache/miru-tracer/lenses/<model>/lens.pt (override with MIRU_LENS_DIR)
+# then load lens.safetensors via the Lens tab's "fit file" section, or copy it
+# to ~/.cache/miru-tracer/lenses/<model>/lens.safetensors (override with
+# MIRU_LENS_DIR)
 ```
 
 Fitting is checkpointed (interrupt + re-run resumes) and partial fits are
