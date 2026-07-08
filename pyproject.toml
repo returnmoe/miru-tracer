@@ -27,6 +27,9 @@ gpu = [
     "bitsandbytes",
     "triton",
 ]
+lens = [
+    "datasets",
+]
 dev = [
     "pytest~=8.0",
     "pytest-timeout~=2.3",
@@ -35,6 +38,7 @@ dev = [
 
 [project.scripts]
 miru-tracer = "miru_tracer.app:main"
+miru-tracer-fit-lens = "miru_tracer.core.lens_fit:main"
 
 [project.urls]
 Homepage = "https://github.com/returnmoe/miru-tracer"
