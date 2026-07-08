@@ -21,26 +21,38 @@ def lens_mode_key(ui_choice: str) -> str:
     return "logit"
 
 
-def token_ref_to_id(ref: str, tokenizer) -> int:
-    """Resolve a user token reference: a numeric id, or text (first token).
+def token_mode_key(ui_choice: str) -> str:
+    """Map the Text/ID selector label to a ``token_ref_to_id`` mode."""
+    return "id" if (ui_choice or "").strip().lower() == "id" else "text"
 
-    Text is encoded verbatim — leading/trailing whitespace is significant
-    (" Paris" and "Paris" are different BPE tokens); only numeric ids
-    tolerate surrounding spaces.
+
+def token_ref_to_id(ref: str, tokenizer, mode: str) -> int:
+    """Resolve a user token reference under an explicit interpretation mode.
+
+    ``mode == "id"``: parse a numeric token id; surrounding whitespace is
+    tolerated and non-numeric input is rejected. ``mode == "text"``: encode
+    the text verbatim — leading/trailing whitespace is significant (" Paris"
+    and "Paris" are different BPE tokens) and digits are NEVER treated as an
+    id — returning the first token id.
 
     Raises:
-        ValueError: empty ref, unencodable text, or out-of-range id.
+        ValueError: empty ref, unencodable text, non-numeric id, or an
+        out-of-range id.
     """
-    stripped = ref.strip()
-    if not stripped:
-        raise ValueError("Empty token reference")
-    if stripped.lstrip("-").isdigit():
+    if mode == "id":
+        stripped = ref.strip()
+        if not stripped:
+            raise ValueError("Empty token reference")
+        if not stripped.lstrip("-").isdigit():
+            raise ValueError(f"Not a numeric token id: {ref!r}")
         token_id = int(stripped)
         if not 0 <= token_id < len(tokenizer):
             raise ValueError(
                 f"Token id {token_id} out of range (vocab size {len(tokenizer)})"
             )
         return token_id
+    if not ref.strip():
+        raise ValueError("Empty token reference")
     encoded = tokenizer.encode(ref, add_special_tokens=False)
     if not encoded:
         raise ValueError(f"Could not tokenize {ref!r}")
@@ -75,14 +87,18 @@ def parse_layer_refs(text: str) -> list[int]:
     return sorted(set(layers))
 
 
-def parse_token_refs(text: str, tokenizer) -> list[int]:
-    """Comma-separated token references -> unique token ids (order kept)."""
+def parse_token_refs(text: str, tokenizer, mode: str) -> list[int]:
+    """Comma-separated token references -> unique token ids (order kept).
+
+    ``mode`` (``"text"``/``"id"``) applies to every entry — a single list is
+    all-text or all-id.
+    """
     ids: list[int] = []
     for part in (text or "").split(","):
         part = part.strip()
         if not part:
             continue
-        token_id = token_ref_to_id(part, tokenizer)
+        token_id = token_ref_to_id(part, tokenizer, mode)
         if token_id not in ids:
             ids.append(token_id)
     return ids

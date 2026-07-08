@@ -68,6 +68,7 @@ from miru_tracer.ui.lens_common import (
     selection_summary,
     set_active_interventions,
     toggle_position,
+    token_mode_key,
     token_ref_to_id,
 )
 from miru_tracer.ui.lens_views import (
@@ -193,8 +194,14 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         )
                         pinned_tokens = gr.Textbox(
                             label="Pinned tokens",
-                            placeholder="comma-separated: Paris, 12345, ...",
-                            info="Track these tokens' ranks across layers.",
+                            placeholder="comma-separated: Paris, is, the",
+                            info="Track these tokens' ranks across layers. "
+                            "All entries read per the Text/ID selector.",
+                        )
+                        pinned_tokens_mode = gr.Radio(
+                            choices=["Text", "ID"],
+                            value="Text",
+                            label="Interpret as",
                         )
 
                 tokens_display = gr.HighlightedText(
@@ -233,15 +240,26 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             label="Kind",
                         )
                         iv_token = gr.Textbox(
-                            label="Token", placeholder="text or id, e.g. Paris",
-                            info="Text or a numeric token id. Leading spaces "
-                            "count: ' Paris' ≠ 'Paris'.",
+                            label="Token", placeholder="e.g. Paris",
+                            info="Read per the Text/ID selector. In Text mode "
+                            "leading spaces count: ' Paris' ≠ 'Paris'.",
+                        )
+                        iv_token_mode = gr.Radio(
+                            choices=["Text", "ID"],
+                            value="Text",
+                            label="Interpret as",
                         )
                         iv_swap_to = gr.Textbox(
-                            label="Swap to", placeholder="text or id",
+                            label="Swap to", placeholder="e.g. Paris",
                             visible=False,
-                            info="Text or a numeric token id. Leading spaces "
-                            "count: ' Paris' ≠ 'Paris'.",
+                            info="Read per the Text/ID selector. In Text mode "
+                            "leading spaces count: ' Paris' ≠ 'Paris'.",
+                        )
+                        iv_swap_to_mode = gr.Radio(
+                            choices=["Text", "ID"],
+                            value="Text",
+                            label="Interpret as",
+                            visible=False,
                         )
                     with gr.Row():
                         iv_layer = gr.Textbox(
@@ -322,7 +340,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
         def compute_slice_bundle(
             analysis, positions, mode_choice, l_start, l_end, l_stride,
-            per_cell, skip_nw, pinned_text,
+            per_cell, skip_nw, pinned_text, pinned_mode,
         ):
             """One forward pass over the stored sequence -> (bundle, status)."""
             if analysis is None:
@@ -357,7 +375,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         )
                 else:
                     dropped = []
-                pinned_ids = parse_token_refs(pinned_text, tokenizer)
+                pinned_ids = parse_token_refs(
+                    pinned_text, tokenizer, token_mode_key(pinned_mode)
+                )
                 seq_len = int(analysis["input_ids"].shape[1])
                 selected = [p for p in positions if 0 <= p < seq_len] or None
 
@@ -475,11 +495,11 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
         def update_readouts(
             analysis, positions, active_view, mode_choice, l_start, l_end,
-            l_stride, per_cell, skip_nw, pinned_text,
+            l_stride, per_cell, skip_nw, pinned_text, pinned_mode,
         ):
             bundle, status = compute_slice_bundle(
                 analysis, positions, mode_choice, l_start, l_end, l_stride,
-                per_cell, skip_nw, pinned_text,
+                per_cell, skip_nw, pinned_text, pinned_mode,
             )
             return (bundle, *render_active_view(bundle, active_view), status)
 
@@ -487,7 +507,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             mode, prompt, chat_msgs, raw_text, think_choice, think_text,
             n_tokens, strat, temp,
             interventions, active_view, mode_choice, l_start, l_end, l_stride,
-            per_cell, skip_nw, pinned_text,
+            per_cell, skip_nw, pinned_text, pinned_mode,
         ):
             def progress(status, text=""):
                 """Streaming yield: only status/text change while generating."""
@@ -570,7 +590,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 positions: list[int] = []  # all
                 bundle, status = compute_slice_bundle(
                     analysis, positions, mode_choice, l_start, l_end, l_stride,
-                    per_cell, skip_nw, pinned_text,
+                    per_cell, skip_nw, pinned_text, pinned_mode,
                 )
                 yield (
                     bundle,
@@ -618,15 +638,20 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             return [], highlighted_tokens(texts, []), selection_summary([], len(texts))
 
         def add_intervention(
-            interventions, kind, token_ref, swap_to_ref, layer_refs, strength, basis
+            interventions, kind, token_ref, token_mode, swap_to_ref,
+            swap_to_mode, layer_refs, strength, basis,
         ):
             tokenizer = model_manager.get_tokenizer()
             if tokenizer is None:
                 return interventions, gr.update(), "Error: No model loaded."
             try:
-                token_id = token_ref_to_id(token_ref, tokenizer)
+                token_id = token_ref_to_id(
+                    token_ref, tokenizer, token_mode_key(token_mode)
+                )
                 token_id_to = (
-                    token_ref_to_id(swap_to_ref, tokenizer) if kind == "swap" else None
+                    token_ref_to_id(swap_to_ref, tokenizer, token_mode_key(swap_to_mode))
+                    if kind == "swap"
+                    else None
                 )
                 added = [
                     Intervention(
@@ -673,7 +698,8 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             )
 
         def toggle_swap_field(kind):
-            return gr.update(visible=kind == "swap")
+            vis = gr.update(visible=kind == "swap")
+            return vis, vis
 
         # ----------------------------------------------------------- fit file
 
@@ -749,11 +775,15 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             inputs=[thinking_selector],
             outputs=[think_prefill_box],
         )
-        iv_kind.change(fn=toggle_swap_field, inputs=[iv_kind], outputs=[iv_swap_to])
+        iv_kind.change(
+            fn=toggle_swap_field,
+            inputs=[iv_kind],
+            outputs=[iv_swap_to, iv_swap_to_mode],
+        )
 
         lens_controls = [
             lens_mode, layer_start, layer_end, layer_stride,
-            readouts_per_cell, skip_non_words, pinned_tokens,
+            readouts_per_cell, skip_non_words, pinned_tokens, pinned_tokens_mode,
         ]
 
         generate_button.click(
@@ -813,8 +843,8 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         iv_add_button.click(
             fn=add_intervention,
             inputs=[
-                interventions_state, iv_kind, iv_token, iv_swap_to,
-                iv_layer, iv_strength, iv_basis,
+                interventions_state, iv_kind, iv_token, iv_token_mode,
+                iv_swap_to, iv_swap_to_mode, iv_layer, iv_strength, iv_basis,
             ],
             outputs=[interventions_state, iv_table, status_output],
         )

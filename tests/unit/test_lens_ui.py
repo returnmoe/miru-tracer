@@ -18,6 +18,7 @@ from miru_tracer.ui.lens_common import (
     set_active_interventions,
     sparkline,
     toggle_position,
+    token_mode_key,
     token_ref_to_id,
 )
 from miru_tracer.ui.lens_views import (
@@ -43,39 +44,69 @@ class TestLensModeKey:
         assert lens_mode_key(ui) == key
 
 
+class TestTokenModeKey:
+    @pytest.mark.parametrize("ui,key", [
+        ("Text", "text"),
+        ("ID", "id"),
+        ("id", "id"),
+        (" ID ", "id"),
+        ("", "text"),
+        (None, "text"),
+    ])
+    def test_mapping(self, ui, key):
+        assert token_mode_key(ui) == key
+
+
 class TestTokenRefs:
-    def test_numeric_id(self, tiny_tokenizer):
-        assert token_ref_to_id("42", tiny_tokenizer) == 42
+    def test_id_mode_numeric(self, tiny_tokenizer):
+        assert token_ref_to_id("42", tiny_tokenizer, "id") == 42
 
-    def test_text_encodes_first_token(self, tiny_tokenizer):
-        expected = tiny_tokenizer.encode("a", add_special_tokens=False)[0]
-        assert token_ref_to_id("a", tiny_tokenizer) == expected
+    def test_id_mode_tolerates_spaces(self, tiny_tokenizer):
+        assert token_ref_to_id(" 42 ", tiny_tokenizer, "id") == 42
 
-    def test_out_of_range_id_rejected(self, tiny_tokenizer):
+    def test_id_mode_rejects_non_numeric(self, tiny_tokenizer):
+        with pytest.raises(ValueError, match="Not a numeric token id"):
+            token_ref_to_id("a", tiny_tokenizer, "id")
+
+    def test_id_mode_out_of_range_rejected(self, tiny_tokenizer):
         with pytest.raises(ValueError, match="out of range"):
-            token_ref_to_id("99999", tiny_tokenizer)
+            token_ref_to_id("99999", tiny_tokenizer, "id")
+
+    def test_text_mode_encodes_first_token(self, tiny_tokenizer):
+        expected = tiny_tokenizer.encode("a", add_special_tokens=False)[0]
+        assert token_ref_to_id("a", tiny_tokenizer, "text") == expected
+
+    def test_text_mode_digits_are_literal(self, tiny_tokenizer):
+        # Regression: "6" in text mode encodes the string "6", NOT token id 6.
+        expected = tiny_tokenizer.encode("6", add_special_tokens=False)[0]
+        assert token_ref_to_id("6", tiny_tokenizer, "text") == expected
+
+    def test_text_mode_leading_whitespace_preserved(self, tiny_tokenizer):
+        expected = tiny_tokenizer.encode(" a", add_special_tokens=False)[0]
+        assert token_ref_to_id(" a", tiny_tokenizer, "text") == expected
+        assert token_ref_to_id(" a", tiny_tokenizer, "text") != token_ref_to_id(
+            "a", tiny_tokenizer, "text"
+        )
 
     def test_empty_rejected(self, tiny_tokenizer):
         with pytest.raises(ValueError, match="Empty"):
-            token_ref_to_id("  ", tiny_tokenizer)
+            token_ref_to_id("  ", tiny_tokenizer, "text")
+        with pytest.raises(ValueError, match="Empty"):
+            token_ref_to_id("  ", tiny_tokenizer, "id")
 
-    def test_parse_list_deduplicates(self, tiny_tokenizer):
-        ids = parse_token_refs("42, 42, 7", tiny_tokenizer)
+    def test_parse_list_id_deduplicates(self, tiny_tokenizer):
+        ids = parse_token_refs("42, 42, 7", tiny_tokenizer, "id")
         assert ids == [42, 7]
 
+    def test_parse_list_text(self, tiny_tokenizer):
+        expected = [
+            tiny_tokenizer.encode(t, add_special_tokens=False)[0] for t in ("a", "b")
+        ]
+        assert parse_token_refs("a, b, a", tiny_tokenizer, "text") == expected
+
     def test_parse_empty(self, tiny_tokenizer):
-        assert parse_token_refs("", tiny_tokenizer) == []
-        assert parse_token_refs(None, tiny_tokenizer) == []
-
-    def test_leading_whitespace_preserved(self, tiny_tokenizer):
-        expected = tiny_tokenizer.encode(" a", add_special_tokens=False)[0]
-        assert token_ref_to_id(" a", tiny_tokenizer) == expected
-        assert token_ref_to_id(" a", tiny_tokenizer) != token_ref_to_id(
-            "a", tiny_tokenizer
-        )
-
-    def test_numeric_id_tolerates_spaces(self, tiny_tokenizer):
-        assert token_ref_to_id(" 42 ", tiny_tokenizer) == 42
+        assert parse_token_refs("", tiny_tokenizer, "text") == []
+        assert parse_token_refs(None, tiny_tokenizer, "id") == []
 
 
 class TestParseLayerRefs:
