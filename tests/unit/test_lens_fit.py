@@ -1,6 +1,5 @@
 """Chunked lens fitting: progress, resume, cancellation, artifact validity."""
 
-import pytest
 
 from miru_tracer.core._jlens import JacobianLens
 from miru_tracer.core.lens_fit import iter_fit_lens, prompts_from_file

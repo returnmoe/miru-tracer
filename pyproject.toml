@@ -28,7 +28,7 @@ gpu = [
     "triton",
 ]
 lens = [
-    "datasets",
+    "pyarrow",
 ]
 dev = [
     "pytest~=8.0",
@@ -61,3 +61,7 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Vendored jlens code (Apache-2.0) is kept as close to upstream as possible.
+"src/miru_tracer/core/_jlens/*" = ["E741"]

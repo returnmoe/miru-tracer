@@ -28,6 +28,7 @@ import torch
 
 from miru_tracer.core._jlens import HFLensModel, JacobianLens, from_hf
 from miru_tracer.core._jlens.hooks import ActivationRecorder
+from miru_tracer.core.interventions import InterventionSet, apply_interventions
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.tokenizer_utils import safe_decode_token
 
@@ -142,6 +143,7 @@ def compute_lens_slice(
     top_k: int = 8,
     skip_non_words: bool = False,
     pinned_token_ids: list[int] | None = None,
+    interventions: InterventionSet | None = None,
 ) -> LensSlice:
     """Compute per-(layer, position) top-k lens readouts for a sequence.
 
@@ -154,6 +156,8 @@ def compute_lens_slice(
         top_k: Readouts per (layer, position) cell.
         skip_non_words: Drop tokens with no word characters from the top-k.
         pinned_token_ids: Tokens whose rank is tracked in every cell.
+        interventions: Active activation edits; entered *before* the recorder
+            so the recorded residuals are the edited ones.
     """
     if mode not in LENS_MODES:
         raise ValueError(f"Unknown lens mode: {mode!r}. Use one of {LENS_MODES}.")
@@ -165,7 +169,7 @@ def compute_lens_slice(
     if positions is None:
         positions = list(range(seq_len))
     layers = sorted(set(layers))
-    bad = [l for l in layers if not 0 <= l < wrapper.n_layers]
+    bad = [layer for layer in layers if not 0 <= layer < wrapper.n_layers]
     if bad:
         raise ValueError(f"layers {bad} out of range (n_layers={wrapper.n_layers})")
     if mode in ("jacobian", "diff"):
@@ -177,7 +181,11 @@ def compute_lens_slice(
                 f"layers {sorted(missing)} not fitted; lens covers {jlens.source_layers}"
             )
 
-    with torch.no_grad(), ActivationRecorder(wrapper.layers, at=layers) as recorder:
+    with (
+        torch.no_grad(),
+        apply_interventions(model, interventions),
+        ActivationRecorder(wrapper.layers, at=layers) as recorder,
+    ):
         wrapper.forward(input_ids.to(wrapper.input_device))
         activations = {i: recorder.activations[i].detach() for i in layers}
 

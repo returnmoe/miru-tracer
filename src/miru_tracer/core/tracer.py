@@ -28,6 +28,11 @@ from typing import Any
 
 import torch
 
+from miru_tracer.core.interventions import (
+    Intervention,
+    InterventionSet,
+    apply_interventions,
+)
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.sampling import (
     SamplingParams,
@@ -118,6 +123,9 @@ class LLMTracer:
         self.has_chat_template = (
             hasattr(tokenizer, "chat_template") and tokenizer.chat_template is not None
         )
+        # Activation interventions (steer/ablate/swap). Persist across reset():
+        # they are properties of how the model runs, not of the prompt.
+        self._intervention_set: InterventionSet | None = None
 
         logger.info(
             f"LLMTracer initialized (device={device}, eos_ids={sorted(self.eos_ids)}, "
@@ -201,6 +209,34 @@ class LLMTracer:
     def clear_stop_flag(self) -> None:
         self._stop_requested = False
 
+    # ---------------------------------------------------------- interventions
+
+    @property
+    def interventions(self) -> list[Intervention]:
+        if self._intervention_set is None:
+            return []
+        return list(self._intervention_set.interventions)
+
+    def set_interventions(
+        self, interventions: list[Intervention] | None, jlens=None
+    ) -> None:
+        """Replace the active intervention set.
+
+        Invalidates the KV cache and logits memo — cached values were computed
+        under the previous intervention state and would silently poison
+        subsequent forwards otherwise.
+        """
+        if interventions:
+            self._intervention_set = InterventionSet(
+                interventions, self.model, jlens=jlens
+            )
+        else:
+            self._intervention_set = None
+        self._invalidate_kv()
+        logger.info(
+            f"Interventions set: {[iv.describe(self.tokenizer) for iv in (interventions or [])]}"
+        )
+
     # ---------------------------------------------------------------- forward
 
     def _cache_len(self) -> int:
@@ -239,7 +275,9 @@ class LLMTracer:
                 self._kv = None
                 cache_len = 0
 
-        with torch.inference_mode():
+        with torch.inference_mode(), apply_interventions(
+            self.model, self._intervention_set
+        ):
             if self._kv is None:
                 outputs = self.model(self.input_ids, use_cache=True)
             else:

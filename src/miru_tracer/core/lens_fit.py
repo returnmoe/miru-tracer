@@ -51,22 +51,23 @@ def prompts_from_file(path: str | Path) -> list[str]:
 
 
 def wikitext_prompts(n: int, *, min_chars: int = MIN_PROMPT_CHARS) -> list[str]:
-    """Pull ``n`` paragraph-sized prompts from wikitext-103 (needs `datasets`)."""
-    try:
-        from datasets import load_dataset
-    except ImportError as e:  # pragma: no cover - optional dep
-        raise RuntimeError(
-            "The 'datasets' package is required for wikitext prompts. "
-            "Install it with: pip install 'miru-tracer[lens]' "
-            "or pass --prompts-file instead."
-        ) from e
+    """Pull ``n`` paragraph-sized prompts from wikitext-103.
 
-    dataset = load_dataset(
-        "wikitext", "wikitext-103-raw-v1", split="train", streaming=True
+    Reads the dataset's parquet shard directly (pandas + pyarrow) instead of
+    the `datasets` library, which currently trips over the legacy repo id.
+    """
+    import pandas as pd
+    from huggingface_hub import hf_hub_download
+
+    shard = hf_hub_download(
+        "Salesforce/wikitext",
+        "wikitext-103-raw-v1/train-00000-of-00002.parquet",
+        repo_type="dataset",
     )
+    frame = pd.read_parquet(shard, columns=["text"])
     prompts: list[str] = []
-    for record in dataset:
-        text = record["text"].strip()
+    for text in frame["text"]:
+        text = text.strip()
         if len(text) >= min_chars and not text.startswith("="):
             prompts.append(text)
             if len(prompts) == n:
