@@ -246,7 +246,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 lens_stride = gr.Number(
                     minimum=1, value=1, precision=0, label="Layer stride"
                 )
-                lens_top_k = gr.Slider(1, 50, value=8, step=1, label="Readouts per layer")
+                lens_top_k = gr.Slider(1, 50, value=20, step=1, label="Readouts per layer")
             with gr.Row():
                 lens_refresh_button = gr.Button("Refresh lens", variant="secondary")
                 lens_apply_iv_button = gr.Button(

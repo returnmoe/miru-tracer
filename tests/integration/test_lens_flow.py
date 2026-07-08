@@ -72,21 +72,21 @@ class TestLensTabFlow:
             "Jacobian", 0, -1, 1, 8, False, "A",
             api_name="/generate_and_analyze",
         )
-        readout_html, dist_html_out, _heatmap, _pinned, status, text = out[:6]
+        readout_html, _dist, _heatmap, _pinned, status, text = out[:6]
         assert "Interventions active: 2" in status
         # Both steers compose; the final-layer one dominates greedy decoding,
         # so the generated text must consist of steered tokens.
         generated = text[len("Hello world"):]
         assert generated and set(generated) <= {"A", "B"}
-        # ...and both steered tokens surface prominently in the readouts
+        # ...and both steered tokens surface prominently in the summary
         # (server-rendered HTML table cells).
         assert ">A<" in readout_html and ">B<" in readout_html
-        assert "<table" in dist_html_out
-        # Heatmap and pinned ranks render lazily from the cached slice when
-        # their tab is opened.
+        # The other views render lazily from the cached slice when their tab
+        # is opened.
+        counts = client.predict(api_name="/open_readouts_view")
         heatmap = client.predict(api_name="/open_heatmap_view")
         pinned = client.predict(api_name="/open_pinned_view")
-        assert "<table" in heatmap and pinned is not None
+        assert "<table" in counts and "<table" in heatmap and pinned is not None
 
     def test_remove_and_clear_interventions(self, lens_app):
         client = lens_app
@@ -105,8 +105,9 @@ class TestLensTabFlow:
         )
         status = out[4]
         assert "logit lens" in status
-        assert "<table" in out[0]  # readouts table (the eagerly rendered view)
+        assert "<table" in out[0]  # summary table (the eagerly rendered view)
         assert "<table" in lens_app.predict(api_name="/open_heatmap_view")
+        assert "<table" in lens_app.predict(api_name="/open_readouts_view")
 
 
 class TestFitFileManagement:

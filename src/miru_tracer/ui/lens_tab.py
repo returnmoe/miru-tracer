@@ -197,7 +197,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         )
                     with gr.Accordion("Display options", open=False):
                         readouts_per_cell = gr.Slider(
-                            1, 50, value=8, step=1, label="Readouts per layer+pos"
+                            1, 50, value=20, step=1, label="Readouts per layer+pos"
                         )
                         skip_non_words = gr.Checkbox(
                             label="Hide non-word tokens", value=False
@@ -283,8 +283,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         # lens_views.py) — gr.Dataframe and per-cell Plotly text both fall
         # over in the browser at layers x positions scale.
         with gr.Tabs():
-            with gr.Tab("Readouts") as readouts_tab:
+            with gr.Tab("Summary") as summary_tab:
                 readout_table = gr.HTML("")
+            with gr.Tab("Readouts") as readouts_tab:
                 dist_plot = gr.HTML("")
             with gr.Tab("Heatmap") as heatmap_tab:
                 heatmap_plot = gr.HTML("")
@@ -300,7 +301,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         # slice_state: dict(slice=LensSlice, rows=list[ReadoutRow]) — the
         # cached compute the result views render from.
         slice_state = gr.State(None)
-        active_view_state = gr.State("readouts")  # which result tab is open
+        active_view_state = gr.State("summary")  # which result tab is open
 
         view_components = [readout_table, dist_plot, heatmap_plot, pinned_plot]
 
@@ -397,13 +398,13 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
         # ------------------------------------------------------ view renders
 
+        def show_summary_view(bundle):
+            return "" if bundle is None else readouts_table_html(bundle["rows"])
+
         def show_readouts_view(bundle):
             if bundle is None:
-                return "", ""
-            return (
-                readouts_table_html(bundle["rows"]),
-                distribution_html(bundle["rows"], bundle["slice"].layers),
-            )
+                return ""
+            return distribution_html(bundle["rows"], bundle["slice"].layers)
 
         def show_heatmap_view(bundle):
             return "" if bundle is None else heatmap_html(bundle["slice"])
@@ -416,20 +417,25 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             )
 
         def render_active_view(bundle, active_view):
-            """(table, dist, heatmap, pinned): only the open view is built,
-            the other components are cleared so no stale render survives."""
+            """One value per view component; only the open view is built, the
+            other components are cleared so no stale render survives."""
             table = dist = heat = pin = None
             if bundle is not None:
-                if active_view == "heatmap":
+                if active_view == "readouts":
+                    dist = show_readouts_view(bundle)
+                elif active_view == "heatmap":
                     heat = show_heatmap_view(bundle)
                 elif active_view == "pinned":
                     pin = show_pinned_view(bundle)
                 else:
-                    table, dist = show_readouts_view(bundle)
+                    table = show_summary_view(bundle)
             return table, dist, heat, pin
 
+        def open_summary_view(bundle):
+            return "summary", show_summary_view(bundle)
+
         def open_readouts_view(bundle):
-            return ("readouts", *show_readouts_view(bundle))
+            return "readouts", show_readouts_view(bundle)
 
         def open_heatmap_view(bundle):
             return "heatmap", show_heatmap_view(bundle)
@@ -459,7 +465,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 """Streaming yield: only status/text change while generating."""
                 return (
                     gr.update(),  # slice_state
-                    gr.update(), gr.update(), gr.update(), gr.update(),  # views
+                    *[gr.update()] * len(view_components),
                     status,
                     text,
                     gr.update(),  # tokens_display
@@ -471,7 +477,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             def failed(status):
                 return (
                     None,
-                    None, None, None, None,
+                    *[None] * len(view_components),
                     status,
                     "",
                     gr.update(),
@@ -731,10 +737,15 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             inputs=[analysis_state, positions_state, active_view_state, *lens_controls],
             outputs=[slice_state, *view_components, status_output],
         )
+        summary_tab.select(
+            fn=open_summary_view,
+            inputs=[slice_state],
+            outputs=[active_view_state, readout_table],
+        )
         readouts_tab.select(
             fn=open_readouts_view,
             inputs=[slice_state],
-            outputs=[active_view_state, readout_table, dist_plot],
+            outputs=[active_view_state, dist_plot],
         )
         heatmap_tab.select(
             fn=open_heatmap_view,

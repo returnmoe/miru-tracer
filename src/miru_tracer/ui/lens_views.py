@@ -45,18 +45,20 @@ _SCROLL_DIV = (
     '<div style="overflow:auto; max-height:75vh; max-width:100%; '
     'padding-bottom:6px; margin-top:6px;">'
 )
-# Grids (heatmap, counts): spaced rounded cells. List (readouts): collapsed
-# rows with subtle separators.
+# Grids (heatmap, counts): flush borderless cells, uniform column width
+# (content wrapped in fixed-width divs — max-width on td is ignored in auto
+# table layout). List (readouts): collapsed rows with subtle separators.
 _GRID_STYLE = (
-    "border-collapse:separate; border-spacing:3px; font-size:0.8em; "
-    "line-height:1.35; font-family:var(--font-mono, monospace); "
-    "white-space:nowrap;"
-)
-_LIST_STYLE = (
-    "border-collapse:collapse; font-size:0.8em; line-height:1.4; "
+    "border:0; border-collapse:collapse; font-size:0.8em; line-height:1.5; "
     "font-family:var(--font-mono, monospace); white-space:nowrap;"
 )
-_TH = f"background:{_BG}; padding:3px 10px; font-weight:600;"
+_LIST_STYLE = (
+    "border:0; border-collapse:collapse; font-size:0.8em; line-height:1.4; "
+    "font-family:var(--font-mono, monospace); white-space:nowrap;"
+)
+_TH = f"background:{_BG}; padding:3px 10px; font-weight:600; border:0;"
+_HEAT_COL_W = "5.5em"  # heatmap column width (top-1 tokens, ellipsized)
+_COUNT_COL_W = "2.2em"  # counts-grid column width (small integers)
 _COL_TH = f'style="position:sticky; top:0; z-index:1; text-align:left; {_TH}"'
 _ROW_TH = f'style="position:sticky; left:0; z-index:1; text-align:right; {_TH}"'
 _CORNER_TH = f'style="position:sticky; top:0; left:0; z-index:2; {_TH}"'
@@ -73,14 +75,33 @@ def _color(v: float) -> tuple[int, int, int]:
     return tuple(round(a + (b - a) * f) for a, b in zip(lo, hi, strict=True))
 
 
-def _cell_style(v: float) -> str:
+def _cell_colors(v: float) -> tuple[str, str]:
+    """(background, foreground) for a normalized value.
+
+    Explicit fg per bg keeps cells readable in light AND dark themes. Black
+    text beats white on this palette up to the brightest reds (contrast ~7:1
+    vs ~3:1 on #FC4E2A), so only the darkest cells go white.
+    """
     r, g, b = _color(v)
-    # Explicit fg per bg keeps cells readable in light AND dark themes.
-    fg = "#111" if (0.299 * r + 0.587 * g + 0.114 * b) > 140 else "#fff"
-    return (
-        f"background:rgb({r},{g},{b}); color:{fg}; padding:3px 8px; "
-        "border-radius:4px; text-align:center;"
+    fg = "#111" if (0.299 * r + 0.587 * g + 0.114 * b) > 110 else "#fff"
+    return f"rgb({r},{g},{b})", fg
+
+
+def _fixed(content: str, width: str, color: str | None = None) -> str:
+    """Uniform-width cell content; overflow shows as an ellipsis (full text
+    stays in the cell's title attribute).
+
+    The foreground color must live on THIS innermost element: Gradio's prose
+    CSS colors inner elements directly, so a color set on the surrounding td
+    is not inherited.
+    """
+    style = (
+        f"width:{width}; overflow:hidden; text-overflow:ellipsis; "
+        "text-align:center; margin:0 auto;"  # center the div in wider cells
     )
+    if color:
+        style += f" color:{color};"
+    return f'<div style="{style}">{content}</div>'
 
 
 def _tok(text: str) -> str:
@@ -93,7 +114,8 @@ def heatmap_html(slice_: LensSlice) -> str:
         return ""
 
     header = "".join(
-        f"<th {_COL_TH}>{p}<br>{_tok(text)}</th>"
+        f"<th {_COL_TH} title=\"{p}: {_tok(text)}\">"
+        f"{_fixed(f'{p}<br>{_tok(text)}', _HEAT_COL_W)}</th>"
         for p, text in zip(slice_.positions, slice_.position_texts, strict=True)
     )
 
@@ -118,8 +140,12 @@ def heatmap_html(slice_: LensSlice) -> str:
                 for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
             )
             v = ((probs[0] if probs else 0.0) - vmin) / span
-            cells.append(f'<td style="{_cell_style(v)}" title="{hover}">{top1}</td>')
-        body.append("<tr>" + "".join(cells) + "</tr>")
+            bg, fg = _cell_colors(v)
+            cells.append(
+                f'<td style="background:{bg}; padding:5px 4px; border:0;" title="{hover}">'
+                f"{_fixed(top1, _HEAT_COL_W, fg)}</td>"
+            )
+        body.append('<tr style="border:0;">' + "".join(cells) + "</tr>")
 
     value_name = "Δprob (J-lens − logit)" if slice_.mode == "diff" else "probability"
     caption = (
@@ -130,7 +156,7 @@ def heatmap_html(slice_: LensSlice) -> str:
     return (
         f"<p {_CAPTION}>{caption}</p>"
         f'{_SCROLL_DIV}<table style="{_GRID_STYLE}">'
-        f"<tr><th {_CORNER_TH}></th>{header}</tr>{''.join(body)}"
+        f'<tr style="border:0;"><th {_CORNER_TH}></th>{header}</tr>{"".join(body)}'
         "</table></div>"
     )
 
@@ -140,11 +166,11 @@ def readouts_table_html(rows: list[ReadoutRow]) -> str:
     if not rows:
         return ""
     cell = (
-        'style="padding:4px 14px; '
+        'style="padding:7px 14px; border:0; '
         'border-bottom:1px solid rgba(127,127,127,0.18);"'
     )
     cell_num = (
-        'style="padding:4px 14px; text-align:right; '
+        'style="padding:7px 14px; text-align:center; border:0; '
         'border-bottom:1px solid rgba(127,127,127,0.18);"'
     )
     body = "".join(
@@ -176,35 +202,34 @@ def distribution_html(
         return ""
     peak = max(max(row.count_by_layer) for row in rows) or 1
 
-    header = "".join(f"<th {_COL_TH}>L{layer}</th>" for layer in layers)
+    header = "".join(
+        f"<th {_COL_TH}>{_fixed(f'L{layer}', _COUNT_COL_W)}</th>" for layer in layers
+    )
     body = []
     for row in rows:
         cells = [f"<th {_ROW_TH}>{_tok(row.text)} ({row.count})</th>"]
         for layer, count in zip(layers, row.count_by_layer, strict=True):
             if count:
-                alpha = 0.15 + 0.85 * count / peak
-                fg = "#fff" if alpha > 0.55 else "var(--body-text-color, inherit)"
-                style = (
-                    f"background:rgba({_ACCENT},{alpha:.2f}); color:{fg}; "
-                    "padding:3px 8px; border-radius:4px; text-align:center; "
-                    "min-width:1.6em;"
-                )
+                # Alpha capped at 0.8: the theme's own text color then keeps
+                # >4.5:1 contrast over the composited cell in BOTH themes (a
+                # fixed white/black fg cannot — the effective cell color
+                # depends on the theme background under the alpha).
+                alpha = 0.15 + 0.65 * count / peak
+                style = f"background:rgba({_ACCENT},{alpha:.2f}); padding:5px 0; border:0;"
                 label = str(count)
             else:
-                style = (
-                    "background:rgba(127,127,127,0.08); padding:3px 8px; "
-                    "border-radius:4px; min-width:1.6em;"
-                )
+                style = "padding:5px 0; border:0;"
                 label = ""
             cells.append(
-                f'<td style="{style}" title="L{layer}: {count} cells">{label}</td>'
+                f'<td style="{style}" title="L{layer}: {count} cells">'
+                f"{_fixed(label, _COUNT_COL_W)}</td>"
             )
-        body.append("<tr>" + "".join(cells) + "</tr>")
+        body.append('<tr style="border:0;">' + "".join(cells) + "</tr>")
 
     return (
         f"<p {_CAPTION}><b>Readout counts by layer</b> · how often each "
         "token appears in the selected cells' top-k</p>"
         f'{_SCROLL_DIV}<table style="{_GRID_STYLE}">'
-        f"<tr><th {_CORNER_TH}></th>{header}</tr>{''.join(body)}"
+        f'<tr style="border:0;"><th {_CORNER_TH}></th>{header}</tr>{"".join(body)}'
         "</table></div>"
     )
