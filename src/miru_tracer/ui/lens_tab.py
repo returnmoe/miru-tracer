@@ -8,6 +8,13 @@ re-slices the existing sequence under the interventions it was generated
 with; changing the intervention list requires Generate & Analyze again (the
 status line says so). This keeps the displayed text and the displayed
 readouts always consistent with each other.
+
+Rendering: "Update readouts" (and Generate & Analyze) compute ONE lens slice
+and cache it in ``slice_state``; the result views (Readouts / Heatmap /
+Pinned ranks) render lazily from that cache when their tab is opened. Only
+the currently open view is rendered eagerly — building Plotly figures inside
+hidden tabs is what historically triggered relayout/freeze trouble (see
+theme.py's ResizeObserver note).
 """
 
 from __future__ import annotations
@@ -23,34 +30,47 @@ from miru_tracer.core.lens import (
     compute_lens_slice,
     decode_token,
     get_lens_store,
+    record_lens_activations,
 )
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.sampling import SamplingParams
 from miru_tracer.core.tracer import LLMTracer
 from miru_tracer.ui.helpers import (
+    CHAT_MODE_HELP,
     DEFAULT_CHAT_JSON,
+    GENERATION_MODES,
+    RAW_MODE_HELP,
+    RAW_MODE_PLACEHOLDER,
+    TEMPERATURE_GREEDY_INFO,
+    THINK_PREFILL_INFO,
+    THINKING_CHOICES,
     ChatValidationError,
     parse_chat_messages,
+    thinking_key,
     toggle_mode_visibility,
+    toggle_temperature,
+    toggle_think_prefill,
 )
 from miru_tracer.ui.lens_common import (
     LENS_MODE_CHOICES,
+    TOKEN_COLOR_MAP,
     highlighted_tokens,
     interventions_dataframe,
     layer_selection,
     lens_mode_key,
     parse_token_refs,
-    readouts_dataframe,
+    selection_summary,
     set_active_interventions,
     toggle_position,
     token_ref_to_id,
 )
-from miru_tracer.visualization.plots import (
-    plot_lens_heatmap,
-    plot_pinned_token_ranks,
-    plot_readout_distribution,
+from miru_tracer.ui.lens_views import (
+    distribution_html,
+    heatmap_html,
+    readouts_table_html,
 )
+from miru_tracer.visualization.plots import plot_pinned_token_ranks
 
 logger = get_logger(__name__)
 
@@ -72,7 +92,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 with gr.Group():
                     with gr.Row():
                         mode_selector = gr.Radio(
-                            choices=["Completion", "Chat"],
+                            choices=list(GENERATION_MODES),
                             value="Completion",
                             label="Mode",
                             scale=2,
@@ -93,6 +113,27 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             lines=8,
                             value=DEFAULT_CHAT_JSON,
                         )
+                        thinking_selector = gr.Radio(
+                            choices=list(THINKING_CHOICES),
+                            value=THINKING_CHOICES[0],
+                            label="Thinking",
+                        )
+                        think_prefill_box = gr.Textbox(
+                            label="Thought prefill",
+                            visible=False,
+                            lines=2,
+                            placeholder="Okay, the user wants…",
+                            info=THINK_PREFILL_INFO,
+                        )
+                        gr.Markdown(CHAT_MODE_HELP)
+                    with gr.Group(visible=False) as raw_inputs:
+                        raw_input = gr.Textbox(
+                            label="Raw text",
+                            lines=4,
+                            placeholder=RAW_MODE_PLACEHOLDER,
+                            info=RAW_MODE_HELP,
+                            elem_classes=["miru-textbox-mono"],
+                        )
                     generate_button = gr.Button(
                         "Generate & Analyze", variant="primary", size="lg"
                     )
@@ -103,7 +144,13 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             label="Strategy",
                         )
                         temperature = gr.Slider(
-                            0.1, 2.0, value=1.0, step=0.1, label="Temperature"
+                            0.1,
+                            2.0,
+                            value=1.0,
+                            step=0.1,
+                            label="Temperature",
+                            interactive=False,
+                            info=TEMPERATURE_GREEDY_INFO,
                         )
 
                 status_output = gr.Textbox(
@@ -115,14 +162,57 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
                 tokens_display = gr.HighlightedText(
                     label="Sequence — click tokens to select positions "
-                    "(none = all)",
+                    "(none = all). A position's readout predicts its NEXT "
+                    "token: select “is” to see where “Paris” "
+                    "emerges.",
                     value=[],
-                    color_map={"sel": "orange"},
+                    color_map=TOKEN_COLOR_MAP,
+                    show_inline_category=False,
                     combine_adjacent=False,
+                    elem_classes=["miru-token-select"],
                 )
+                selection_info = gr.Markdown("")
                 with gr.Row():
                     select_generated_button = gr.Button("Select generated", size="sm")
                     select_clear_button = gr.Button("Clear selection", size="sm")
+
+            # ------------------------------------------ right: lens controls
+            with gr.Column(scale=2):
+                with gr.Group():
+                    lens_mode = gr.Radio(
+                        choices=list(LENS_MODE_CHOICES),
+                        value="Logit",
+                        label="Lens",
+                        info="Jacobian/Diff need a fitted lens.",
+                    )
+                    with gr.Row():
+                        layer_start = gr.Number(
+                            minimum=0, value=0, precision=0, label="From layer"
+                        )
+                        layer_end = gr.Number(
+                            value=-1, precision=0, label="To (-1 = last)"
+                        )
+                        layer_stride = gr.Number(
+                            minimum=1, value=1, precision=0, label="Stride"
+                        )
+                    with gr.Accordion("Display options", open=False):
+                        readouts_per_cell = gr.Slider(
+                            1, 50, value=20, step=1, label="Readouts per layer+pos"
+                        )
+                        skip_non_words = gr.Checkbox(
+                            label="Hide non-word tokens", value=False
+                        )
+                        pinned_tokens = gr.Textbox(
+                            label="Pinned tokens",
+                            placeholder="comma-separated: Paris, 12345, ...",
+                            info="Track these tokens' ranks across layers.",
+                        )
+                    update_button = gr.Button("Update readouts", variant="secondary")
+                    gr.Markdown(
+                        "Recomputes the readouts below for the current sequence, "
+                        "using the token selection on the left. Interventions "
+                        "only change on **Generate & Analyze**."
+                    )
 
                 with gr.Accordion("Interventions", open=False):
                     gr.Markdown(
@@ -171,53 +261,6 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         interactive=False,
                     )
 
-            # ------------------------------------------ right: lens panel
-            with gr.Column(scale=2):
-                with gr.Group():
-                    lens_mode = gr.Radio(
-                        choices=list(LENS_MODE_CHOICES),
-                        value="Logit",
-                        label="Lens",
-                        info="Jacobian/Diff need a fitted lens.",
-                    )
-                    with gr.Row():
-                        layer_start = gr.Number(
-                            minimum=0, value=0, precision=0, label="From layer"
-                        )
-                        layer_end = gr.Number(
-                            value=-1, precision=0, label="To (-1 = last)"
-                        )
-                        layer_stride = gr.Number(
-                            minimum=1, value=2, precision=0, label="Stride"
-                        )
-                    with gr.Accordion("Display options", open=False):
-                        readouts_per_cell = gr.Slider(
-                            1, 16, value=8, step=1, label="Readouts per layer+pos"
-                        )
-                        skip_non_words = gr.Checkbox(
-                            label="Hide non-word tokens", value=False
-                        )
-                        pinned_tokens = gr.Textbox(
-                            label="Pinned tokens",
-                            placeholder="comma-separated: Paris, 12345, ...",
-                            info="Track these tokens' ranks across layers.",
-                        )
-                    update_button = gr.Button("Update readouts", variant="secondary")
-
-                with gr.Tabs():
-                    with gr.Tab("Readouts"):
-                        readout_table = gr.Dataframe(
-                            headers=["Token", "ID", "Count", "By layer"],
-                            datatype=["str", "number", "number", "str"],
-                            label="Aggregated over the selected cells",
-                            interactive=False,
-                        )
-                        dist_plot = gr.Plot(label="Counts by layer")
-                    with gr.Tab("Heatmap"):
-                        heatmap_plot = gr.Plot(label="Position × layer heatmap")
-                    with gr.Tab("Pinned ranks"):
-                        pinned_plot = gr.Plot(label="Pinned token ranks")
-
                 with gr.Accordion("Jacobian lens fit file", open=False):
                     gr.Markdown(
                         "Fit `J_ℓ` matrices once per model — on a **GPU "
@@ -235,37 +278,46 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     )
                     lens_file_check_button = gr.Button("Check status", size="sm")
 
+        # ------------------------------------- full-width results, lazy views
+        # Readouts table and heatmap are server-rendered static HTML (see
+        # lens_views.py) — gr.Dataframe and per-cell Plotly text both fall
+        # over in the browser at layers x positions scale.
+        with gr.Tabs():
+            with gr.Tab("Summary") as summary_tab:
+                readout_table = gr.HTML("")
+            with gr.Tab("Readouts") as readouts_tab:
+                dist_plot = gr.HTML("")
+            with gr.Tab("Heatmap") as heatmap_tab:
+                heatmap_plot = gr.HTML("")
+            with gr.Tab("Pinned ranks") as pinned_tab:
+                pinned_plot = gr.Plot(label="Pinned token ranks")
+
         # ------------------------------------------------------------ states
-        # analysis_state: dict(input_ids, model_name, iset, n_layers, prompt_len)
+        # analysis_state: dict(input_ids, model_name, iset, n_layers,
+        # prompt_len, position_texts)
         analysis_state = gr.State(None)
         positions_state = gr.State([])  # [] = all positions
         interventions_state = gr.State([])  # list[Intervention]
+        # slice_state: dict(slice=LensSlice, rows=list[ReadoutRow]) — the
+        # cached compute the result views render from.
+        slice_state = gr.State(None)
+        active_view_state = gr.State("summary")  # which result tab is open
 
-        readout_outputs = [
-            readout_table,
-            dist_plot,
-            heatmap_plot,
-            pinned_plot,
-            tokens_display,
-            status_output,
-        ]
+        view_components = [readout_table, dist_plot, heatmap_plot, pinned_plot]
 
-        # ----------------------------------------------------------- helpers
+        # ----------------------------------------------------------- compute
 
-        def _empty_readouts(status):
-            return None, None, None, None, gr.update(), status
-
-        def render_readouts(
+        def compute_slice_bundle(
             analysis, positions, mode_choice, l_start, l_end, l_stride,
             per_cell, skip_nw, pinned_text,
         ):
-            """Compute a slice for the stored sequence and render everything."""
+            """One forward pass over the stored sequence -> (bundle, status)."""
             if analysis is None:
-                return _empty_readouts("Generate first.")
+                return None, "Generate first."
             model = model_manager.get_model()
             tokenizer = model_manager.get_tokenizer()
             if model is None or analysis["model_name"] != model_manager.get_model_name():
-                return _empty_readouts(
+                return None, (
                     "Error: the model changed since this sequence was generated. "
                     "Generate again."
                 )
@@ -273,7 +325,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             mode = lens_mode_key(mode_choice)
             jlens = get_lens_store().get(analysis["model_name"])
             if mode in ("jacobian", "diff") and jlens is None:
-                return _empty_readouts(
+                return None, (
                     "Error: no fitted Jacobian lens for "
                     f"{analysis['model_name']}. Fit one below or run:\n"
                     f"  miru-tracer-fit-lens {analysis['model_name']}"
@@ -286,7 +338,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     dropped = [layer for layer in layers if layer not in fitted]
                     layers = [layer for layer in layers if layer in fitted]
                     if not layers:
-                        return _empty_readouts(
+                        return None, (
                             f"Error: none of the selected layers are fitted "
                             f"(lens covers {jlens.source_layers})."
                         )
@@ -295,6 +347,19 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 pinned_ids = parse_token_refs(pinned_text, tokenizer)
                 seq_len = int(analysis["input_ids"].shape[1])
                 selected = [p for p in positions if 0 <= p < seq_len] or None
+
+                # The residuals only depend on (sequence, interventions), both
+                # frozen per analysis — record once, then every Update is
+                # unembed + top-k with no model forward.
+                activations = analysis.get("activations")
+                if activations is None:
+                    activations = record_lens_activations(
+                        model,
+                        tokenizer,
+                        analysis["input_ids"],
+                        interventions=analysis["iset"],
+                    )
+                    analysis["activations"] = activations
 
                 slice_ = compute_lens_slice(
                     model,
@@ -308,54 +373,124 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     skip_non_words=bool(skip_nw),
                     pinned_token_ids=pinned_ids,
                     interventions=analysis["iset"],
+                    activations=activations,
                 )
                 rows = aggregate_readouts(slice_)
 
-                # Highlight over the FULL sequence, not just selected positions
-                full_texts = analysis["position_texts"]
-                highlight = highlighted_tokens(full_texts, positions)
-
                 n_cells = len(slice_.layers) * len(slice_.positions)
+                where = (
+                    f"{len(slice_.positions)} selected positions"
+                    if selected is not None
+                    else f"all {len(slice_.positions)} positions"
+                )
                 status = (
-                    f"{slice_.mode} lens: {len(slice_.layers)} layers × "
-                    f"{len(slice_.positions)} positions = {n_cells} cells, "
-                    f"{len(rows)} distinct readout tokens."
+                    f"{slice_.mode} lens: {len(slice_.layers)} layers × {where} "
+                    f"= {n_cells} cells, {len(rows)} distinct readout tokens."
                 )
                 if dropped:
                     status += f" (skipped unfitted layers: {dropped})"
                 if analysis["iset"] is not None:
                     status += f" Interventions active: {len(analysis['iset'])}."
-                return (
-                    readouts_dataframe(rows),
-                    plot_readout_distribution(rows, slice_.layers),
-                    plot_lens_heatmap(slice_),
-                    plot_pinned_token_ranks(slice_, tokenizer),
-                    highlight,
-                    status,
-                )
+                return {"slice": slice_, "rows": rows}, status
             except Exception as e:
                 logger.error(f"Lens readout error: {e}", exc_info=True)
-                return _empty_readouts(
-                    f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
-                )
+                return None, f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
+
+        # ------------------------------------------------------ view renders
+
+        def show_summary_view(bundle):
+            return "" if bundle is None else readouts_table_html(bundle["rows"])
+
+        def show_readouts_view(bundle):
+            if bundle is None:
+                return ""
+            return distribution_html(bundle["rows"], bundle["slice"].layers)
+
+        def show_heatmap_view(bundle):
+            return "" if bundle is None else heatmap_html(bundle["slice"])
+
+        def show_pinned_view(bundle):
+            if bundle is None:
+                return None
+            return plot_pinned_token_ranks(
+                bundle["slice"], model_manager.get_tokenizer()
+            )
+
+        def render_active_view(bundle, active_view):
+            """One value per view component; only the open view is built, the
+            other components are cleared so no stale render survives."""
+            table = dist = heat = pin = None
+            if bundle is not None:
+                if active_view == "readouts":
+                    dist = show_readouts_view(bundle)
+                elif active_view == "heatmap":
+                    heat = show_heatmap_view(bundle)
+                elif active_view == "pinned":
+                    pin = show_pinned_view(bundle)
+                else:
+                    table = show_summary_view(bundle)
+            return table, dist, heat, pin
+
+        def open_summary_view(bundle):
+            return "summary", show_summary_view(bundle)
+
+        def open_readouts_view(bundle):
+            return "readouts", show_readouts_view(bundle)
+
+        def open_heatmap_view(bundle):
+            return "heatmap", show_heatmap_view(bundle)
+
+        def open_pinned_view(bundle):
+            return "pinned", show_pinned_view(bundle)
 
         # ---------------------------------------------------------- handlers
 
+        def update_readouts(
+            analysis, positions, active_view, mode_choice, l_start, l_end,
+            l_stride, per_cell, skip_nw, pinned_text,
+        ):
+            bundle, status = compute_slice_bundle(
+                analysis, positions, mode_choice, l_start, l_end, l_stride,
+                per_cell, skip_nw, pinned_text,
+            )
+            return (bundle, *render_active_view(bundle, active_view), status)
+
         def generate_and_analyze(
-            mode, prompt, chat_msgs, n_tokens, strat, temp,
-            interventions, mode_choice, l_start, l_end, l_stride,
+            mode, prompt, chat_msgs, raw_text, think_choice, think_text,
+            n_tokens, strat, temp,
+            interventions, active_view, mode_choice, l_start, l_end, l_stride,
             per_cell, skip_nw, pinned_text,
         ):
+            def progress(status, text=""):
+                """Streaming yield: only status/text change while generating."""
+                return (
+                    gr.update(),  # slice_state
+                    *[gr.update()] * len(view_components),
+                    status,
+                    text,
+                    gr.update(),  # tokens_display
+                    gr.update(),  # selection_info
+                    gr.update(),  # analysis_state
+                    gr.update(),  # positions_state
+                )
+
+            def failed(status):
+                return (
+                    None,
+                    *[None] * len(view_components),
+                    status,
+                    "",
+                    gr.update(),
+                    gr.update(),
+                    None,
+                    gr.update(),
+                )
+
             model = model_manager.get_model()
             tokenizer = model_manager.get_tokenizer()
             device = model_manager.get_device()
             if model is None or tokenizer is None:
-                yield (
-                    *_empty_readouts("Error: No model loaded. Use the Model Loader tab."),
-                    "",
-                    None,
-                    gr.update(),
-                )
+                yield failed("Error: No model loaded. Use the Model Loader tab.")
                 return
 
             try:
@@ -364,20 +499,22 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 try:
                     tracer.set_interventions(interventions or None, jlens=jlens)
                 except ValueError as e:
-                    yield (
-                        *_empty_readouts(
-                            f"Error in interventions: {e}\n"
-                            "(jacobian basis needs a fitted lens covering that layer "
-                            "— fit one below, or use the logit basis)"
-                        ),
-                        "",
-                        None,
-                        gr.update(),
+                    yield failed(
+                        f"Error in interventions: {e}\n"
+                        "(jacobian basis needs a fitted lens covering that layer "
+                        "— fit one below, or use the logit basis)"
                     )
                     return
 
                 if mode == "Chat":
-                    tracer.reset(messages=parse_chat_messages(chat_msgs), mode="chat")
+                    tracer.reset(
+                        messages=parse_chat_messages(chat_msgs),
+                        mode="chat",
+                        thinking=thinking_key(think_choice),
+                        think_prefill=think_text or "",
+                    )
+                elif mode == "Raw":
+                    tracer.reset(prompt=raw_text, mode="raw")
                 else:
                     tracer.reset(prompt=prompt, mode="completion")
 
@@ -386,13 +523,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     for _step in tracer.generate_stream(
                         max_new_tokens=int(n_tokens), params=params
                     ):
-                        yield (
-                            *_empty_readouts(
-                                f"Generating... {len(tracer.history)}/{int(n_tokens)}"
-                            ),
+                        yield progress(
+                            f"Generating... {len(tracer.history)}/{int(n_tokens)}",
                             tracer.get_full_text(),
-                            None,
-                            gr.update(),
                         )
 
                 position_texts = [
@@ -407,39 +540,54 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     "position_texts": position_texts,
                 }
                 positions: list[int] = []  # all
-                outputs = render_readouts(
+                bundle, status = compute_slice_bundle(
                     analysis, positions, mode_choice, l_start, l_end, l_stride,
                     per_cell, skip_nw, pinned_text,
                 )
-                yield (*outputs, tracer.get_full_text(), analysis, positions)
+                yield (
+                    bundle,
+                    *render_active_view(bundle, active_view),
+                    status,
+                    tracer.get_full_text(),
+                    highlighted_tokens(position_texts, positions),
+                    selection_summary(positions, len(position_texts)),
+                    analysis,
+                    positions,
+                )
             except ChatValidationError as e:
-                yield (*_empty_readouts(f"Error: {e}"), "", None, gr.update())
+                yield failed(f"Error: {e}")
             except Exception as e:
                 logger.error(f"Lens generate error: {e}", exc_info=True)
-                yield (
-                    *_empty_readouts(f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"),
-                    "",
-                    None,
-                    gr.update(),
-                )
+                yield failed(f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}")
 
         def on_token_select(positions, analysis, evt: gr.SelectData):
             if analysis is None:
-                return positions, gr.update()
+                return positions, gr.update(), gr.update()
+            texts = analysis["position_texts"]
             updated = toggle_position(positions, evt.index)
-            return updated, highlighted_tokens(analysis["position_texts"], updated)
+            return (
+                updated,
+                highlighted_tokens(texts, updated),
+                selection_summary(updated, len(texts)),
+            )
 
         def select_generated(analysis):
             if analysis is None:
-                return [], gr.update()
+                return [], gr.update(), gr.update()
+            texts = analysis["position_texts"]
             seq_len = int(analysis["input_ids"].shape[1])
             selected = list(range(analysis["prompt_len"], seq_len))
-            return selected, highlighted_tokens(analysis["position_texts"], selected)
+            return (
+                selected,
+                highlighted_tokens(texts, selected),
+                selection_summary(selected, len(texts)),
+            )
 
         def clear_selection(analysis):
             if analysis is None:
-                return [], gr.update()
-            return [], highlighted_tokens(analysis["position_texts"], [])
+                return [], gr.update(), gr.update()
+            texts = analysis["position_texts"]
+            return [], highlighted_tokens(texts, []), selection_summary([], len(texts))
 
         def add_intervention(
             interventions, kind, token_ref, swap_to_ref, layer, strength, basis
@@ -554,7 +702,15 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         mode_selector.change(
             fn=toggle_mode_visibility,
             inputs=[mode_selector],
-            outputs=[completion_inputs, chat_inputs],
+            outputs=[completion_inputs, chat_inputs, raw_inputs],
+        )
+        strategy.change(
+            fn=toggle_temperature, inputs=[strategy], outputs=[temperature]
+        )
+        thinking_selector.change(
+            fn=toggle_think_prefill,
+            inputs=[thinking_selector],
+            outputs=[think_prefill_box],
         )
         iv_kind.change(fn=toggle_swap_field, inputs=[iv_kind], outputs=[iv_swap_to])
 
@@ -566,31 +722,55 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         generate_button.click(
             fn=generate_and_analyze,
             inputs=[
-                mode_selector, prompt_input, chat_messages,
+                mode_selector, prompt_input, chat_messages, raw_input,
+                thinking_selector, think_prefill_box,
                 max_tokens, strategy, temperature,
-                interventions_state, *lens_controls,
+                interventions_state, active_view_state, *lens_controls,
             ],
-            outputs=[*readout_outputs, text_output, analysis_state, positions_state],
+            outputs=[
+                slice_state, *view_components, status_output, text_output,
+                tokens_display, selection_info, analysis_state, positions_state,
+            ],
         )
         update_button.click(
-            fn=render_readouts,
-            inputs=[analysis_state, positions_state, *lens_controls],
-            outputs=readout_outputs,
+            fn=update_readouts,
+            inputs=[analysis_state, positions_state, active_view_state, *lens_controls],
+            outputs=[slice_state, *view_components, status_output],
+        )
+        summary_tab.select(
+            fn=open_summary_view,
+            inputs=[slice_state],
+            outputs=[active_view_state, readout_table],
+        )
+        readouts_tab.select(
+            fn=open_readouts_view,
+            inputs=[slice_state],
+            outputs=[active_view_state, dist_plot],
+        )
+        heatmap_tab.select(
+            fn=open_heatmap_view,
+            inputs=[slice_state],
+            outputs=[active_view_state, heatmap_plot],
+        )
+        pinned_tab.select(
+            fn=open_pinned_view,
+            inputs=[slice_state],
+            outputs=[active_view_state, pinned_plot],
         )
         tokens_display.select(
             fn=on_token_select,
             inputs=[positions_state, analysis_state],
-            outputs=[positions_state, tokens_display],
+            outputs=[positions_state, tokens_display, selection_info],
         )
         select_generated_button.click(
             fn=select_generated,
             inputs=[analysis_state],
-            outputs=[positions_state, tokens_display],
+            outputs=[positions_state, tokens_display, selection_info],
         )
         select_clear_button.click(
             fn=clear_selection,
             inputs=[analysis_state],
-            outputs=[positions_state, tokens_display],
+            outputs=[positions_state, tokens_display, selection_info],
         )
 
         iv_add_button.click(

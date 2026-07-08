@@ -40,6 +40,51 @@ DEFAULT_CHAT_JSON = json.dumps(
     indent=2,
 )
 
+CHAT_MODE_HELP = (
+    "Edit the JSON to add/remove/modify messages. "
+    "Supported roles: system, user, assistant. "
+    "End with an assistant message to prefill it — generation continues "
+    "that message instead of starting a new turn. Reasoning templates "
+    "(e.g. Qwen3) insert an empty `<think>` block before a plain-text "
+    "prefill (so it already skips thinking). A COMPLETE think block in "
+    "canonical form (`<think>\\n...\\n</think>\\n\\n` + answer) passes "
+    "through; to continue mid-thought (unclosed `<think>`) use Raw mode — "
+    "the template would prepend its own empty block."
+)
+
+RAW_MODE_PLACEHOLDER = (
+    "<|im_start|>user\nTell me about Paris.<|im_end|>\n"
+    "<|im_start|>assistant\n<think>\n\n</think>\n\nParis is"
+)
+
+RAW_MODE_HELP = (
+    "Tokenized as-is: no BOS or other special tokens are added, so template "
+    "markers you type (e.g. `<|im_start|>`) are the only specials. Useful "
+    "for hand-written chat templates and prefills."
+)
+
+THINKING_CHOICES = ("Template default", "Off (no thinking)", "Prefill thought…")
+
+THINK_PREFILL_INFO = (
+    "Inserted after the generation prompt as an UNCLOSED `<think>` + this "
+    "text — the model continues the thought and closes it itself."
+)
+
+
+def thinking_key(ui_choice: str) -> str:
+    """Map the Thinking radio label to the tracer's thinking mode."""
+    choice = ui_choice or ""
+    if choice.startswith("Off"):
+        return "off"
+    if choice.startswith("Prefill"):
+        return "prefill"
+    return "auto"
+
+
+def toggle_think_prefill(ui_choice: str):
+    """Show the thought textbox only for the prefill choice."""
+    return gr.update(visible=thinking_key(ui_choice) == "prefill")
+
 
 class ChatValidationError(ValueError):
     """The chat JSON the user entered is not a valid message list."""
@@ -69,10 +114,27 @@ def parse_chat_messages(text: str) -> list[dict[str, str]]:
     return messages
 
 
+GENERATION_MODES = ("Completion", "Chat", "Raw")
+
+
 def toggle_mode_visibility(mode: str) -> tuple:
-    """Show completion inputs or chat inputs based on the mode radio."""
-    is_completion = mode == "Completion"
-    return gr.update(visible=is_completion), gr.update(visible=not is_completion)
+    """Show the completion, chat, or raw input group based on the mode radio."""
+    return (
+        gr.update(visible=mode == "Completion"),
+        gr.update(visible=mode == "Chat"),
+        gr.update(visible=mode == "Raw"),
+    )
+
+
+TEMPERATURE_GREEDY_INFO = "No effect with greedy strategy: it always picks the argmax."
+
+
+def toggle_temperature(strategy: str):
+    """Enable the temperature slider only when it has an effect (sampling)."""
+    sampling = strategy == "sampling"
+    return gr.update(
+        interactive=sampling, info=None if sampling else TEMPERATURE_GREEDY_INFO
+    )
 
 
 def prob_mode_key(ui_choice: str) -> str:

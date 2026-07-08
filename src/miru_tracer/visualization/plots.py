@@ -14,11 +14,13 @@ from plotly.subplots import make_subplots
 
 from miru_tracer.core.lens import LensSlice, ReadoutRow
 from miru_tracer.core.schema import TokenStep
+from miru_tracer.core.tokenizer_utils import visible_whitespace
 
 _TRUNCATE_AT = 15
 
 
 def _display_text(text: str) -> str:
+    text = visible_whitespace(text)
     return text[:12] + "..." if len(text) > _TRUNCATE_AT else text
 
 
@@ -319,9 +321,9 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
     )
     fig.update_layout(
         title=f"Lens readouts — {slice_.mode}<br>"
-        "<sub>Top-1 per (position, layer) | Hover for top-k | Drag to pan, "
-        "double-click to reset</sub>",
-        xaxis_title="Position (input token)",
+        "<sub>Each cell predicts the NEXT token after the column's input "
+        "token | Hover for top-k | Drag to pan, double-click to reset</sub>",
+        xaxis_title="Position (input token; readout = its next token)",
         yaxis_title="Layer",
         height=max(400, 30 * len(slice_.layers) + 150),
         # IMPORTANT: keep autosize=True — a fixed-width figure inside a
@@ -332,7 +334,7 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
         dragmode="pan",
         hovermode="closest",
     )
-    max_visible = 12
+    max_visible = 20  # the heatmap now spans the full shell width
     if len(slice_.positions) > max_visible:
         # Window the newest positions; pan (or double-click) reaches the rest.
         fig.update_xaxes(

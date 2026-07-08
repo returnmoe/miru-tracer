@@ -10,6 +10,7 @@ from miru_tracer.core.lens import (
     aggregate_readouts,
     compute_lens_slice,
     is_word_token,
+    record_lens_activations,
     sanitize_model_name,
 )
 
@@ -55,6 +56,43 @@ class TestComputeLensSlice:
         assert slice_.positions == [2, 5]
         assert len(slice_.tokens[0]) == 2
         assert len(slice_.position_texts) == 2
+
+    def test_prerecorded_activations_match_and_skip_forward(
+        self, tiny_model, tiny_tokenizer, input_ids, monkeypatch
+    ):
+        layers = [0, 1]
+        fresh = compute_lens_slice(
+            tiny_model, tiny_tokenizer, input_ids, layers=layers, mode="logit"
+        )
+        acts = record_lens_activations(tiny_model, tiny_tokenizer, input_ids)
+
+        calls = 0
+        original = tiny_model.forward
+
+        def counting_forward(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(tiny_model, "forward", counting_forward)
+        cached = compute_lens_slice(
+            tiny_model, tiny_tokenizer, input_ids,
+            layers=layers, mode="logit", activations=acts,
+        )
+        assert calls == 0  # no model forward with pre-recorded residuals
+        assert cached.tokens == fresh.tokens
+        assert cached.probs == fresh.probs  # deterministic CPU path, same math
+
+    def test_missing_activation_layer_rejected(
+        self, tiny_model, tiny_tokenizer, input_ids
+    ):
+        acts = record_lens_activations(tiny_model, tiny_tokenizer, input_ids)
+        del acts[1]
+        with pytest.raises(ValueError, match="activations missing"):
+            compute_lens_slice(
+                tiny_model, tiny_tokenizer, input_ids,
+                layers=[0, 1], mode="logit", activations=acts,
+            )
 
     def test_jacobian_mode_differs_from_logit_in_early_layer(
         self, tiny_model, tiny_tokenizer, input_ids, tiny_lens

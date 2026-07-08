@@ -65,6 +65,11 @@ MIRU_CSS = """
     font-family: var(--font-mono);
 }
 
+/* Token sequence (Lens tab): spans toggle position selection on click */
+.miru-token-select .token-container {
+    cursor: pointer;
+}
+
 /* Footer items styling */
 .footer-version {
     color: inherit;

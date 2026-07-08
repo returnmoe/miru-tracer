@@ -4,7 +4,29 @@ from miru_tracer.core.tokenizer_utils import (
     detect_byte_level_bpe,
     extract_token_bytes,
     safe_decode_token,
+    visible_whitespace,
 )
+
+
+class TestVisibleWhitespace:
+    def test_leading_space(self):
+        assert visible_whitespace(" Paris") == "␣Paris"
+
+    def test_trailing_space(self):
+        assert visible_whitespace("Paris ") == "Paris␣"
+
+    def test_newline_and_tab(self):
+        assert visible_whitespace("\n") == "⏎"
+        assert visible_whitespace("a\tb") == "a⇥b"
+
+    def test_all_spaces(self):
+        assert visible_whitespace("  ") == "␣␣"
+
+    def test_interior_space_untouched(self):
+        assert visible_whitespace("a b") == "a b"
+
+    def test_empty(self):
+        assert visible_whitespace("") == ""
 
 
 class TestSafeDecodeToken:

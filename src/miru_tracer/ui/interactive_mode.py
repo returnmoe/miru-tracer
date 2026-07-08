@@ -17,13 +17,23 @@ from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.sampling import select_token
 from miru_tracer.core.session_manager import get_session_manager
 from miru_tracer.ui.helpers import (
+    CHAT_MODE_HELP,
     DEFAULT_CHAT_JSON,
+    GENERATION_MODES,
+    RAW_MODE_HELP,
+    RAW_MODE_PLACEHOLDER,
+    TEMPERATURE_GREEDY_INFO,
+    THINK_PREFILL_INFO,
+    THINKING_CHOICES,
     ChatValidationError,
     ExportManager,
     build_prob_table,
     build_radio_choices,
     parse_chat_messages,
+    thinking_key,
     toggle_mode_visibility,
+    toggle_temperature,
+    toggle_think_prefill,
     ui_sampling_params,
 )
 from miru_tracer.ui.lens_common import (
@@ -48,10 +58,11 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         )
 
         mode_selector = gr.Radio(
-            choices=["Completion", "Chat"],
+            choices=list(GENERATION_MODES),
             value="Completion",
             label="Mode",
-            info="Choose between direct text completion or chat format.",
+            info="Direct text completion, chat format, or raw text with "
+            "explicit special tokens.",
         )
 
         with gr.Group() as completion_inputs:
@@ -63,15 +74,33 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             )
 
         with gr.Group(visible=False) as chat_inputs:
-            gr.Markdown(
-                "Edit the JSON to add/remove/modify messages. "
-                "Supported roles: system, user, assistant"
-            )
+            gr.Markdown(CHAT_MODE_HELP)
             chat_messages = gr.Code(
                 label="Chat (JSON)",
                 language="json",
                 lines=8,
                 value=DEFAULT_CHAT_JSON,
+            )
+            thinking_selector = gr.Radio(
+                choices=list(THINKING_CHOICES),
+                value=THINKING_CHOICES[0],
+                label="Thinking",
+            )
+            think_prefill_box = gr.Textbox(
+                label="Thought prefill",
+                visible=False,
+                lines=2,
+                placeholder="Okay, the user wants…",
+                info=THINK_PREFILL_INFO,
+            )
+
+        with gr.Group(visible=False) as raw_inputs:
+            raw_input = gr.Textbox(
+                label="Raw text",
+                lines=4,
+                placeholder=RAW_MODE_PLACEHOLDER,
+                info=RAW_MODE_HELP,
+                elem_classes=["miru-textbox-mono"],
             )
 
         with gr.Group():
@@ -83,7 +112,15 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     info="A preview of the next token is shown below either way.",
                 )
             with gr.Row():
-                temperature = gr.Slider(0.1, 2.0, value=1.0, step=0.1, label="Temperature")
+                temperature = gr.Slider(
+                    0.1,
+                    2.0,
+                    value=1.0,
+                    step=0.1,
+                    label="Temperature",
+                    interactive=False,  # default strategy is greedy
+                    info=TEMPERATURE_GREEDY_INFO,
+                )
                 top_k = gr.Slider(1, 100, value=50, step=1, label="Top-K")
                 top_p = gr.Slider(0.01, 1.0, value=0.9, step=0.01, label="Top-P")
             with gr.Accordion("Advanced (logging & stopping)", open=False), gr.Row():
@@ -207,9 +244,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     choices=list(LENS_MODE_CHOICES), value="Logit", label="Lens"
                 )
                 lens_stride = gr.Number(
-                    minimum=1, value=2, precision=0, label="Layer stride"
+                    minimum=1, value=1, precision=0, label="Layer stride"
                 )
-                lens_top_k = gr.Slider(1, 16, value=8, step=1, label="Readouts per layer")
+                lens_top_k = gr.Slider(1, 50, value=20, step=1, label="Readouts per layer")
             with gr.Row():
                 lens_refresh_button = gr.Button("Refresh lens", variant="secondary")
                 lens_apply_iv_button = gr.Button(
@@ -337,7 +374,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         # ----------------------------------------------------------- handlers
 
         def initialize_tracer(
-            mode, prompt, chat_msgs, temp, topk, topp, strat, log_topk
+            mode, prompt, chat_msgs, raw_text, think_choice, think_text,
+            temp, topk, topp, strat, log_topk,
         ):
             model = model_manager.get_model()
             tokenizer = model_manager.get_tokenizer()
@@ -360,7 +398,14 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
                 with session.lock:
                     if messages is not None:
-                        session.tracer.reset(messages=messages, mode="chat")
+                        session.tracer.reset(
+                            messages=messages,
+                            mode="chat",
+                            thinking=thinking_key(think_choice),
+                            think_prefill=think_text or "",
+                        )
+                    elif mode == "Raw":
+                        session.tracer.reset(prompt=raw_text, mode="raw")
                     else:
                         session.tracer.reset(prompt=prompt, mode="completion")
 
@@ -642,7 +687,15 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         mode_selector.change(
             fn=toggle_mode_visibility,
             inputs=[mode_selector],
-            outputs=[completion_inputs, chat_inputs],
+            outputs=[completion_inputs, chat_inputs, raw_inputs],
+        )
+        strategy.change(
+            fn=toggle_temperature, inputs=[strategy], outputs=[temperature]
+        )
+        thinking_selector.change(
+            fn=toggle_think_prefill,
+            inputs=[thinking_selector],
+            outputs=[think_prefill_box],
         )
         use_override.change(
             fn=toggle_override_visibility,
@@ -656,6 +709,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 mode_selector,
                 prompt_input,
                 chat_messages,
+                raw_input,
+                thinking_selector,
+                think_prefill_box,
                 temperature,
                 top_k,
                 top_p,
