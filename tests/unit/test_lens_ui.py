@@ -9,6 +9,7 @@ from miru_tracer.ui.lens_common import (
     highlighted_tokens,
     layer_selection,
     lens_mode_key,
+    parse_layer_refs,
     parse_token_refs,
     selection_summary,
     set_active_interventions,
@@ -62,6 +63,42 @@ class TestTokenRefs:
     def test_parse_empty(self, tiny_tokenizer):
         assert parse_token_refs("", tiny_tokenizer) == []
         assert parse_token_refs(None, tiny_tokenizer) == []
+
+    def test_leading_whitespace_preserved(self, tiny_tokenizer):
+        expected = tiny_tokenizer.encode(" a", add_special_tokens=False)[0]
+        assert token_ref_to_id(" a", tiny_tokenizer) == expected
+        assert token_ref_to_id(" a", tiny_tokenizer) != token_ref_to_id(
+            "a", tiny_tokenizer
+        )
+
+    def test_numeric_id_tolerates_spaces(self, tiny_tokenizer):
+        assert token_ref_to_id(" 42 ", tiny_tokenizer) == 42
+
+
+class TestParseLayerRefs:
+    def test_lists_and_ranges(self):
+        assert parse_layer_refs("11,12-15,18") == [11, 12, 13, 14, 15, 18]
+
+    def test_single_layer_and_spaces(self):
+        assert parse_layer_refs(" 3 ") == [3]
+        assert parse_layer_refs("5, 2-3") == [2, 3, 5]
+
+    def test_deduplicates(self):
+        assert parse_layer_refs("2,1-3,2") == [1, 2, 3]
+
+    def test_empty_rejected(self):
+        with pytest.raises(ValueError, match="Empty"):
+            parse_layer_refs("  ,  ")
+        with pytest.raises(ValueError, match="Empty"):
+            parse_layer_refs(None)
+
+    def test_malformed_rejected(self):
+        with pytest.raises(ValueError, match="Bad layer"):
+            parse_layer_refs("1,foo")
+        with pytest.raises(ValueError, match="Bad layer"):
+            parse_layer_refs("-2")
+        with pytest.raises(ValueError, match="Descending"):
+            parse_layer_refs("5-3")
 
 
 class TestLayerSelection:

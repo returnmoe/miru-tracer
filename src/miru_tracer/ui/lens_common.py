@@ -24,14 +24,18 @@ def lens_mode_key(ui_choice: str) -> str:
 def token_ref_to_id(ref: str, tokenizer) -> int:
     """Resolve a user token reference: a numeric id, or text (first token).
 
+    Text is encoded verbatim — leading/trailing whitespace is significant
+    (" Paris" and "Paris" are different BPE tokens); only numeric ids
+    tolerate surrounding spaces.
+
     Raises:
         ValueError: empty ref, unencodable text, or out-of-range id.
     """
-    ref = ref.strip()
-    if not ref:
+    stripped = ref.strip()
+    if not stripped:
         raise ValueError("Empty token reference")
-    if ref.lstrip("-").isdigit():
-        token_id = int(ref)
+    if stripped.lstrip("-").isdigit():
+        token_id = int(stripped)
         if not 0 <= token_id < len(tokenizer):
             raise ValueError(
                 f"Token id {token_id} out of range (vocab size {len(tokenizer)})"
@@ -41,6 +45,34 @@ def token_ref_to_id(ref: str, tokenizer) -> int:
     if not encoded:
         raise ValueError(f"Could not tokenize {ref!r}")
     return int(encoded[0])
+
+
+def parse_layer_refs(text: str) -> list[int]:
+    """Comma-separated layers and inclusive ranges -> unique sorted layer list.
+
+    E.g. ``"11, 12-15, 18"`` -> ``[11, 12, 13, 14, 15, 18]``.
+
+    Raises:
+        ValueError: empty input, malformed entry, or a descending range.
+    """
+    layers: list[int] = []
+    for part in (str(text) if text is not None else "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        lo, sep, hi = part.partition("-")
+        lo, hi = lo.strip(), hi.strip()
+        if not lo.isdigit() or (sep and not hi.isdigit()):
+            raise ValueError(
+                f"Bad layer reference {part!r}: use a number or range like 12-15"
+            )
+        start, end = int(lo), int(hi) if sep else int(lo)
+        if end < start:
+            raise ValueError(f"Descending layer range {part!r}")
+        layers.extend(range(start, end + 1))
+    if not layers:
+        raise ValueError("Empty layer reference")
+    return sorted(set(layers))
 
 
 def parse_token_refs(text: str, tokenizer) -> list[int]:

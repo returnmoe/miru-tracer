@@ -59,6 +59,7 @@ from miru_tracer.ui.lens_common import (
     interventions_dataframe,
     layer_selection,
     lens_mode_key,
+    parse_layer_refs,
     parse_token_refs,
     selection_summary,
     set_active_interventions,
@@ -227,14 +228,21 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             label="Kind",
                         )
                         iv_token = gr.Textbox(
-                            label="Token", placeholder="text or id, e.g. Paris"
+                            label="Token", placeholder="text or id, e.g. Paris",
+                            info="Text or a numeric token id. Leading spaces "
+                            "count: ' Paris' ≠ 'Paris'.",
                         )
                         iv_swap_to = gr.Textbox(
-                            label="Swap to", placeholder="target token", visible=False
+                            label="Swap to", placeholder="text or id",
+                            visible=False,
+                            info="Text or a numeric token id. Leading spaces "
+                            "count: ' Paris' ≠ 'Paris'.",
                         )
                     with gr.Row():
-                        iv_layer = gr.Number(
-                            minimum=0, value=0, precision=0, label="Layer"
+                        iv_layer = gr.Textbox(
+                            value="0", label="Layer(s)",
+                            info="List/ranges allowed: 11,12-15,18 adds one "
+                            "intervention per layer.",
                         )
                         iv_strength = gr.Slider(
                             -4.0, 4.0, value=1.0, step=0.1, label="Strength (steer)"
@@ -590,7 +598,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             return [], highlighted_tokens(texts, []), selection_summary([], len(texts))
 
         def add_intervention(
-            interventions, kind, token_ref, swap_to_ref, layer, strength, basis
+            interventions, kind, token_ref, swap_to_ref, layer_refs, strength, basis
         ):
             tokenizer = model_manager.get_tokenizer()
             if tokenizer is None:
@@ -600,20 +608,26 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 token_id_to = (
                     token_ref_to_id(swap_to_ref, tokenizer) if kind == "swap" else None
                 )
-                iv = Intervention(
-                    kind=kind,
-                    layer=int(layer),
-                    token_id=token_id,
-                    strength=float(strength),
-                    token_id_to=token_id_to,
-                    basis=basis,
-                )
-                updated = [*interventions, iv]
+                added = [
+                    Intervention(
+                        kind=kind,
+                        layer=layer,
+                        token_id=token_id,
+                        strength=float(strength),
+                        token_id_to=token_id_to,
+                        basis=basis,
+                    )
+                    for layer in parse_layer_refs(layer_refs)
+                ]
+                updated = [*interventions, *added]
                 set_active_interventions(updated)
+                described = added[0].describe(tokenizer)
+                if len(added) > 1:
+                    described += f" … (+{len(added) - 1} more layers)"
                 return (
                     updated,
                     interventions_dataframe(updated, tokenizer),
-                    f"Added: {iv.describe(tokenizer)}. "
+                    f"Added: {described}. "
                     f"{len(updated)} intervention(s) — regenerate to apply.",
                 )
             except ValueError as e:
