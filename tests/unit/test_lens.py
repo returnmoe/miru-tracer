@@ -185,3 +185,20 @@ class TestIsWordToken:
     ])
     def test_cases(self, text, expected):
         assert is_word_token(text) is expected
+
+
+class TestDecodeToken:
+    def test_out_of_tokenizer_vocab_id_gets_placeholder(self, tiny_tokenizer):
+        """Model embedding matrices are commonly padded past the tokenizer
+        vocab; readouts can surface those ids and must not crash (regression:
+        None text broke the plots)."""
+        from miru_tracer.core.lens import decode_token
+
+        text = decode_token(tiny_tokenizer, 259)  # model vocab 260 > tokenizer 258
+        assert isinstance(text, str) and text  # never None/empty
+
+    def test_regular_token(self, tiny_tokenizer):
+        from miru_tracer.core.lens import decode_token
+
+        token_id = tiny_tokenizer.encode("a", add_special_tokens=False)[0]
+        assert decode_token(tiny_tokenizer, token_id) == "a"

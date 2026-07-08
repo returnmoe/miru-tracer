@@ -12,6 +12,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from miru_tracer.core.lens import LensSlice, ReadoutRow
 from miru_tracer.core.schema import TokenStep
 
 _TRUNCATE_AT = 15
@@ -262,3 +263,132 @@ def get_generation_stats(
         "max_confidence": float(np.max(top1_probs)),
         "max_confidence_step": int(np.argmax(top1_probs)),
     }
+
+
+# --------------------------------------------------------------------- lenses
+
+
+def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
+    """Position x layer heatmap of top-1 lens readouts (paper Figure-5 style).
+
+    Cell color is the top-1 readout probability (score for "diff" mode); cell
+    text is the top-1 token; hover lists the full top-k of the cell.
+    """
+    if not slice_.layers or not slice_.positions:
+        return None
+
+    x_labels = [
+        f"{p}: {_display_text(text)}"
+        for p, text in zip(slice_.positions, slice_.position_texts, strict=True)
+    ]
+    y_labels = [f"L{layer}" for layer in slice_.layers]
+
+    z, text, hover = [], [], []
+    for i in range(len(slice_.layers)):
+        z_row, text_row, hover_row = [], [], []
+        for j in range(len(slice_.positions)):
+            probs = slice_.probs[i][j]
+            texts = slice_.texts[i][j]
+            z_row.append(probs[0] if probs else 0.0)
+            text_row.append(_display_text(texts[0]) if texts else "")
+            hover_row.append(
+                "<br>".join(
+                    f"{rank + 1}. {_display_text(t)} ({p:.3f})"
+                    for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
+                )
+                or "(empty)"
+            )
+        z.append(z_row)
+        text.append(text_row)
+        hover.append(hover_row)
+
+    value_name = "Δprob (J-lens − logit)" if slice_.mode == "diff" else "Probability"
+    fig = go.Figure(
+        go.Heatmap(
+            z=z,
+            text=text,
+            customdata=hover,
+            texttemplate="%{text}",
+            textfont={"size": 11},
+            x=x_labels,
+            y=y_labels,
+            colorscale="YlOrRd",
+            colorbar=dict(title=value_name),
+            hovertemplate="%{x}<br>%{y}<br>%{customdata}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title=f"Lens readouts — {slice_.mode}<br>"
+        "<sub>Top-1 readout per (position, layer) | Hover for the full top-k</sub>",
+        xaxis_title="Position (input token)",
+        yaxis_title="Layer",
+        height=max(400, 30 * len(slice_.layers) + 150),
+        dragmode=False,
+        hovermode="closest",
+        autosize=True,
+    )
+    return fig
+
+
+def plot_readout_distribution(
+    rows: list[ReadoutRow], layers: list[int], *, limit: int = 20
+) -> go.Figure | None:
+    """Token x layer heatmap of readout counts (Neuronpedia's per-token bars)."""
+    rows = rows[:limit]
+    if not rows or not layers:
+        return None
+    fig = go.Figure(
+        go.Heatmap(
+            z=[row.count_by_layer for row in rows],
+            x=[f"L{layer}" for layer in layers],
+            y=[f"{_display_text(row.text)} ({row.count})" for row in rows],
+            colorscale="Greys",
+            colorbar=dict(title="Count"),
+            hovertemplate="%{y}<br>%{x}: %{z} cells<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        title="Readout counts by layer<br>"
+        "<sub>How often each token appears in the selected cells' top-k</sub>",
+        xaxis_title="Layer",
+        yaxis_title="Readout token (total count)",
+        height=max(350, 25 * len(rows) + 150),
+        yaxis=dict(autorange="reversed"),
+        dragmode=False,
+        autosize=True,
+    )
+    return fig
+
+
+def plot_pinned_token_ranks(slice_: LensSlice, tokenizer=None) -> go.Figure | None:
+    """Median rank across selected positions vs layer, one line per pinned token."""
+    if not slice_.pinned_ranks:
+        return None
+    fig = go.Figure()
+    for token_id, grid in slice_.pinned_ranks.items():
+        medians = [float(np.median(row)) for row in grid]  # per layer
+        label = str(token_id)
+        if tokenizer is not None:
+            label = tokenizer.convert_ids_to_tokens([token_id])[0]
+        fig.add_trace(
+            go.Scatter(
+                x=[f"L{layer}" for layer in slice_.layers],
+                y=[m + 1 for m in medians],  # 1-indexed for log axis
+                mode="lines+markers",
+                name=_display_text(label),
+                hovertemplate="%{x}<br>median rank %{y:.0f}<extra>"
+                + _display_text(label)
+                + "</extra>",
+            )
+        )
+    fig.update_layout(
+        title="Pinned token ranks across layers<br>"
+        "<sub>Median rank over the selected positions (lower = closer to top-1)</sub>",
+        xaxis_title="Layer",
+        yaxis_title="Rank (log scale)",
+        yaxis=dict(type="log", autorange="reversed"),
+        height=450,
+        dragmode=False,
+        hovermode="x unified",
+    )
+    return fig

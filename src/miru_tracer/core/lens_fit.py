@@ -153,6 +153,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    import functools
+
+    echo = functools.partial(print, flush=True)  # nohup/pipe friendliness
+
+    from miru_tracer.core.logging_config import setup_logging
+
+    setup_logging()  # surface the fitter's per-prompt INFO lines
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -161,17 +169,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.fresh and checkpoint.exists():
         checkpoint.unlink()
 
-    print(f"Loading {args.model} (fp32, CPU-compatible)...")
+    echo(f"Loading {args.model} (fp32, CPU-compatible)...")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32).eval()
 
     if args.prompts_file:
         prompts = prompts_from_file(args.prompts_file)
     else:
-        print("Loading wikitext prompts...")
+        echo("Loading wikitext prompts...")
         prompts = wikitext_prompts(args.num_prompts)
-    print(f"Fitting on {len(prompts)} prompts -> {out_path}")
-    print("This runs one forward + many backward passes per prompt; "
+    echo(f"Fitting on {len(prompts)} prompts -> {out_path}")
+    echo("This runs one forward + many backward passes per prompt; "
           "interrupt any time, re-run to resume.")
 
     for progress in iter_fit_lens(
@@ -184,13 +192,13 @@ def main(argv: list[str] | None = None) -> int:
     ):
         rate = progress.elapsed_s / max(progress.prompts_done, 1)
         remaining = rate * (progress.prompts_total - progress.prompts_done)
-        print(
+        echo(
             f"  {progress.prompts_done}/{progress.prompts_total} prompts "
             f"({progress.elapsed_s:.0f}s elapsed, ~{remaining:.0f}s left) "
             f"-> saved {out_path}"
         )
 
-    print("Done.")
+    echo("Done.")
     return 0
 
 

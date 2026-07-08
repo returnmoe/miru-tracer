@@ -25,6 +25,7 @@ logger = get_logger(__name__)
 from miru_tracer.core.model_manager import ModelManager  # noqa: E402
 from miru_tracer.ui.analysis import create_analysis_tab  # noqa: E402
 from miru_tracer.ui.interactive_mode import create_interactive_mode_tab  # noqa: E402
+from miru_tracer.ui.lens_tab import create_lens_tab  # noqa: E402
 from miru_tracer.ui.logging_mode import create_logging_mode_tab  # noqa: E402
 from miru_tracer.ui.model_loader import create_model_loader_tab  # noqa: E402
 from miru_tracer.ui.theme import launch_kwargs  # noqa: E402
@@ -43,6 +44,7 @@ def create_app() -> gr.Blocks:
             create_token_lookup_tab(model_manager)
             create_logging_mode_tab(model_manager)
             create_interactive_mode_tab(model_manager)
+            create_lens_tab(model_manager)
             create_analysis_tab()
 
         # Restore Model Loader displays on page (re)load

@@ -227,7 +227,7 @@ def compute_lens_slice(
                 vals = top_scores[p].tolist()
                 row_t, row_p, row_s = [], [], []
                 for token_id, value in zip(ids, vals, strict=True):
-                    text = _decode(tokenizer, token_id)
+                    text = decode_token(tokenizer, token_id)
                     if skip_non_words and not is_word_token(text):
                         continue
                     row_t.append(token_id)
@@ -250,7 +250,7 @@ def compute_lens_slice(
                 for i, token_id in enumerate(pinned_token_ids):
                     pinned[token_id].append(ranks[i].tolist())
 
-    position_texts = [_decode(tokenizer, int(input_ids[0, p])) for p in positions]
+    position_texts = [decode_token(tokenizer, int(input_ids[0, p])) for p in positions]
     return LensSlice(
         mode=mode,
         layers=layers,
@@ -263,9 +263,16 @@ def compute_lens_slice(
     )
 
 
-def _decode(tokenizer, token_id: int) -> str:
+def decode_token(tokenizer, token_id: int) -> str:
+    """Best-effort display text for a token.
+
+    Falls back to ``<id>`` for ids outside the tokenizer vocabulary — models
+    commonly pad the embedding matrix past the tokenizer size (Qwen3 included),
+    and those ids can legitimately appear in lens readouts.
+    """
     decoded, raw, _ = safe_decode_token(tokenizer, token_id)
-    return decoded if decoded else raw
+    text = decoded if decoded else raw
+    return text if text is not None else f"<{token_id}>"
 
 
 @dataclass

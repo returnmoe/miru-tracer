@@ -11,6 +11,7 @@ import traceback
 
 import gradio as gr
 
+from miru_tracer.core.lens import compute_lens_slice, get_lens_store
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.sampling import select_token
@@ -25,6 +26,13 @@ from miru_tracer.ui.helpers import (
     toggle_mode_visibility,
     ui_sampling_params,
 )
+from miru_tracer.ui.lens_common import (
+    LENS_MODE_CHOICES,
+    get_active_interventions,
+    layer_selection,
+    lens_mode_key,
+)
+from miru_tracer.visualization.plots import plot_lens_heatmap
 
 logger = get_logger(__name__)
 
@@ -193,6 +201,29 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         with gr.Row():
             go_to_step_button = gr.Button("Go to Step", variant="secondary")
 
+        with gr.Accordion("Layer Lens (current position)", open=False):
+            gr.Markdown(
+                "Per-layer readout of the **next-token** position via the "
+                "logit or Jacobian lens. Refresh runs one extra forward pass. "
+                "Interventions added in the Lens tab can be applied to this "
+                "session here."
+            )
+            with gr.Row():
+                lens_mode_choice = gr.Radio(
+                    choices=list(LENS_MODE_CHOICES), value="Logit", label="Lens"
+                )
+                lens_stride = gr.Number(
+                    minimum=1, value=2, precision=0, label="Layer stride"
+                )
+                lens_top_k = gr.Slider(1, 16, value=8, step=1, label="Readouts per layer")
+            with gr.Row():
+                lens_refresh_button = gr.Button("Refresh lens", variant="secondary")
+                lens_apply_iv_button = gr.Button(
+                    "Apply Lens-tab interventions to this session", size="sm"
+                )
+            lens_status = gr.Textbox(label="Lens status", interactive=False, lines=1)
+            lens_plot = gr.Plot(label="Layer readouts at the next-token position")
+
         gr.Markdown("### Export")
         download_button = gr.DownloadButton(
             label="Download JSON",
@@ -203,6 +234,72 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         # Session state - only stores the session ID string
         session_state = gr.State(value=None)
+
+        # -------------------------------------------------------- lens panel
+
+        def refresh_lens(session_id, mode_choice, stride, top_k):
+            session, error = resolve_session(session_id)
+            if error:
+                return None, error[0]  # error tuple's status message
+
+            with session.lock:
+                tracer = session.tracer
+                if tracer.input_ids is None:
+                    return None, "Initialize a prompt first."
+                model_name = model_manager.get_model_name()
+                mode = lens_mode_key(mode_choice)
+                jlens = get_lens_store().get(model_name)
+                if mode in ("jacobian", "diff") and jlens is None:
+                    return None, (
+                        f"No fitted Jacobian lens for {model_name}. Fit one in "
+                        f"the Lens tab or run: miru-tracer-fit-lens {model_name}"
+                    )
+                try:
+                    n_layers = tracer.model.config.get_text_config().num_hidden_layers
+                    layers = layer_selection(n_layers, 0, -1, stride)
+                    if mode in ("jacobian", "diff") and jlens is not None:
+                        fitted = set(jlens.source_layers) | {n_layers - 1}
+                        layers = [layer for layer in layers if layer in fitted]
+                    slice_ = compute_lens_slice(
+                        tracer.model,
+                        tracer.tokenizer,
+                        tracer.input_ids,
+                        layers=layers,
+                        positions=[tracer.seq_len - 1],
+                        mode=mode,
+                        jlens=jlens,
+                        top_k=int(top_k),
+                        interventions=tracer._intervention_set,
+                    )
+                    active = len(tracer.interventions)
+                    status = (
+                        f"{mode} lens over {len(layers)} layers at position "
+                        f"{tracer.seq_len - 1}."
+                    )
+                    if active:
+                        status += f" {active} intervention(s) active on this session."
+                    return plot_lens_heatmap(slice_), status
+                except Exception as e:
+                    logger.error(f"Interactive lens error: {e}", exc_info=True)
+                    return None, f"Error: {e}"
+
+        def apply_lens_interventions(session_id):
+            session, error = resolve_session(session_id)
+            if error:
+                return error[0]
+            interventions = get_active_interventions()
+            with session.lock:
+                jlens = get_lens_store().get(model_manager.get_model_name())
+                try:
+                    session.tracer.set_interventions(interventions or None, jlens=jlens)
+                except ValueError as e:
+                    return f"Error: {e}"
+            if not interventions:
+                return "No active interventions in the Lens tab — session cleared."
+            return (
+                f"Applied {len(interventions)} intervention(s) to this session. "
+                "They affect all subsequent steps (KV cache was rebuilt)."
+            )
 
         # ------------------------------------------------------------ helpers
 
@@ -624,6 +721,16 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             inputs=[session_state],
             outputs=[stop_button],
             cancels=[continue_event],
+        )
+        lens_refresh_button.click(
+            fn=refresh_lens,
+            inputs=[session_state, lens_mode_choice, lens_stride, lens_top_k],
+            outputs=[lens_plot, lens_status],
+        )
+        lens_apply_iv_button.click(
+            fn=apply_lens_interventions,
+            inputs=[session_state],
+            outputs=[lens_status],
         )
         go_to_step_button.click(
             fn=go_to_step,
