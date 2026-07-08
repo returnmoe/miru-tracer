@@ -142,8 +142,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--prompts-file", help="text file with one prompt per line (overrides wikitext)"
     )
-    parser.add_argument("--dim-batch", type=int, default=DEFAULT_DIM_BATCH)
+    parser.add_argument(
+        "--dim-batch", type=int, default=DEFAULT_DIM_BATCH,
+        help=f"Jacobian rows per backward pass (default {DEFAULT_DIM_BATCH}; "
+        "raise to 16-64 on a GPU)",
+    )
     parser.add_argument("--max-length", type=int, default=DEFAULT_MAX_SEQ_LEN)
+    parser.add_argument(
+        "--device", default="auto", choices=["auto", "cpu", "cuda"],
+        help="where to run the model (auto = cuda if available)",
+    )
+    parser.add_argument(
+        "--dtype", default="auto", choices=["auto", "float32", "bfloat16", "float16"],
+        help="model dtype (auto = bfloat16 on cuda, float32 on cpu)",
+    )
     parser.add_argument(
         "--out", help="output lens path (default: the app's lens cache dir)"
     )
@@ -169,9 +181,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.fresh and checkpoint.exists():
         checkpoint.unlink()
 
-    echo(f"Loading {args.model} (fp32, CPU-compatible)...")
+    device = args.device
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype_name = args.dtype
+    if dtype_name == "auto":
+        dtype_name = "bfloat16" if device == "cuda" else "float32"
+    dtype = getattr(torch, dtype_name)
+
+    echo(f"Loading {args.model} ({dtype_name} on {device})...")
     tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32).eval()
+    model = (
+        AutoModelForCausalLM.from_pretrained(args.model, dtype=dtype).to(device).eval()
+    )
+    if device == "cpu" and dtype_name == "float32":
+        echo(
+            "Note: fitting on CPU is slow (minutes per prompt). "
+            "A GPU instance with --dim-batch 32 is strongly recommended; "
+            "copy the resulting lens.pt back afterwards."
+        )
 
     if args.prompts_file:
         prompts = prompts_from_file(args.prompts_file)

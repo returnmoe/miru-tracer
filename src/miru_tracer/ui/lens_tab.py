@@ -1,6 +1,7 @@
 """Lens tab: layer-by-layer readouts (logit / Jacobian / diff) with
 position and layer selection, aggregated readout browsing, multi-intervention
-steering, and in-app lens fitting.
+steering, and fit-file management (fitting itself runs offline via the
+``miru-tracer-fit-lens`` CLI — see docs/lens-tutorial.md).
 
 Semantics: interventions are applied at generation time. "Update readouts"
 re-slices the existing sequence under the interventions it was generated
@@ -11,11 +12,11 @@ readouts always consistent with each other.
 
 from __future__ import annotations
 
-import threading
 import traceback
 
 import gradio as gr
 
+from miru_tracer.core._jlens import JacobianLens
 from miru_tracer.core.interventions import Intervention
 from miru_tracer.core.lens import (
     aggregate_readouts,
@@ -23,7 +24,6 @@ from miru_tracer.core.lens import (
     decode_token,
     get_lens_store,
 )
-from miru_tracer.core.lens_fit import iter_fit_lens, wikitext_prompts
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.sampling import SamplingParams
@@ -54,10 +54,6 @@ from miru_tracer.visualization.plots import (
 
 logger = get_logger(__name__)
 
-# One in-app fit at a time, across all browser sessions.
-_fit_guard = threading.Lock()
-_fit_stop = threading.Event()
-
 
 def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
     """Create the Lens analysis tab."""
@@ -66,7 +62,12 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         gr.Markdown(
             "Read out what intermediate layers are 'thinking' with the logit "
             "lens and the **Jacobian lens** (Anthropic, 2026), and steer / "
-            "swap / ablate those readouts during generation."
+            "swap / ablate those readouts during generation. "
+            "See `docs/lens-tutorial.md` for fitting and usage.\n\n"
+            "⚠️ *Experimental: this lens/intervention implementation is new "
+            "and still being tested — readouts and steering effects may "
+            "currently yield nonsense. The final layer is the sanity anchor: "
+            "it always equals the model's real output distribution.*"
         )
 
         # ------------------------------------------------------------- input
@@ -178,26 +179,25 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             interactive=False,
         )
 
-        # ----------------------------------------------------------- fitting
-        with gr.Accordion("Fit a Jacobian lens for the loaded model", open=False):
+        # ----------------------------------------------------------- fit file
+        with gr.Accordion("Jacobian lens fit file", open=False):
             gr.Markdown(
-                "Fitting averages ∂h_final/∂h_ℓ over a text corpus — **slow on "
-                "CPU** (minutes per prompt) but checkpointed: stop any time and "
-                "restart later, or run `miru-tracer-fit-lens <model>` in a "
-                "terminal instead. Partial fits are usable immediately."
+                "The Jacobian lens needs per-model `J_ℓ` matrices, fitted once "
+                "per model by averaging ∂h_final/∂h_ℓ over a text corpus. "
+                "Fitting is compute-heavy — run it on a **GPU instance** with\n\n"
+                "```\nmiru-tracer-fit-lens <model-name> --dim-batch 32\n```\n\n"
+                "then load the resulting `lens.pt` here (or drop it into the "
+                "lens cache directory yourself). Logit-lens mode never needs a "
+                "fit file."
+            )
+            lens_file_status = gr.Textbox(
+                label="Fit file status", interactive=False, lines=3
             )
             with gr.Row():
-                fit_num_prompts = gr.Number(
-                    minimum=1, value=64, precision=0, label="Prompts"
+                lens_file_upload = gr.File(
+                    label="Load fit file (lens.pt)", file_types=[".pt"], type="filepath"
                 )
-                fit_dim_batch = gr.Number(minimum=1, value=8, precision=0, label="Dim batch")
-                fit_max_len = gr.Number(
-                    minimum=32, value=64, precision=0, label="Max prompt tokens"
-                )
-            with gr.Row():
-                fit_start_button = gr.Button("Start fitting", variant="primary")
-                fit_stop_button = gr.Button("Stop after current chunk", variant="stop")
-            fit_status = gr.Textbox(label="Fitting status", interactive=False, lines=3)
+                lens_file_check_button = gr.Button("Check status", size="sm")
 
         # ------------------------------------------------------------ states
         # analysis_state: dict(input_ids, model_name, iset, n_layers, prompt_len)
@@ -457,62 +457,61 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         def toggle_swap_field(kind):
             return gr.update(visible=kind == "swap")
 
-        # ----------------------------------------------------------- fitting
+        # ----------------------------------------------------------- fit file
 
-        def start_fitting(num_prompts, dim_batch, max_len):
+        def fit_file_status():
+            """Describe the fit-file situation for the loaded model."""
+            model_name = model_manager.get_model_name()
+            if model_name is None:
+                return "No model loaded."
+            store = get_lens_store()
+            lens = store.get(model_name)
+            path = store.lens_path(model_name)
+            if lens is None:
+                return (
+                    f"No fitted lens for {model_name}.\n"
+                    f"Expected at: {path}\n"
+                    f"Fit one on a GPU instance: miru-tracer-fit-lens {model_name}"
+                )
+            return (
+                f"Fitted lens loaded for {model_name}: "
+                f"{len(lens.source_layers)} layers "
+                f"(L{lens.source_layers[0]}..L{lens.source_layers[-1]}), "
+                f"averaged over {lens.n_prompts} prompts.\nPath: {path}"
+            )
+
+        def install_fit_file(filepath):
+            """Validate an uploaded lens.pt and install it for the loaded model."""
+            if filepath is None:
+                return fit_file_status()
             model = model_manager.get_model()
-            tokenizer = model_manager.get_tokenizer()
             model_name = model_manager.get_model_name()
             if model is None:
-                yield "Error: No model loaded."
-                return
-            if not _fit_guard.acquire(blocking=False):
-                yield "A fitting run is already in progress."
-                return
+                return "Error: Load a model first — the fit file is stored per model."
             try:
-                _fit_stop.clear()
-                out_path = get_lens_store().lens_path(model_name)
-                yield f"Loading {int(num_prompts)} wikitext prompts..."
-                prompts = wikitext_prompts(int(num_prompts))
-                yield (
-                    f"Fitting {model_name} on {len(prompts)} prompts "
-                    f"(checkpointed at {out_path}). This is slow on CPU..."
-                )
-                for progress in iter_fit_lens(
-                    model,
-                    tokenizer,
-                    prompts,
-                    out_path=out_path,
-                    dim_batch=int(dim_batch),
-                    max_seq_len=int(max_len),
-                    should_stop=_fit_stop.is_set,
-                ):
-                    rate = progress.elapsed_s / max(progress.prompts_done, 1)
-                    remaining = rate * (progress.prompts_total - progress.prompts_done)
-                    yield (
-                        f"{progress.prompts_done}/{progress.prompts_total} prompts "
-                        f"({progress.elapsed_s:.0f}s elapsed, ~{remaining / 60:.0f}min left).\n"
-                        f"Partial lens saved — Jacobian mode is usable now.\n"
-                        f"Layers fitted: {progress.lens.source_layers[0]}"
-                        f"..{progress.lens.source_layers[-1]}"
-                    )
-                    if _fit_stop.is_set():
-                        yield (
-                            f"Stopped at {progress.prompts_done}/{progress.prompts_total} "
-                            "prompts. The partial lens is saved and usable; start "
-                            "again any time to continue from the checkpoint."
-                        )
-                        return
-                yield f"Fitting complete: {out_path}"
+                lens = JacobianLens.load(filepath)
             except Exception as e:
-                logger.error(f"In-app fitting error: {e}", exc_info=True)
-                yield f"Error while fitting: {e}"
-            finally:
-                _fit_guard.release()
+                return f"Error: not a valid lens file: {e}"
 
-        def stop_fitting():
-            _fit_stop.set()
-            return "Stop requested — finishing the current chunk (may take minutes)..."
+            d_model = model.config.get_text_config().hidden_size
+            n_layers = model.config.get_text_config().num_hidden_layers
+            if lens.d_model != d_model:
+                return (
+                    f"Error: fit file has d_model={lens.d_model}, but "
+                    f"{model_name} has d_model={d_model}. This lens was fitted "
+                    "for a different model."
+                )
+            if lens.source_layers[-1] >= n_layers:
+                return (
+                    f"Error: fit file covers layer {lens.source_layers[-1]}, but "
+                    f"{model_name} only has {n_layers} layers."
+                )
+
+            path = get_lens_store().lens_path(model_name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lens.save(str(path))
+            logger.info(f"Installed fit file for {model_name} at {path}")
+            return f"Installed.\n{fit_file_status()}"
 
         # ------------------------------------------------------------ wiring
 
@@ -577,11 +576,11 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             outputs=[interventions_state, iv_table, status_output],
         )
 
-        fit_start_button.click(
-            fn=start_fitting,
-            inputs=[fit_num_prompts, fit_dim_batch, fit_max_len],
-            outputs=[fit_status],
+        lens_file_upload.upload(
+            fn=install_fit_file, inputs=[lens_file_upload], outputs=[lens_file_status]
         )
-        fit_stop_button.click(fn=stop_fitting, inputs=[], outputs=[fit_status])
+        lens_file_check_button.click(
+            fn=fit_file_status, inputs=[], outputs=[lens_file_status]
+        )
 
     return tab

@@ -67,6 +67,29 @@ Gradio state carries only the session-id string; handlers call
 Lock ordering is global → session; never call manager methods while holding a
 session lock.
 
+**Lenses (`lens.py`, `lens_fit.py`, `_jlens/`)** — `_jlens/` is VENDORED
+Apache-2.0 code from Anthropic's jacobian-lens (see its VENDORED.md; keep it
+as close to upstream as possible — it is exempt from some lint rules).
+`compute_lens_slice` captures block outputs with hooks (NOT
+`output_hidden_states`, whose last entry is post-final-norm) and derives
+logit/jacobian/diff readouts per (layer, position); `LensStore` finds fitted
+artifacts under `MIRU_LENS_DIR`. Fitting runs OFFLINE via
+`miru-tracer-fit-lens` (deliberately not in-app — do it on a GPU box; see
+docs/lens-tutorial.md); the Lens tab only loads/validates fit files. Fitting
+is chunk-checkpointed and a partial artifact is a valid lens. `decode_token`
+must keep its `<id>` fallback: model embedding matrices are padded past the
+tokenizer vocab (Qwen3 included) and those ids appear in readouts. The lens
+features are flagged experimental in the UI/docs — keep those disclaimers
+until the implementation has seen real validation.
+
+**interventions.py** — steer/swap/ablate edits on block outputs via forward
+hooks; lens vectors solve `J_ℓ v = û_t` (least squares). Any number of
+interventions compose. `tracer.set_interventions()` MUST invalidate the KV
+cache (it does — don't bypass it); intervention hooks are entered before any
+ActivationRecorder so readouts see the edited residuals. The active
+intervention list is app-global (`ui/lens_common.py` registry) — a
+deliberate single-user-tool choice, like the ModelManager singleton.
+
 ### UI (`src/miru_tracer/ui/`)
 
 One module per tab plus:

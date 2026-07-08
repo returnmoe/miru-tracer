@@ -99,3 +99,36 @@ class TestLensTabFlow:
         status = out[5]
         assert "logit lens" in status
         assert out[2] is not None  # heatmap
+
+
+class TestFitFileManagement:
+    def test_status_reports_fitted_lens(self, lens_app):
+        status = lens_app.predict(api_name="/fit_file_status")
+        assert "tiny/test-model" in status
+        assert "averaged over 2 prompts" in status
+
+    def test_upload_validates_and_installs(self, lens_app, tiny_model, tmp_path):
+        from gradio_client import handle_file
+
+        from miru_tracer.core._jlens import JacobianLens
+        from miru_tracer.core.lens import get_lens_store
+
+        # Re-upload the existing fitted lens through the UI path
+        source = get_lens_store().lens_path("tiny/test-model")
+        result = lens_app.predict(
+            handle_file(str(source)), api_name="/install_fit_file"
+        )
+        assert "Installed" in result
+
+        # A lens with the wrong d_model must be rejected
+        import torch
+
+        wrong = JacobianLens(
+            jacobians={0: torch.zeros(8, 8)}, n_prompts=1, d_model=8
+        )
+        wrong_path = tmp_path / "wrong.pt"
+        wrong.save(str(wrong_path))
+        result = lens_app.predict(
+            handle_file(str(wrong_path)), api_name="/install_fit_file"
+        )
+        assert "different model" in result

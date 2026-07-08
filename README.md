@@ -31,6 +31,12 @@ Useful for:
   probability distributions (raw and temperature-adjusted)
 - Analysis: visualize exported logs with heatmaps and confidence curves —
   current and older log formats both load
+- **Lens**: read out what intermediate layers are "thinking" with the logit
+  lens and the [Jacobian lens](https://transformer-circuits.pub/2026/workspace/index.html)
+  (Anthropic, 2026) — per-position, per-layer readouts, aggregated readout
+  browsing, pinned-token rank tracking
+- **Interventions**: steer, swap, or ablate lens readout directions during
+  generation, with any number of interventions active simultaneously
 
 ## Installation
 
@@ -75,6 +81,43 @@ Opens at `http://127.0.0.1:7860`
 Use "Logging Mode" to automatically generate text while recording
 probabilities. Export the log as JSON and analyze it in the "Log Analysis" tab.
 
+### Lenses and interventions
+
+> **⚠️ Experimental**: the lens/intervention features were implemented very
+> recently and are still being tested — readouts and intervention effects
+> from our implementation may currently yield nonsense. Cross-check before
+> drawing conclusions. See [docs/lens-tutorial.md](docs/lens-tutorial.md).
+
+The **logit lens** projects each layer's residual stream through the model's
+own unembedding; it works out of the box for any loaded model. The
+**Jacobian lens** first transports the residual through a fitted per-layer
+matrix `J_ℓ = E[∂h_final/∂h_ℓ]`, recovering interpretable readouts in early
+and middle layers where the logit lens fails.
+
+The Jacobian lens needs a **fit file** per model. Fitting is compute-heavy
+(many backward passes per prompt) — run it **on a GPU instance** and bring
+the file back:
+
+```bash
+# on the GPU box
+miru-tracer-fit-lens Qwen/Qwen3-0.6B --dim-batch 32
+# then load lens.pt via the Lens tab's "fit file" section, or copy it to
+# ~/.cache/miru-tracer/lenses/<model>/lens.pt (override with MIRU_LENS_DIR)
+```
+
+Fitting is checkpointed (interrupt + re-run resumes) and partial fits are
+usable. The full walkthrough — corpus choice, flags, loading, reading the
+plots — is in [docs/lens-tutorial.md](docs/lens-tutorial.md).
+
+In the **Lens tab** you can select layer ranges and token positions, browse
+aggregated readouts (which tokens appear across the selected cells, and at
+which layers), pin tokens to track their rank across layers, and add
+**steer / swap / ablate** interventions on readout directions. Multiple
+interventions can be active at once; they apply during generation and are
+also reflected in the readouts. Interactive Mode has a "Layer Lens" panel
+showing the per-layer readout of the current next-token position and can
+apply the Lens tab's interventions to its session.
+
 ## Configuration
 
 Optional `.env` file (see `.env.example`):
@@ -83,6 +126,7 @@ Optional `.env` file (see `.env.example`):
 MIRU_DEBUG=0                 # 1/true/yes/on enables debug logging + Gradio debug
 MIRU_SERVER_NAME=127.0.0.1   # bind address (0.0.0.0 to expose to network)
 MIRU_SERVER_PORT=7860        # bind port
+MIRU_LENS_DIR=               # fitted-lens cache (default ~/.cache/miru-tracer/lenses)
 HF_TOKEN=your_token_here     # only needed for gated models
 ```
 
@@ -136,11 +180,21 @@ src/miru_tracer/
     schema.py               # TokenStep + versioned export/import
     model_manager.py        # Model/tokenizer loading
     session_manager.py      # Thread-safe session isolation
+    lens.py                 # Logit/Jacobian lens readout engine
+    lens_fit.py             # Lens fitting (library + CLI)
+    interventions.py        # Steer/swap/ablate activation edits
+    _jlens/                 # Vendored Anthropic jacobian-lens (Apache-2.0)
   ui/                       # One module per tab + shared helpers/theme
-  visualization/plots.py    # Plotly figures from TokenStep histories
+  visualization/plots.py    # Plotly figures (histories + lens slices)
 tests/                      # pytest suite (unit + integration)
 ```
 
 ## License
 
-This project is released into the public domain under the [Unlicense](LICENSE).
+Miru Tracer is released into the public domain under the
+[Unlicense](LICENSE), **with one exception**: the code under
+`src/miru_tracer/core/_jlens/` is vendored from Anthropic's
+[jacobian-lens](https://github.com/anthropics/jacobian-lens) reference
+implementation and remains under the **Apache License 2.0** (see
+`src/miru_tracer/core/_jlens/LICENSE` and `VENDORED.md` there for provenance
+and modifications).

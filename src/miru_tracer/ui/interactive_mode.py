@@ -206,7 +206,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 "Per-layer readout of the **next-token** position via the "
                 "logit or Jacobian lens. Refresh runs one extra forward pass. "
                 "Interventions added in the Lens tab can be applied to this "
-                "session here."
+                "session here. ⚠️ *Experimental — still being tested; "
+                "readouts may currently yield nonsense.*"
             )
             with gr.Row():
                 lens_mode_choice = gr.Radio(
