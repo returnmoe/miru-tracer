@@ -60,144 +60,177 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
     with gr.Tab("Lens") as tab:
         gr.Markdown(
-            "Read out what intermediate layers are 'thinking' with the logit "
-            "lens and the **Jacobian lens** (Anthropic, 2026), and steer / "
-            "swap / ablate those readouts during generation. "
-            "See `docs/lens-tutorial.md` for fitting and usage.\n\n"
-            "⚠️ *Experimental: this lens/intervention implementation is new "
-            "and still being tested — readouts and steering effects may "
-            "currently yield nonsense. The final layer is the sanity anchor: "
-            "it always equals the model's real output distribution.*"
+            "Layer-by-layer readouts (logit lens / **Jacobian lens**) with "
+            "steer/swap/ablate interventions — see `docs/lens-tutorial.md`. "
+            "⚠️ *Experimental: readouts and steering may currently yield "
+            "nonsense; the final layer always equals the model's real output.*"
         )
 
-        # ------------------------------------------------------------- input
-        mode_selector = gr.Radio(
-            choices=["Completion", "Chat"], value="Completion", label="Mode"
-        )
-        with gr.Group() as completion_inputs:
-            prompt_input = gr.Textbox(
-                label="Prompt",
-                lines=2,
-                value="The capital of France is",
-            )
-        with gr.Group(visible=False) as chat_inputs:
-            chat_messages = gr.Code(
-                label="Chat (JSON)", language="json", lines=8, value=DEFAULT_CHAT_JSON
-            )
+        with gr.Row(equal_height=False):
+            # ------------------------------------------ left: workspace
+            with gr.Column(scale=3):
+                with gr.Group():
+                    mode_selector = gr.Radio(
+                        choices=["Completion", "Chat"], value="Completion", label="Mode"
+                    )
+                    with gr.Group() as completion_inputs:
+                        prompt_input = gr.Textbox(
+                            label="Prompt",
+                            lines=2,
+                            value="The capital of France is",
+                        )
+                    with gr.Group(visible=False) as chat_inputs:
+                        chat_messages = gr.Code(
+                            label="Chat (JSON)",
+                            language="json",
+                            lines=8,
+                            value=DEFAULT_CHAT_JSON,
+                        )
+                    with gr.Row():
+                        max_tokens = gr.Number(
+                            minimum=0, value=12, precision=0, label="New tokens", scale=1
+                        )
+                        generate_button = gr.Button(
+                            "Generate & Analyze", variant="primary", size="lg", scale=2
+                        )
+                    with gr.Accordion("Generation settings", open=False), gr.Row():
+                        strategy = gr.Radio(
+                            choices=["greedy", "sampling"],
+                            value="greedy",
+                            label="Strategy",
+                        )
+                        temperature = gr.Slider(
+                            0.1, 2.0, value=1.0, step=0.1, label="Temperature"
+                        )
 
-        with gr.Row():
-            max_tokens = gr.Number(minimum=0, value=12, precision=0, label="New tokens")
-            strategy = gr.Radio(
-                choices=["greedy", "sampling"], value="greedy", label="Strategy"
-            )
-            temperature = gr.Slider(0.1, 2.0, value=1.0, step=0.1, label="Temperature")
-
-        generate_button = gr.Button("Generate & Analyze", variant="primary", size="lg")
-        status_output = gr.Textbox(label="Status", interactive=False, lines=2)
-        text_output = gr.Textbox(label="Text", lines=4, interactive=False, buttons=["copy"])
-
-        # --------------------------------------------------------- selection
-        gr.Markdown("### Selection")
-        tokens_display = gr.HighlightedText(
-            label="Sequence — click tokens to toggle position selection "
-            "(none selected = all positions)",
-            value=[],
-            color_map={"sel": "orange"},
-            combine_adjacent=False,
-        )
-        with gr.Row():
-            select_generated_button = gr.Button("Select generated", size="sm")
-            select_clear_button = gr.Button("Clear selection", size="sm")
-
-        with gr.Row():
-            lens_mode = gr.Radio(
-                choices=list(LENS_MODE_CHOICES),
-                value="Logit",
-                label="Lens",
-                info="Jacobian/Diff need a fitted lens for the loaded model.",
-            )
-            layer_start = gr.Number(minimum=0, value=0, precision=0, label="From layer")
-            layer_end = gr.Number(value=-1, precision=0, label="To layer (-1 = last)")
-            layer_stride = gr.Number(minimum=1, value=2, precision=0, label="Stride")
-        with gr.Row():
-            readouts_per_cell = gr.Slider(
-                1, 16, value=8, step=1, label="Readouts per layer+pos"
-            )
-            skip_non_words = gr.Checkbox(label="Hide non-word tokens", value=False)
-            pinned_tokens = gr.Textbox(
-                label="Pinned tokens",
-                placeholder="comma-separated: Paris, 12345, ...",
-                info="Track these tokens' ranks across layers.",
-            )
-        update_button = gr.Button("Update readouts", variant="secondary")
-
-        # ---------------------------------------------------------- readouts
-        gr.Markdown("### Readouts")
-        readout_table = gr.Dataframe(
-            headers=["Token", "ID", "Count", "By layer"],
-            datatype=["str", "number", "number", "str"],
-            label="Aggregated readouts over the selected cells",
-            interactive=False,
-        )
-        dist_plot = gr.Plot(label="Readout counts by layer")
-        heatmap_plot = gr.Plot(label="Position × layer heatmap")
-        pinned_plot = gr.Plot(label="Pinned token ranks")
-
-        # ------------------------------------------------------ interventions
-        gr.Markdown("### Interventions")
-        gr.Markdown(
-            "Steer, swap, or ablate readout directions during generation. "
-            "Any number can be active at once; they take effect on the next "
-            "**Generate & Analyze**."
-        )
-        with gr.Row():
-            iv_kind = gr.Radio(
-                choices=["steer", "swap", "ablate"], value="steer", label="Kind"
-            )
-            iv_token = gr.Textbox(label="Token", placeholder="text or id, e.g. Paris")
-            iv_swap_to = gr.Textbox(
-                label="Swap to", placeholder="target token", visible=False
-            )
-            iv_layer = gr.Number(minimum=0, value=0, precision=0, label="Layer")
-            iv_strength = gr.Slider(
-                -4.0, 4.0, value=1.0, step=0.1, label="Strength (steer)"
-            )
-            iv_basis = gr.Radio(
-                choices=["jacobian", "logit"], value="jacobian", label="Basis"
-            )
-        with gr.Row():
-            iv_add_button = gr.Button("Add intervention", variant="secondary")
-            iv_remove_index = gr.Number(
-                minimum=0, value=0, precision=0, label="#", scale=0, min_width=80
-            )
-            iv_remove_button = gr.Button("Remove #", size="sm")
-            iv_clear_button = gr.Button("Clear all", size="sm")
-        iv_table = gr.Dataframe(
-            headers=["#", "Intervention", "Basis"],
-            datatype=["number", "str", "str"],
-            label="Active interventions (applied on next generate)",
-            interactive=False,
-        )
-
-        # ----------------------------------------------------------- fit file
-        with gr.Accordion("Jacobian lens fit file", open=False):
-            gr.Markdown(
-                "The Jacobian lens needs per-model `J_ℓ` matrices, fitted once "
-                "per model by averaging ∂h_final/∂h_ℓ over a text corpus. "
-                "Fitting is compute-heavy — run it on a **GPU instance** with\n\n"
-                "```\nmiru-tracer-fit-lens <model-name> --dim-batch 32\n```\n\n"
-                "then load the resulting `lens.pt` here (or drop it into the "
-                "lens cache directory yourself). Logit-lens mode never needs a "
-                "fit file."
-            )
-            lens_file_status = gr.Textbox(
-                label="Fit file status", interactive=False, lines=3
-            )
-            with gr.Row():
-                lens_file_upload = gr.File(
-                    label="Load fit file (lens.pt)", file_types=[".pt"], type="filepath"
+                status_output = gr.Textbox(
+                    label="Status", interactive=False, lines=2, max_lines=4
                 )
-                lens_file_check_button = gr.Button("Check status", size="sm")
+                text_output = gr.Textbox(
+                    label="Text", lines=4, interactive=False, buttons=["copy"]
+                )
+
+                tokens_display = gr.HighlightedText(
+                    label="Sequence — click tokens to select positions "
+                    "(none = all)",
+                    value=[],
+                    color_map={"sel": "orange"},
+                    combine_adjacent=False,
+                )
+                with gr.Row():
+                    select_generated_button = gr.Button("Select generated", size="sm")
+                    select_clear_button = gr.Button("Clear selection", size="sm")
+
+                with gr.Accordion("Interventions", open=False):
+                    gr.Markdown(
+                        "Steer, swap, or ablate readout directions during "
+                        "generation — any number at once. Applied on the next "
+                        "**Generate & Analyze**."
+                    )
+                    with gr.Row():
+                        iv_kind = gr.Radio(
+                            choices=["steer", "swap", "ablate"],
+                            value="steer",
+                            label="Kind",
+                        )
+                        iv_token = gr.Textbox(
+                            label="Token", placeholder="text or id, e.g. Paris"
+                        )
+                        iv_swap_to = gr.Textbox(
+                            label="Swap to", placeholder="target token", visible=False
+                        )
+                    with gr.Row():
+                        iv_layer = gr.Number(
+                            minimum=0, value=0, precision=0, label="Layer"
+                        )
+                        iv_strength = gr.Slider(
+                            -4.0, 4.0, value=1.0, step=0.1, label="Strength (steer)"
+                        )
+                        iv_basis = gr.Radio(
+                            choices=["jacobian", "logit"],
+                            value="jacobian",
+                            label="Basis",
+                        )
+                    with gr.Row():
+                        iv_add_button = gr.Button(
+                            "Add intervention", variant="secondary"
+                        )
+                        iv_remove_index = gr.Number(
+                            minimum=0, value=0, precision=0,
+                            label="#", scale=0, min_width=80,
+                        )
+                        iv_remove_button = gr.Button("Remove #", size="sm")
+                        iv_clear_button = gr.Button("Clear all", size="sm")
+                    iv_table = gr.Dataframe(
+                        headers=["#", "Intervention", "Basis"],
+                        datatype=["number", "str", "str"],
+                        label="Active interventions",
+                        interactive=False,
+                    )
+
+            # ------------------------------------------ right: lens panel
+            with gr.Column(scale=2):
+                with gr.Group():
+                    lens_mode = gr.Radio(
+                        choices=list(LENS_MODE_CHOICES),
+                        value="Logit",
+                        label="Lens",
+                        info="Jacobian/Diff need a fitted lens.",
+                    )
+                    with gr.Row():
+                        layer_start = gr.Number(
+                            minimum=0, value=0, precision=0, label="From layer"
+                        )
+                        layer_end = gr.Number(
+                            value=-1, precision=0, label="To (-1 = last)"
+                        )
+                        layer_stride = gr.Number(
+                            minimum=1, value=2, precision=0, label="Stride"
+                        )
+                    with gr.Accordion("Display options", open=False):
+                        readouts_per_cell = gr.Slider(
+                            1, 16, value=8, step=1, label="Readouts per layer+pos"
+                        )
+                        skip_non_words = gr.Checkbox(
+                            label="Hide non-word tokens", value=False
+                        )
+                        pinned_tokens = gr.Textbox(
+                            label="Pinned tokens",
+                            placeholder="comma-separated: Paris, 12345, ...",
+                            info="Track these tokens' ranks across layers.",
+                        )
+                    update_button = gr.Button("Update readouts", variant="secondary")
+
+                with gr.Tabs():
+                    with gr.Tab("Readouts"):
+                        readout_table = gr.Dataframe(
+                            headers=["Token", "ID", "Count", "By layer"],
+                            datatype=["str", "number", "number", "str"],
+                            label="Aggregated over the selected cells",
+                            interactive=False,
+                        )
+                        dist_plot = gr.Plot(label="Counts by layer")
+                    with gr.Tab("Heatmap"):
+                        heatmap_plot = gr.Plot(label="Position × layer heatmap")
+                    with gr.Tab("Pinned ranks"):
+                        pinned_plot = gr.Plot(label="Pinned token ranks")
+
+                with gr.Accordion("Jacobian lens fit file", open=False):
+                    gr.Markdown(
+                        "Fit `J_ℓ` matrices once per model — on a **GPU "
+                        "instance**: `miru-tracer-fit-lens <model> "
+                        "--dim-batch 32` — then load the `lens.pt` here. "
+                        "Logit-lens mode never needs a fit file."
+                    )
+                    lens_file_status = gr.Textbox(
+                        label="Fit file status", interactive=False, lines=3
+                    )
+                    lens_file_upload = gr.File(
+                        label="Load fit file (lens.pt)",
+                        file_types=[".pt"],
+                        type="filepath",
+                    )
+                    lens_file_check_button = gr.Button("Check status", size="sm")
 
         # ------------------------------------------------------------ states
         # analysis_state: dict(input_ids, model_name, iset, n_layers, prompt_len)

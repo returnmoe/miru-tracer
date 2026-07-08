@@ -40,10 +40,19 @@ MIRU_CSS = """
    tab switch, and a capped+centered main feeds it a smaller number each
    time (ratcheting shrink). We constrain our own wrapper column instead. */
 #miru-shell {
-    max-width: 1024px;
+    max-width: 1400px;
     width: 100%;
     margin-left: auto;
     margin-right: auto;
+}
+
+/* Tabs with reading-oriented content center a narrower column inside the
+   1400px shell; the Lens tab uses the full width for its two-pane layout. */
+.miru-narrow {
+    max-width: 1024px;
+    width: 100%;
+    margin-left: auto !important;
+    margin-right: auto !important;
 }
 
 /* Monospace textboxes - use theme's monospace font */

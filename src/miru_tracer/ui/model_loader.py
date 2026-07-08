@@ -34,7 +34,7 @@ def create_model_loader_tab(model_manager: ModelManager):
     def get_current_model_display() -> str:
         return model_manager.get_model_name() or "No model loaded"
 
-    with gr.Tab("Model Loader") as tab:
+    with gr.Tab("Model Loader") as tab, gr.Column(elem_classes="miru-narrow"):
         gr.Markdown("Load a language model from HuggingFace.")
 
         with gr.Row():

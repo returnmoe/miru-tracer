@@ -20,7 +20,7 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
     Returns:
         Gradio Tab component
     """
-    with gr.Tab("Tokenize Text") as tab:
+    with gr.Tab("Tokenize Text") as tab, gr.Column(elem_classes="miru-narrow"):
         gr.Markdown("See how text is tokenized by the loaded model.")
 
         text_input = gr.Textbox(

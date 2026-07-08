@@ -33,7 +33,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
     exports = ExportManager("log")
 
-    with gr.Tab("Logging Mode") as tab:
+    with gr.Tab("Logging Mode") as tab, gr.Column(elem_classes="miru-narrow"):
         gr.Markdown(
             "Generate text with complete token probability logging and visualization."
         )
@@ -65,51 +65,46 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 value=DEFAULT_CHAT_JSON,
             )
 
-        gr.Markdown("### Settings")
-        with gr.Row():
-            max_tokens = gr.Number(
-                minimum=1, value=20, label="Maximum new tokens", precision=0
-            )
-            strategy = gr.Radio(
-                choices=["greedy", "sampling"], value="greedy", label="Strategy"
-            )
-        with gr.Row():
-            temperature = gr.Slider(0.1, 2.0, value=1.0, step=0.1, label="Temperature")
-            top_k = gr.Slider(1, 100, value=50, step=1, label="Top-K")
-            top_p = gr.Slider(0.01, 1.0, value=0.9, step=0.01, label="Top-P")
-        with gr.Row():
-            stop_at_eos_checkbox = gr.Checkbox(
-                label="Stop at EOS",
-                value=True,
-                info="Stop generation when an end-of-sequence token is encountered.",
-            )
-
-        gr.Markdown("### Logging & Visualization")
-        with gr.Row():
-            log_top_k = gr.Number(
-                minimum=1,
-                value=10,
-                precision=0,
-                label="Log Top-K tokens",
-                info="Number of top candidates to log per step.",
-            )
-            heatmap_ranks = gr.Number(
-                minimum=1,
-                value=10,
-                precision=0,
-                label="Heatmap ranks",
-                info="Ranks to show in visualization.",
-            )
-        with gr.Row():
-            log_full_probs_checkbox = gr.Checkbox(
-                label="Log full probabilities",
-                value=False,
-                info=(
-                    "Record the entire vocabulary distribution per step in the "
-                    "export (~600KB per step for a 150K vocab). Also enables "
-                    "exact entropy in the confidence chart."
-                ),
-            )
+        with gr.Group():
+            with gr.Row():
+                max_tokens = gr.Number(
+                    minimum=1, value=20, label="Maximum new tokens", precision=0
+                )
+                strategy = gr.Radio(
+                    choices=["greedy", "sampling"], value="greedy", label="Strategy"
+                )
+            with gr.Row():
+                temperature = gr.Slider(0.1, 2.0, value=1.0, step=0.1, label="Temperature")
+                top_k = gr.Slider(1, 100, value=50, step=1, label="Top-K")
+                top_p = gr.Slider(0.01, 1.0, value=0.9, step=0.01, label="Top-P")
+            with gr.Accordion("Logging & visualization options", open=False):
+                with gr.Row():
+                    log_top_k = gr.Number(
+                        minimum=1,
+                        value=10,
+                        precision=0,
+                        label="Log Top-K tokens",
+                        info="Top candidates recorded per step.",
+                    )
+                    heatmap_ranks = gr.Number(
+                        minimum=1,
+                        value=10,
+                        precision=0,
+                        label="Heatmap ranks",
+                        info="Ranks shown in the heatmap.",
+                    )
+                with gr.Row():
+                    log_full_probs_checkbox = gr.Checkbox(
+                        label="Log full probabilities",
+                        value=False,
+                        info="Whole-vocabulary distribution per step (large "
+                        "exports; enables exact entropy).",
+                    )
+                    stop_at_eos_checkbox = gr.Checkbox(
+                        label="Stop at EOS",
+                        value=True,
+                        info="Stop when an end-of-sequence token appears.",
+                    )
 
         with gr.Row():
             generate_button = gr.Button("Generate", variant="primary", size="lg")

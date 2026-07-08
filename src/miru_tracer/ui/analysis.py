@@ -18,7 +18,7 @@ logger = get_logger(__name__)
 
 def create_analysis_tab() -> gr.Tab:
     """Create the JSON log analysis tab interface."""
-    with gr.Tab("Log Analysis") as tab:
+    with gr.Tab("Log Analysis") as tab, gr.Column(elem_classes="miru-narrow"):
         gr.Markdown(
             "Load and analyze previously exported generation logs. "
             "Both current (v2) and older log formats are supported."

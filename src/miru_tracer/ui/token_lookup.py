@@ -19,7 +19,7 @@ def create_token_lookup_tab(model_manager: ModelManager) -> gr.Tab:
     Returns:
         Gradio Tab component
     """
-    with gr.Tab("Token Lookup") as tab:
+    with gr.Tab("Token Lookup") as tab, gr.Column(elem_classes="miru-narrow"):
         gr.Markdown("Decode individual token IDs and inspect their properties.")
 
         token_id_input = gr.Number(

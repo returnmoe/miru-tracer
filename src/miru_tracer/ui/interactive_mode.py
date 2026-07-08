@@ -42,7 +42,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
     exports = ExportManager("interactive")
 
-    with gr.Tab("Interactive Mode") as tab:
+    with gr.Tab("Interactive Mode") as tab, gr.Column(elem_classes="miru-narrow"):
         gr.Markdown(
             "Generate text step-by-step with full control over each token selection."
         )
@@ -74,47 +74,36 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 value=DEFAULT_CHAT_JSON,
             )
 
-        gr.Markdown("### Settings")
-        with gr.Row():
-            strategy = gr.Radio(
-                choices=["greedy", "sampling"],
-                value="greedy",
-                label="Strategy",
-                info=(
-                    "Greedy picks top-1, Sampling randomly samples. Preview shown "
-                    "below - you can change selection before clicking 'Next Step'."
-                ),
-            )
-        with gr.Row():
-            temperature = gr.Slider(0.1, 2.0, value=1.0, step=0.1, label="Temperature")
-            top_k = gr.Slider(1, 100, value=50, step=1, label="Top-K")
-            top_p = gr.Slider(0.01, 1.0, value=0.9, step=0.01, label="Top-P")
-
-        gr.Markdown("### Logging")
-        with gr.Row():
-            log_top_k = gr.Number(
-                minimum=1,
-                value=10,
-                precision=0,
-                label="Log Top-K Tokens",
-                info="Number of top candidates to log per step.",
-            )
-            log_full_probs_checkbox = gr.Checkbox(
-                label="Log full probabilities",
-                value=False,
-                info=(
-                    "Record the entire vocabulary distribution in the export "
-                    "(~600KB per step for a 150K vocab)."
-                ),
-            )
-
-        gr.Markdown("### Generation Control")
-        with gr.Row():
-            stop_at_eos_checkbox = gr.Checkbox(
-                label="Stop at EOS",
-                value=True,
-                info="Stop generation when an end-of-sequence token is encountered.",
-            )
+        with gr.Group():
+            with gr.Row():
+                strategy = gr.Radio(
+                    choices=["greedy", "sampling"],
+                    value="greedy",
+                    label="Strategy",
+                    info="A preview of the next token is shown below either way.",
+                )
+            with gr.Row():
+                temperature = gr.Slider(0.1, 2.0, value=1.0, step=0.1, label="Temperature")
+                top_k = gr.Slider(1, 100, value=50, step=1, label="Top-K")
+                top_p = gr.Slider(0.01, 1.0, value=0.9, step=0.01, label="Top-P")
+            with gr.Accordion("Advanced (logging & stopping)", open=False), gr.Row():
+                log_top_k = gr.Number(
+                    minimum=1,
+                    value=10,
+                    precision=0,
+                    label="Log Top-K Tokens",
+                    info="Top candidates recorded per step.",
+                )
+                log_full_probs_checkbox = gr.Checkbox(
+                    label="Log full probabilities",
+                    value=False,
+                    info="Whole-vocabulary distribution per step (large exports).",
+                )
+                stop_at_eos_checkbox = gr.Checkbox(
+                    label="Stop at EOS",
+                    value=True,
+                    info="Stop when an end-of-sequence token appears.",
+                )
 
         with gr.Row():
             init_button = gr.Button("Initialize", variant="primary")
@@ -182,14 +171,14 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             undo_button = gr.Button("Step Back (Undo)", variant="secondary")
             step_button = gr.Button("Next Step", variant="primary", size="lg")
 
-        gr.Markdown("### Go to Specific Step")
+        gr.Markdown("### Navigation & Export")
         with gr.Row():
             go_to_step_input = gr.Number(
                 minimum=0,
                 value=0,
                 precision=0,
-                label="Target Step Number",
-                info="Go back to a specific step (0 = initial state)",
+                label="Target step",
+                info="0 = initial state",
             )
             current_step_display = gr.Textbox(
                 label="Current Step",
@@ -198,8 +187,12 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 scale=0,
                 min_width=100,
             )
-        with gr.Row():
             go_to_step_button = gr.Button("Go to Step", variant="secondary")
+        download_button = gr.DownloadButton(
+            label="Download JSON",
+            interactive=False,
+            variant="secondary",
+        )
 
         with gr.Accordion("Layer Lens (current position)", open=False):
             gr.Markdown(
@@ -224,14 +217,6 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 )
             lens_status = gr.Textbox(label="Lens status", interactive=False, lines=1)
             lens_plot = gr.Plot(label="Layer readouts at the next-token position")
-
-        gr.Markdown("### Export")
-        download_button = gr.DownloadButton(
-            label="Download JSON",
-            interactive=False,
-            variant="secondary",
-            size="lg",
-        )
 
         # Session state - only stores the session ID string
         session_state = gr.State(value=None)
