@@ -323,9 +323,13 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
         xaxis_title="Position (input token)",
         yaxis_title="Layer",
         height=max(400, 30 * len(slice_.layers) + 150),
-        dragmode=False,
+        # Fixed intrinsic width so wide slices overflow into a horizontal
+        # scrollbar (the container has overflow-x: auto) instead of being
+        # squeezed unreadably into the pane; pan/zoom stay enabled.
+        width=max(560, 56 * len(slice_.positions) + 260),
+        autosize=False,
+        dragmode="pan",
         hovermode="closest",
-        autosize=True,
     )
     return fig
 

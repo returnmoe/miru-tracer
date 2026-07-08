@@ -55,6 +55,16 @@ MIRU_CSS = """
     margin-right: auto !important;
 }
 
+/* Containers for fixed-width plots (e.g. the position x layer lens heatmap):
+   scroll horizontally instead of squeezing the figure. */
+.miru-scroll-x {
+    overflow-x: auto;
+}
+.miru-scroll-x .plot-container,
+.miru-scroll-x .js-plotly-plot {
+    max-width: none !important;
+}
+
 /* Monospace textboxes - use theme's monospace font */
 .miru-textbox-mono textarea {
     font-family: var(--font-mono);
