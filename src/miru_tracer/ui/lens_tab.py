@@ -213,7 +213,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             interactive=False,
                         )
                         dist_plot = gr.Plot(label="Counts by layer")
-                    with gr.Tab("Heatmap"), gr.Column(elem_classes="miru-scroll-x"):
+                    with gr.Tab("Heatmap"):
                         heatmap_plot = gr.Plot(label="Position × layer heatmap")
                     with gr.Tab("Pinned ranks"):
                         pinned_plot = gr.Plot(label="Pinned token ranks")

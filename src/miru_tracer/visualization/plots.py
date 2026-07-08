@@ -319,18 +319,25 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
     )
     fig.update_layout(
         title=f"Lens readouts — {slice_.mode}<br>"
-        "<sub>Top-1 readout per (position, layer) | Hover for the full top-k</sub>",
+        "<sub>Top-1 per (position, layer) | Hover for top-k | Drag to pan, "
+        "double-click to reset</sub>",
         xaxis_title="Position (input token)",
         yaxis_title="Layer",
         height=max(400, 30 * len(slice_.layers) + 150),
-        # Fixed intrinsic width so wide slices overflow into a horizontal
-        # scrollbar (the container has overflow-x: auto) instead of being
-        # squeezed unreadably into the pane; pan/zoom stay enabled.
-        width=max(560, 56 * len(slice_.positions) + 260),
-        autosize=False,
+        # IMPORTANT: keep autosize=True — a fixed-width figure inside a
+        # scrollable container triggers a ResizeObserver feedback loop with
+        # Gradio's responsive plot wrapper (browser-freezing). Wide slices are
+        # navigated with Plotly's own pan/zoom over a windowed x-range instead.
+        autosize=True,
         dragmode="pan",
         hovermode="closest",
     )
+    max_visible = 12
+    if len(slice_.positions) > max_visible:
+        # Window the newest positions; pan (or double-click) reaches the rest.
+        fig.update_xaxes(
+            range=[len(slice_.positions) - max_visible - 0.5, len(slice_.positions) - 0.5]
+        )
     return fig
 
 

@@ -55,15 +55,10 @@ MIRU_CSS = """
     margin-right: auto !important;
 }
 
-/* Containers for fixed-width plots (e.g. the position x layer lens heatmap):
-   scroll horizontally instead of squeezing the figure. */
-.miru-scroll-x {
-    overflow-x: auto;
-}
-.miru-scroll-x .plot-container,
-.miru-scroll-x .js-plotly-plot {
-    max-width: none !important;
-}
+/* NOTE: do not wrap plots in overflow-x containers with fixed-width figures —
+   Gradio's responsive plot wrapper + a toggling scrollbar creates a
+   ResizeObserver feedback loop that freezes the browser. Wide plots use
+   Plotly-native pan/zoom over a windowed axis range instead. */
 
 /* Monospace textboxes - use theme's monospace font */
 .miru-textbox-mono textarea {
