@@ -12,12 +12,22 @@ from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.tracer import LLMTracer
 from miru_tracer.ui.helpers import (
+    CHAT_MODE_HELP,
     DEFAULT_CHAT_JSON,
+    GENERATION_MODES,
+    RAW_MODE_HELP,
+    RAW_MODE_PLACEHOLDER,
+    TEMPERATURE_GREEDY_INFO,
+    THINK_PREFILL_INFO,
+    THINKING_CHOICES,
     ChatValidationError,
     ExportManager,
     parse_chat_messages,
     prob_mode_key,
+    thinking_key,
     toggle_mode_visibility,
+    toggle_temperature,
+    toggle_think_prefill,
     ui_sampling_params,
 )
 from miru_tracer.visualization.plots import (
@@ -39,10 +49,11 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         )
 
         mode_selector = gr.Radio(
-            choices=["Completion", "Chat"],
+            choices=list(GENERATION_MODES),
             value="Completion",
             label="Mode",
-            info="Choose between direct text completion or chat format.",
+            info="Direct text completion, chat format, or raw text with "
+            "explicit special tokens.",
         )
 
         with gr.Group() as completion_inputs:
@@ -54,15 +65,33 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             )
 
         with gr.Group(visible=False) as chat_inputs:
-            gr.Markdown(
-                "Edit the JSON to add/remove/modify messages. "
-                "Supported roles: system, user, assistant"
-            )
+            gr.Markdown(CHAT_MODE_HELP)
             chat_messages = gr.Code(
                 label="Chat (JSON)",
                 language="json",
                 lines=10,
                 value=DEFAULT_CHAT_JSON,
+            )
+            thinking_selector = gr.Radio(
+                choices=list(THINKING_CHOICES),
+                value=THINKING_CHOICES[0],
+                label="Thinking",
+            )
+            think_prefill_box = gr.Textbox(
+                label="Thought prefill",
+                visible=False,
+                lines=2,
+                placeholder="Okay, the user wants…",
+                info=THINK_PREFILL_INFO,
+            )
+
+        with gr.Group(visible=False) as raw_inputs:
+            raw_input = gr.Textbox(
+                label="Raw text",
+                lines=4,
+                placeholder=RAW_MODE_PLACEHOLDER,
+                info=RAW_MODE_HELP,
+                elem_classes=["miru-textbox-mono"],
             )
 
         with gr.Group():
@@ -74,7 +103,15 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     choices=["greedy", "sampling"], value="greedy", label="Strategy"
                 )
             with gr.Row():
-                temperature = gr.Slider(0.1, 2.0, value=1.0, step=0.1, label="Temperature")
+                temperature = gr.Slider(
+                    0.1,
+                    2.0,
+                    value=1.0,
+                    step=0.1,
+                    label="Temperature",
+                    interactive=False,  # default strategy is greedy
+                    info=TEMPERATURE_GREEDY_INFO,
+                )
                 top_k = gr.Slider(1, 100, value=50, step=1, label="Top-K")
                 top_p = gr.Slider(0.01, 1.0, value=0.9, step=0.01, label="Top-P")
             with gr.Accordion("Logging & visualization options", open=False):
@@ -147,7 +184,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         # State: the live tracer plus the inputs it was started from
         # (used to invalidate Continue when the user edits the prompt).
         tracer_state = gr.State(value=None)
-        original_inputs_state = gr.State(value=None)  # (mode, prompt, messages)
+        # (mode, prompt, messages, raw, thinking choice, thought text)
+        original_inputs_state = gr.State(value=None)
 
         # ------------------------------------------------------------ helpers
 
@@ -204,6 +242,9 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             mode,
             prompt,
             chat_msgs,
+            raw_text,
+            think_choice,
+            think_text,
             max_new_tokens,
             strat,
             temp,
@@ -240,7 +281,14 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     except ChatValidationError as e:
                         yield error_yield(f"Error: {e}")
                         return
-                    tracer.reset(messages=messages, mode="chat")
+                    tracer.reset(
+                        messages=messages,
+                        mode="chat",
+                        thinking=thinking_key(think_choice),
+                        think_prefill=think_text or "",
+                    )
+                elif mode == "Raw":
+                    tracer.reset(prompt=raw_text, mode="raw")
                 else:
                     tracer.reset(prompt=prompt, mode="completion")
 
@@ -248,7 +296,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     f"Logging mode generation started: mode={mode}, "
                     f"max_tokens={max_new_tokens}, strategy={strat}"
                 )
-                originals = (mode, prompt, chat_msgs)
+                originals = (mode, prompt, chat_msgs, raw_text, think_choice, think_text)
 
                 for text, progress in run_generation(
                     tracer, params, max_new_tokens, log_topk, log_full, stop_at_eos
@@ -445,17 +493,28 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 logger.error(f"Error refreshing visualizations: {e}", exc_info=True)
                 return None, None
 
-        def check_continue_availability(mode, prompt, chat_msgs, originals, tracer):
+        def check_continue_availability(
+            mode, prompt, chat_msgs, raw_text, think_choice, think_text,
+            originals, tracer,
+        ):
             """Disable Continue when the inputs no longer match the run."""
             if tracer is None or originals is None:
                 return gr.update(interactive=False)
-            original_mode, original_prompt, original_messages = originals
-            unchanged = mode == original_mode and (
-                prompt == original_prompt
-                if mode == "Completion"
-                else chat_msgs == original_messages
-            )
-            return gr.update(interactive=unchanged)
+            (
+                original_mode, original_prompt, original_messages,
+                original_raw, original_think, original_think_text,
+            ) = originals
+            if mode == "Chat":
+                unchanged = (
+                    chat_msgs == original_messages
+                    and think_choice == original_think
+                    and think_text == original_think_text
+                )
+            elif mode == "Raw":
+                unchanged = raw_text == original_raw
+            else:
+                unchanged = prompt == original_prompt
+            return gr.update(interactive=(mode == original_mode and unchanged))
 
         # -------------------------------------------------------------- wiring
 
@@ -474,7 +533,15 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         mode_selector.change(
             fn=toggle_mode_visibility,
             inputs=[mode_selector],
-            outputs=[completion_inputs, chat_inputs],
+            outputs=[completion_inputs, chat_inputs, raw_inputs],
+        )
+        strategy.change(
+            fn=toggle_temperature, inputs=[strategy], outputs=[temperature]
+        )
+        thinking_selector.change(
+            fn=toggle_think_prefill,
+            inputs=[thinking_selector],
+            outputs=[think_prefill_box],
         )
 
         for viz_input in (probability_mode, heatmap_ranks):
@@ -490,6 +557,9 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 mode_selector,
                 prompt_input,
                 chat_messages,
+                raw_input,
+                thinking_selector,
+                think_prefill_box,
                 max_tokens,
                 strategy,
                 temperature,
@@ -537,13 +607,19 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             cancels=[generate_event, continue_event],
         )
 
-        for input_component in (mode_selector, prompt_input, chat_messages):
+        for input_component in (
+            mode_selector, prompt_input, chat_messages, raw_input,
+            thinking_selector, think_prefill_box,
+        ):
             input_component.change(
                 fn=check_continue_availability,
                 inputs=[
                     mode_selector,
                     prompt_input,
                     chat_messages,
+                    raw_input,
+                    thinking_selector,
+                    think_prefill_box,
                     original_inputs_state,
                     tracer_state,
                 ],

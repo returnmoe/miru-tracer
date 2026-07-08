@@ -10,11 +10,16 @@ from miru_tracer.ui.lens_common import (
     layer_selection,
     lens_mode_key,
     parse_token_refs,
-    readouts_dataframe,
+    selection_summary,
     set_active_interventions,
     sparkline,
     toggle_position,
     token_ref_to_id,
+)
+from miru_tracer.ui.lens_views import (
+    distribution_html,
+    heatmap_html,
+    readouts_table_html,
 )
 from miru_tracer.visualization.plots import (
     plot_lens_heatmap,
@@ -92,9 +97,27 @@ class TestPositions:
 
     def test_highlight_marks_selection(self):
         value = highlighted_tokens(["a", " ", "b"], [2])
-        assert value[0] == ("a", None)
-        assert value[1][0] == "·"  # whitespace made visible
+        assert value[0] == ("a", "tok")
+        assert value[1] == ("␣", "tok")  # whitespace made visible
         assert value[2] == ("b", "sel")
+
+    def test_highlight_every_token_clickable(self):
+        # Gradio only dispatches the select event for spans whose category is
+        # non-None; every position must carry one to stay clickable.
+        for _text, category in highlighted_tokens(["x", " ", "", "y"], [1]):
+            assert category in ("tok", "sel")
+
+    def test_highlight_leading_space_visible(self):
+        value = highlighted_tokens([" Paris"], [])
+        assert value[0][0] == "␣Paris"
+
+    def test_selection_summary(self):
+        assert selection_summary([], None) == ""
+        assert "all 5 positions" in selection_summary([], 5)
+        summary = selection_summary([1, 3], 5)
+        assert "2 of 5 positions" in summary and "1, 3" in summary
+        many = selection_summary(list(range(20)), 30)
+        assert "20 of 30 positions" in many and "…" in many
 
 
 class TestActiveInterventionsRegistry:
@@ -161,10 +184,45 @@ class TestLensPlots:
         assert plot_pinned_token_ranks(empty) is None
 
 
-class TestReadoutsDataframe:
-    def test_columns_and_sparkline(self):
+class TestLensViews:
+    def test_readouts_table(self):
         rows = [ReadoutRow(token_id=9, text=" tok", count=5, count_by_layer=[5, 0])]
-        df = readouts_dataframe(rows)
-        assert list(df.columns) == ["Token", "ID", "Count", "By layer"]
-        assert df.iloc[0]["Count"] == 5
-        assert df.iloc[0]["By layer"][0] == "█"
+        out = readouts_table_html(rows)
+        assert ">␣tok<" in out  # leading space made visible
+        assert ">9<" in out and ">5<" in out
+        assert "█" in out  # sparkline
+        assert readouts_table_html([]) == ""
+
+    def test_heatmap_grid(self):
+        out = heatmap_html(SLICE)
+        # final layer on top: L2's row markup precedes L0's
+        assert out.index(">L2<") < out.index(">L0<")
+        assert ">g<" in out  # top-1 cell text
+        assert "2. h (0.050)" in out  # hover lists the top-k
+        assert "<table" in out and "overflow-x:auto" in out
+        empty = LensSlice(
+            mode="logit", layers=[], positions=[], position_texts=[],
+            tokens=[], probs=[], texts=[],
+        )
+        assert heatmap_html(empty) == ""
+
+    def test_heatmap_escapes_tokens(self):
+        s = LensSlice(
+            mode="logit", layers=[0], positions=[0],
+            position_texts=["<|im_start|>"],
+            tokens=[[[1]]], probs=[[[1.0]]], texts=[[["<b>"]]],
+        )
+        out = heatmap_html(s)
+        assert "&lt;b&gt;" in out and "&lt;|im_start|&gt;" in out
+        assert "><b><" not in out  # token never lands unescaped in a cell
+
+    def test_distribution_grid(self):
+        rows = [
+            ReadoutRow(token_id=1, text="a", count=3, count_by_layer=[2, 1]),
+            ReadoutRow(token_id=2, text="b", count=1, count_by_layer=[0, 1]),
+        ]
+        out = distribution_html(rows, [0, 2])
+        assert ">L0<" in out and ">L2<" in out
+        assert ">a (3)<" in out
+        assert 'title="L0: 2 cells"' in out
+        assert distribution_html([], [0]) == ""

@@ -3,6 +3,23 @@
 from functools import lru_cache
 
 
+def visible_whitespace(text: str) -> str:
+    """Make a single token's whitespace visible for display.
+
+    Leading/trailing spaces become ``␣``, newlines ``⏎``, tabs ``⇥`` — so
+    " Paris" and "Paris" are distinguishable in token sequences, heatmap
+    cells, and readout tables. Interior spaces are left alone.
+    """
+    if not text:
+        return text
+    text = text.replace("\n", "⏎").replace("\t", "⇥")
+    lead = len(text) - len(text.lstrip(" "))
+    if lead == len(text):  # all spaces
+        return "␣" * lead
+    trail = len(text) - len(text.rstrip(" "))
+    return "␣" * lead + text[lead : len(text) - trail] + "␣" * trail
+
+
 @lru_cache(maxsize=1)
 def _gpt2_byte_decoder() -> dict[str, int]:
     """The standard GPT-2 byte-level BPE unicode-to-byte mapping."""

@@ -6,9 +6,19 @@ import pytest
 
 from miru_tracer.core.schema import TokenStep
 from miru_tracer.visualization.plots import (
+    _display_text,
     get_generation_stats,
     plot_probability_visualizations,
 )
+
+
+class TestDisplayText:
+    def test_whitespace_made_visible(self):
+        assert _display_text(" Paris") == "␣Paris"
+        assert _display_text("\n") == "⏎"
+
+    def test_long_text_truncated(self):
+        assert _display_text("x" * 30) == "x" * 12 + "..."
 
 
 def make_step(step, full_probs=None):

@@ -67,20 +67,26 @@ class TestLensTabFlow:
         assert "2 intervention(s)" in result[1]
 
         out = client.predict(
-            "Completion", "Hello world", "[]", 6, "greedy", 1.0,
+            "Completion", "Hello world", "[]", "", "Template default", "",
+            6, "greedy", 1.0,
             "Jacobian", 0, -1, 1, 8, False, "A",
             api_name="/generate_and_analyze",
         )
-        readout_df, dist, heatmap, pinned, _tokens, status, text = out[:7]
+        readout_html, dist_html_out, _heatmap, _pinned, status, text = out[:6]
         assert "Interventions active: 2" in status
         # Both steers compose; the final-layer one dominates greedy decoding,
         # so the generated text must consist of steered tokens.
         generated = text[len("Hello world"):]
         assert generated and set(generated) <= {"A", "B"}
-        # ...and both steered tokens surface prominently in the readouts.
-        top_tokens = [row[0] for row in readout_df["data"][:5]]
-        assert "A" in top_tokens and "B" in top_tokens
-        assert heatmap is not None and dist is not None and pinned is not None
+        # ...and both steered tokens surface prominently in the readouts
+        # (server-rendered HTML table cells).
+        assert ">A<" in readout_html and ">B<" in readout_html
+        assert "<table" in dist_html_out
+        # Heatmap and pinned ranks render lazily from the cached slice when
+        # their tab is opened.
+        heatmap = client.predict(api_name="/open_heatmap_view")
+        pinned = client.predict(api_name="/open_pinned_view")
+        assert "<table" in heatmap and pinned is not None
 
     def test_remove_and_clear_interventions(self, lens_app):
         client = lens_app
@@ -92,13 +98,15 @@ class TestLensTabFlow:
 
     def test_logit_mode_without_fitted_lens_still_works(self, lens_app):
         out = lens_app.predict(
-            "Completion", "Hello world", "[]", 3, "greedy", 1.0,
+            "Completion", "Hello world", "[]", "", "Template default", "",
+            3, "greedy", 1.0,
             "Logit", 0, -1, 1, 5, False, "",
             api_name="/generate_and_analyze",
         )
-        status = out[5]
+        status = out[4]
         assert "logit lens" in status
-        assert out[2] is not None  # heatmap
+        assert "<table" in out[0]  # readouts table (the eagerly rendered view)
+        assert "<table" in lens_app.predict(api_name="/open_heatmap_view")
 
 
 class TestFitFileManagement:

@@ -141,13 +141,29 @@ class LLMTracer:
         prompt: str = "",
         messages: list[dict[str, str]] | None = None,
         mode: str = "auto",
+        thinking: str = "auto",
+        think_prefill: str = "",
     ) -> None:
         """Reset generation state with a new prompt or chat messages.
 
         Args:
-            prompt: Direct text prompt (completion mode).
+            prompt: Direct text prompt (completion and raw modes).
             messages: Chat messages [{"role": ..., "content": ...}, ...].
-            mode: "completion", "chat", or "auto" (detect from inputs).
+                If the final message is from the assistant, it is treated as a
+                prefill and generation continues it (no generation prompt is
+                appended).
+            mode: "completion", "chat", "raw", or "auto" (detect from inputs).
+                Raw mode tokenizes the prompt without auto-added special
+                tokens, so template markers typed in the text (e.g.
+                ``<|im_start|>``) are the only specials in the sequence.
+            thinking: Chat-mode reasoning control. "auto" leaves the template
+                alone; "off" renders with ``enable_thinking=False`` (Qwen3
+                emits an empty ``<think>`` block; a no-op on templates without
+                the switch); "prefill" opens an UNCLOSED ``<think>`` seeded
+                with ``think_prefill`` after the generation prompt — the model
+                continues that thought. Incompatible with an assistant-prefill
+                final message (raises ValueError).
+            think_prefill: The thought text for ``thinking="prefill"``.
         """
         self.history: list[TokenStep] = []
         self._kv = None
@@ -162,9 +178,39 @@ class LLMTracer:
 
         if mode == "chat" and messages is not None:
             if self.has_chat_template:
-                text = self.tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
+                # A trailing assistant message is a prefill: continue it
+                # instead of opening a fresh assistant turn.
+                prefill = messages[-1].get("role") == "assistant"
+                if thinking != "auto" and prefill:
+                    raise ValueError(
+                        "Thinking control conflicts with an assistant-prefill "
+                        "final message — put the thoughts in the prefill "
+                        "instead, or drop the assistant message."
+                    )
+                if thinking == "off":
+                    text = self.tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                        enable_thinking=False,
+                    )
+                elif thinking == "prefill":
+                    # Templates cannot express an unclosed <think>; append it
+                    # to the rendered chat so the model continues the thought.
+                    text = (
+                        self.tokenizer.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True
+                        )
+                        + "<think>\n"
+                        + think_prefill
+                    )
+                else:
+                    text = self.tokenizer.apply_chat_template(
+                        messages,
+                        tokenize=False,
+                        add_generation_prompt=not prefill,
+                        continue_final_message=prefill,
+                    )
             else:
                 text = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
             self.prompt = text
@@ -173,7 +219,9 @@ class LLMTracer:
 
         if self.prompt:
             self.input_ids = self.tokenizer.encode(
-                self.prompt, return_tensors="pt"
+                self.prompt,
+                return_tensors="pt",
+                add_special_tokens=(mode != "raw"),
             ).to(self.device)
             logger.info(
                 f"Reset in {mode} mode: prompt_tokens={self.input_ids.shape[1]}"

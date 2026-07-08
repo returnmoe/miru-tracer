@@ -11,7 +11,8 @@ Design notes:
   Block outputs are the *pre-final-norm* residuals jlens expects — this is why
   we hook rather than use ``output_hidden_states`` (whose last entry is
   post-norm).
-- Everything is chunked per layer so ``layers x positions x vocab`` is never
+- Unembedding is chunked by rows (a few hundred at a time, batching layers
+  together for BLAS throughput) so ``layers x positions x vocab`` is never
   materialized at once.
 - The generation tracer is not involved; lens views are read-only side
   computations on the same frozen model.
@@ -35,6 +36,11 @@ from miru_tracer.core.tokenizer_utils import safe_decode_token
 logger = get_logger(__name__)
 
 LENS_MODES = ("logit", "jacobian", "diff")
+
+# Row budget for one batched unembed: bounds the transient [rows, vocab]
+# logits/probs tensors (~150MB each at a 151k vocab) independent of how many
+# layers are read out.
+_UNEMBED_CHUNK_ROWS = 256
 
 _WORD_RE = re.compile(r"\w", re.UNICODE)
 
@@ -131,6 +137,30 @@ class LensSlice:
     pinned_ranks: dict[int, list[list[int]]] = field(default_factory=dict)
 
 
+def record_lens_activations(
+    model,
+    tokenizer,
+    input_ids: torch.Tensor,
+    *,
+    interventions: InterventionSet | None = None,
+) -> dict[int, torch.Tensor]:
+    """One forward over the sequence, capturing EVERY block's output residual.
+
+    The result can be passed to :func:`compute_lens_slice` as ``activations``
+    so repeated slices over the same (sequence, interventions) never re-run
+    the model. Memory is modest: ``n_layers x seq x d_model`` floats.
+    """
+    wrapper = wrap_model(model, tokenizer)
+    layers = list(range(wrapper.n_layers))
+    with (
+        torch.no_grad(),
+        apply_interventions(model, interventions),
+        ActivationRecorder(wrapper.layers, at=layers) as recorder,
+    ):
+        wrapper.forward(input_ids.to(wrapper.input_device))
+        return {i: recorder.activations[i].detach() for i in layers}
+
+
 def compute_lens_slice(
     model,
     tokenizer,
@@ -144,6 +174,7 @@ def compute_lens_slice(
     skip_non_words: bool = False,
     pinned_token_ids: list[int] | None = None,
     interventions: InterventionSet | None = None,
+    activations: dict[int, torch.Tensor] | None = None,
 ) -> LensSlice:
     """Compute per-(layer, position) top-k lens readouts for a sequence.
 
@@ -157,7 +188,10 @@ def compute_lens_slice(
         skip_non_words: Drop tokens with no word characters from the top-k.
         pinned_token_ids: Tokens whose rank is tracked in every cell.
         interventions: Active activation edits; entered *before* the recorder
-            so the recorded residuals are the edited ones.
+            so the recorded residuals are the edited ones. Ignored when
+            ``activations`` is given (they were applied at record time).
+        activations: Pre-recorded block outputs from
+            :func:`record_lens_activations`; skips the forward pass entirely.
     """
     if mode not in LENS_MODES:
         raise ValueError(f"Unknown lens mode: {mode!r}. Use one of {LENS_MODES}.")
@@ -181,13 +215,18 @@ def compute_lens_slice(
                 f"layers {sorted(missing)} not fitted; lens covers {jlens.source_layers}"
             )
 
-    with (
-        torch.no_grad(),
-        apply_interventions(model, interventions),
-        ActivationRecorder(wrapper.layers, at=layers) as recorder,
-    ):
-        wrapper.forward(input_ids.to(wrapper.input_device))
-        activations = {i: recorder.activations[i].detach() for i in layers}
+    if activations is None:
+        with (
+            torch.no_grad(),
+            apply_interventions(model, interventions),
+            ActivationRecorder(wrapper.layers, at=layers) as recorder,
+        ):
+            wrapper.forward(input_ids.to(wrapper.input_device))
+            activations = {i: recorder.activations[i].detach() for i in layers}
+    else:
+        missing_acts = [layer for layer in layers if layer not in activations]
+        if missing_acts:
+            raise ValueError(f"activations missing for layers {missing_acts}")
 
     pinned_token_ids = pinned_token_ids or []
     final_layer = wrapper.n_layers - 1
@@ -197,58 +236,83 @@ def compute_lens_slice(
     pinned: dict[int, list[list[int]]] = {t: [] for t in pinned_token_ids}
 
     candidate_k = top_k * 4 if skip_non_words else top_k
+    n_pos = len(positions)
+    # Batch several layers into one unembed matmul: BLAS throughput on a
+    # skinny [P, d] @ [d, vocab] is a fraction of a well-fed one (~2.5x
+    # end-to-end for short sequences), while the row budget keeps the
+    # transient [rows, vocab] probs bounded regardless of layer count.
+    rows_per_layer = 2 if mode == "diff" else 1
+    group_size = max(1, _UNEMBED_CHUNK_ROWS // max(n_pos * rows_per_layer, 1))
 
     with torch.no_grad():
-        for layer in layers:
-            residual = activations[layer][0, positions, :].float()  # [P, d]
-            use_transport = (
-                mode in ("jacobian", "diff")
-                and layer != final_layer
-                and layer in jlens.jacobians
-            )
-            if mode == "diff" and layer != final_layer:
-                logit_probs = torch.softmax(wrapper.unembed(residual).float(), dim=-1)
-                jac_probs = torch.softmax(
-                    wrapper.unembed(jlens.transport(residual, layer)).float(), dim=-1
+        for group_start in range(0, len(layers), group_size):
+            group = layers[group_start : group_start + group_size]
+            blocks: list[tuple[int, str]] = []  # (layer, kind), stacking order
+            stack: list[torch.Tensor] = []
+            for layer in group:
+                residual = activations[layer][0, positions, :].float()  # [P, d]
+                use_transport = (
+                    mode in ("jacobian", "diff")
+                    and layer != final_layer
+                    and layer in jlens.jacobians
                 )
-                scores = jac_probs - logit_probs  # tokens the J-lens boosts
-                probs_for_pin = jac_probs
-            else:
-                transported = jlens.transport(residual, layer) if use_transport else residual
-                scores = torch.softmax(wrapper.unembed(transported).float(), dim=-1)
-                probs_for_pin = scores
+                if mode == "diff" and layer != final_layer:
+                    stack += [residual, jlens.transport(residual, layer)]
+                    blocks += [(layer, "logit"), (layer, "jac")]
+                else:
+                    stack.append(
+                        jlens.transport(residual, layer) if use_transport else residual
+                    )
+                    blocks.append((layer, "main"))
+            probs_all = torch.softmax(
+                wrapper.unembed(torch.cat(stack)).float(), dim=-1
+            )  # [len(blocks) * P, vocab]
+            by_block = {
+                key: probs_all[i * n_pos : (i + 1) * n_pos]
+                for i, key in enumerate(blocks)
+            }
 
-            k = min(candidate_k, scores.shape[-1])
-            top_scores, top_ids = torch.topk(scores, k, dim=-1)  # [P, k]
+            for layer in group:
+                if mode == "diff" and layer != final_layer:
+                    jac_probs = by_block[(layer, "jac")]
+                    scores = jac_probs - by_block[(layer, "logit")]  # J-lens boosts
+                    probs_for_pin = jac_probs
+                else:
+                    scores = by_block[(layer, "main")]
+                    probs_for_pin = scores
 
-            layer_tokens, layer_probs, layer_texts = [], [], []
-            for p in range(len(positions)):
-                ids = top_ids[p].tolist()
-                vals = top_scores[p].tolist()
-                row_t, row_p, row_s = [], [], []
-                for token_id, value in zip(ids, vals, strict=True):
-                    text = decode_token(tokenizer, token_id)
-                    if skip_non_words and not is_word_token(text):
-                        continue
-                    row_t.append(token_id)
-                    row_p.append(float(value))
-                    row_s.append(text)
-                    if len(row_t) == top_k:
-                        break
-                layer_tokens.append(row_t)
-                layer_probs.append(row_p)
-                layer_texts.append(row_s)
-            all_tokens.append(layer_tokens)
-            all_probs.append(layer_probs)
-            all_texts.append(layer_texts)
+                k = min(candidate_k, scores.shape[-1])
+                top_scores, top_ids = torch.topk(scores, k, dim=-1)  # [P, k]
 
-            if pinned_token_ids:
-                # rank = number of tokens with strictly higher probability
-                ranks = (
-                    probs_for_pin > probs_for_pin[:, pinned_token_ids].T.unsqueeze(-1)
-                ).sum(dim=-1)  # [n_pinned, P]
-                for i, token_id in enumerate(pinned_token_ids):
-                    pinned[token_id].append(ranks[i].tolist())
+                layer_tokens, layer_probs, layer_texts = [], [], []
+                for p in range(n_pos):
+                    ids = top_ids[p].tolist()
+                    vals = top_scores[p].tolist()
+                    row_t, row_p, row_s = [], [], []
+                    for token_id, value in zip(ids, vals, strict=True):
+                        text = decode_token(tokenizer, token_id)
+                        if skip_non_words and not is_word_token(text):
+                            continue
+                        row_t.append(token_id)
+                        row_p.append(float(value))
+                        row_s.append(text)
+                        if len(row_t) == top_k:
+                            break
+                    layer_tokens.append(row_t)
+                    layer_probs.append(row_p)
+                    layer_texts.append(row_s)
+                all_tokens.append(layer_tokens)
+                all_probs.append(layer_probs)
+                all_texts.append(layer_texts)
+
+                if pinned_token_ids:
+                    # rank = number of tokens with strictly higher probability
+                    ranks = (
+                        probs_for_pin
+                        > probs_for_pin[:, pinned_token_ids].T.unsqueeze(-1)
+                    ).sum(dim=-1)  # [n_pinned, P]
+                    for i, token_id in enumerate(pinned_token_ids):
+                        pinned[token_id].append(ranks[i].tolist())
 
     position_texts = [decode_token(tokenizer, int(input_ids[0, p])) for p in positions]
     return LensSlice(
@@ -263,16 +327,30 @@ def compute_lens_slice(
     )
 
 
+# Memoized per tokenizer (one loaded model at a time, like _wrapper_cache):
+# a slice decodes layers x positions x k tokens, mostly repeats.
+_decode_cache: tuple[int, dict[int, str]] | None = None
+
+
 def decode_token(tokenizer, token_id: int) -> str:
-    """Best-effort display text for a token.
+    """Best-effort display text for a token (memoized).
 
     Falls back to ``<id>`` for ids outside the tokenizer vocabulary — models
     commonly pad the embedding matrix past the tokenizer size (Qwen3 included),
     and those ids can legitimately appear in lens readouts.
     """
-    decoded, raw, _ = safe_decode_token(tokenizer, token_id)
-    text = decoded if decoded else raw
-    return text if text is not None else f"<{token_id}>"
+    global _decode_cache
+    if _decode_cache is None or _decode_cache[0] != id(tokenizer):
+        _decode_cache = (id(tokenizer), {})
+    cache = _decode_cache[1]
+    text = cache.get(token_id)
+    if text is None:
+        decoded, raw, _ = safe_decode_token(tokenizer, token_id)
+        text = decoded if decoded else raw
+        if text is None:
+            text = f"<{token_id}>"
+        cache[token_id] = text
+    return text
 
 
 @dataclass

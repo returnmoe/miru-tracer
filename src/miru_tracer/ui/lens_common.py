@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from miru_tracer.core.interventions import Intervention
-from miru_tracer.core.lens import ReadoutRow
+from miru_tracer.core.tokenizer_utils import visible_whitespace
 
 LENS_MODE_CHOICES = ("Logit", "Jacobian", "Diff (Jacobian − Logit)")
 
@@ -67,17 +67,6 @@ def sparkline(counts: list[int]) -> str:
     )
 
 
-def readouts_dataframe(rows: list[ReadoutRow]) -> pd.DataFrame:
-    """Aggregated readouts as a table with a per-layer sparkline column."""
-    return pd.DataFrame(
-        [
-            [row.text, row.token_id, row.count, sparkline(row.count_by_layer)]
-            for row in rows
-        ],
-        columns=["Token", "ID", "Count", "By layer"],
-    )
-
-
 def interventions_dataframe(
     interventions: list[Intervention], tokenizer=None
 ) -> pd.DataFrame:
@@ -106,15 +95,40 @@ def layer_selection(n_layers: int, start, end, stride) -> list[int]:
     return layers
 
 
+# Categories for the token-sequence HighlightedText. Every token must carry a
+# category: Gradio's frontend only dispatches the select event for spans whose
+# category is non-None, so a None (plain-text) span is not clickable at all.
+TOKEN_UNSELECTED = "tok"
+TOKEN_SELECTED = "sel"
+TOKEN_COLOR_MAP = {TOKEN_UNSELECTED: "gray", TOKEN_SELECTED: "orange"}
+
+
+def _token_label(text: str) -> str:
+    shown = visible_whitespace(text)
+    return shown if shown.strip() else "·"
+
+
 def highlighted_tokens(
     position_texts: list[str], selected: list[int]
-) -> list[tuple[str, str | None]]:
-    """Value for gr.HighlightedText: mark selected positions."""
+) -> list[tuple[str, str]]:
+    """Value for gr.HighlightedText: one clickable span per position."""
     chosen = set(selected)
     return [
-        (text if text.strip() else "·", "sel" if i in chosen else None)
+        (_token_label(text), TOKEN_SELECTED if i in chosen else TOKEN_UNSELECTED)
         for i, text in enumerate(position_texts)
     ]
+
+
+def selection_summary(selected: list[int], seq_len: int | None) -> str:
+    """One-line description of the position selection, shown under the sequence."""
+    if seq_len is None:
+        return ""
+    if not selected:
+        return f"**Selection:** all {seq_len} positions (readouts cover the whole sequence)."
+    shown = ", ".join(str(p) for p in selected[:12])
+    if len(selected) > 12:
+        shown += ", …"
+    return f"**Selection:** {len(selected)} of {seq_len} positions ({shown})."
 
 
 def toggle_position(selected: list[int], index: int) -> list[int]:

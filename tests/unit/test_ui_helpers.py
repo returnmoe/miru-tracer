@@ -12,6 +12,10 @@ from miru_tracer.ui.helpers import (
     build_radio_choices,
     parse_chat_messages,
     prob_mode_key,
+    thinking_key,
+    toggle_mode_visibility,
+    toggle_temperature,
+    toggle_think_prefill,
     ui_sampling_params,
 )
 
@@ -34,6 +38,45 @@ class TestParseChatMessages:
     def test_invalid_raises(self, text):
         with pytest.raises(ChatValidationError):
             parse_chat_messages(text)
+
+
+class TestModeToggles:
+    @pytest.mark.parametrize(
+        "mode,expected",
+        [
+            ("Completion", (True, False, False)),
+            ("Chat", (False, True, False)),
+            ("Raw", (False, False, True)),
+        ],
+    )
+    def test_mode_visibility(self, mode, expected):
+        updates = toggle_mode_visibility(mode)
+        assert tuple(u["visible"] for u in updates) == expected
+
+    def test_temperature_disabled_for_greedy(self):
+        update = toggle_temperature("greedy")
+        assert update["interactive"] is False
+        assert update["info"]  # explains why it has no effect
+
+    def test_temperature_enabled_for_sampling(self):
+        update = toggle_temperature("sampling")
+        assert update["interactive"] is True
+
+    @pytest.mark.parametrize(
+        "choice,key",
+        [
+            ("Template default", "auto"),
+            ("Off (no thinking)", "off"),
+            ("Prefill thought…", "prefill"),
+            (None, "auto"),
+        ],
+    )
+    def test_thinking_key(self, choice, key):
+        assert thinking_key(choice) == key
+
+    def test_think_prefill_visibility(self):
+        assert toggle_think_prefill("Prefill thought…")["visible"] is True
+        assert toggle_think_prefill("Off (no thinking)")["visible"] is False
 
 
 class TestExportManager:
