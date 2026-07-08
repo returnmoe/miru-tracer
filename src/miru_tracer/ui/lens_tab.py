@@ -70,9 +70,16 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             # ------------------------------------------ left: workspace
             with gr.Column(scale=3):
                 with gr.Group():
-                    mode_selector = gr.Radio(
-                        choices=["Completion", "Chat"], value="Completion", label="Mode"
-                    )
+                    with gr.Row():
+                        mode_selector = gr.Radio(
+                            choices=["Completion", "Chat"],
+                            value="Completion",
+                            label="Mode",
+                            scale=2,
+                        )
+                        max_tokens = gr.Number(
+                            minimum=0, value=12, precision=0, label="New tokens", scale=1
+                        )
                     with gr.Group() as completion_inputs:
                         prompt_input = gr.Textbox(
                             label="Prompt",
@@ -86,13 +93,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             lines=8,
                             value=DEFAULT_CHAT_JSON,
                         )
-                    with gr.Row():
-                        max_tokens = gr.Number(
-                            minimum=0, value=12, precision=0, label="New tokens", scale=1
-                        )
-                        generate_button = gr.Button(
-                            "Generate & Analyze", variant="primary", size="lg", scale=2
-                        )
+                    generate_button = gr.Button(
+                        "Generate & Analyze", variant="primary", size="lg"
+                    )
                     with gr.Accordion("Generation settings", open=False), gr.Row():
                         strategy = gr.Radio(
                             choices=["greedy", "sampling"],
