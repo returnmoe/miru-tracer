@@ -57,7 +57,10 @@ from miru_tracer.ui.lens_common import (
     LENS_MODE_CHOICES,
     TOKEN_COLOR_MAP,
     highlighted_tokens,
+    intervened_layer_titles,
+    intervention_visibility_warning,
     interventions_dataframe,
+    interventions_summary,
     layer_selection,
     lens_mode_key,
     parse_layer_refs,
@@ -162,22 +165,6 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     label="Text", lines=4, interactive=False, buttons=["copy"]
                 )
 
-                tokens_display = gr.HighlightedText(
-                    label="Sequence — click tokens to select positions "
-                    "(none = all). A position's readout predicts its NEXT "
-                    "token: select “is” to see where “Paris” "
-                    "emerges.",
-                    value=[],
-                    color_map=TOKEN_COLOR_MAP,
-                    show_inline_category=False,
-                    combine_adjacent=False,
-                    elem_classes=["miru-token-select"],
-                )
-                selection_info = gr.Markdown("")
-                with gr.Row():
-                    select_generated_button = gr.Button("Select generated", size="sm")
-                    select_clear_button = gr.Button("Clear selection", size="sm")
-
             # ------------------------------------------ right: lens controls
             with gr.Column(scale=2):
                 with gr.Group():
@@ -209,12 +196,29 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             placeholder="comma-separated: Paris, 12345, ...",
                             info="Track these tokens' ranks across layers.",
                         )
-                    update_button = gr.Button("Update readouts", variant="secondary")
-                    gr.Markdown(
-                        "Recomputes the readouts below for the current sequence, "
-                        "using the token selection on the left. Interventions "
-                        "only change on **Generate & Analyze**."
-                    )
+
+                tokens_display = gr.HighlightedText(
+                    label="Sequence — click tokens to select positions "
+                    "(none = all). A position's readout predicts its NEXT "
+                    "token: select “is” to see where “Paris” "
+                    "emerges.",
+                    value=[],
+                    color_map=TOKEN_COLOR_MAP,
+                    show_inline_category=False,
+                    combine_adjacent=False,
+                    elem_classes=["miru-token-select"],
+                )
+                selection_info = gr.Markdown("")
+                with gr.Row():
+                    select_generated_button = gr.Button("Select generated", size="sm")
+                    select_clear_button = gr.Button("Clear selection", size="sm")
+
+                update_button = gr.Button("Update readouts", variant="secondary")
+                gr.Markdown(
+                    "Recomputes the readouts below for the current sequence, "
+                    "using the token selection above. Interventions "
+                    "only change on **Generate & Analyze**."
+                )
 
                 with gr.Accordion("Interventions", open=False):
                     gr.Markdown(
@@ -398,9 +402,17 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 )
                 if dropped:
                     status += f" (skipped unfitted layers: {dropped})"
+                intervened: dict[int, str] = {}
                 if analysis["iset"] is not None:
-                    status += f" Interventions active: {len(analysis['iset'])}."
-                return {"slice": slice_, "rows": rows}, status
+                    ivs = analysis["iset"].interventions
+                    intervened = intervened_layer_titles(ivs, tokenizer)
+                    status += f" Interventions: {interventions_summary(ivs, tokenizer)}."
+                    warning = intervention_visibility_warning(
+                        ivs, mode, analysis["n_layers"], tokenizer
+                    )
+                    if warning:
+                        status += f"\n{warning}"
+                return {"slice": slice_, "rows": rows, "intervened": intervened}, status
             except Exception as e:
                 logger.error(f"Lens readout error: {e}", exc_info=True)
                 return None, f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
@@ -408,15 +420,22 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         # ------------------------------------------------------ view renders
 
         def show_summary_view(bundle):
-            return "" if bundle is None else readouts_table_html(bundle["rows"])
+            if bundle is None:
+                return ""
+            return readouts_table_html(bundle["rows"], bundle.get("intervened"))
 
         def show_readouts_view(bundle):
             if bundle is None:
                 return ""
-            return distribution_html(bundle["rows"], bundle["slice"].layers)
+            return distribution_html(
+                bundle["rows"], bundle["slice"].layers,
+                intervened=bundle.get("intervened"),
+            )
 
         def show_heatmap_view(bundle):
-            return "" if bundle is None else heatmap_html(bundle["slice"])
+            if bundle is None:
+                return ""
+            return heatmap_html(bundle["slice"], bundle.get("intervened"))
 
         def show_pinned_view(bundle):
             if bundle is None:

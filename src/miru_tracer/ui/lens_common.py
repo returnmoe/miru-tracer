@@ -108,6 +108,63 @@ def interventions_dataframe(
     )
 
 
+def describe_with_basis(iv: Intervention, tokenizer=None) -> str:
+    """Human description of an intervention with its basis appended."""
+    return f"{iv.describe(tokenizer)} ({iv.basis})"
+
+
+def intervened_layer_titles(
+    interventions: list[Intervention], tokenizer=None
+) -> dict[int, str]:
+    """Map each edited layer to a ``'; '``-joined description of its edits."""
+    titles: dict[int, str] = {}
+    for iv in interventions:
+        desc = describe_with_basis(iv, tokenizer)
+        titles[iv.layer] = f"{titles[iv.layer]}; {desc}" if iv.layer in titles else desc
+    return titles
+
+
+def interventions_summary(
+    interventions: list[Intervention], tokenizer=None, *, limit: int = 4
+) -> str:
+    """One-line summary of the active interventions for the status area."""
+    parts = [describe_with_basis(iv, tokenizer) for iv in interventions[:limit]]
+    if len(interventions) > limit:
+        parts.append(f"+{len(interventions) - limit} more")
+    return "; ".join(parts)
+
+
+def intervention_visibility_warning(
+    interventions: list[Intervention], mode: str, n_layers: int, tokenizer=None
+) -> str | None:
+    """Warn when an edit's basis differs from the current lens view mode.
+
+    A jacobian-basis edit moves the residual along pre-transport directions
+    (``J_ℓ v = û_t``), visible under the Jacobian lens but nearly invisible
+    under the Logit lens — and vice versa. The final layer is basis-independent
+    (both bases use ``û_t`` directly), and Diff renders both readouts, so
+    neither triggers a warning. For a fixed ``mode`` at most one basis can
+    mismatch, so this returns a single line (or None).
+    """
+    if mode == "diff":
+        return None
+    final = n_layers - 1
+    mismatched = [iv for iv in interventions if iv.layer != final and iv.basis != mode]
+    if not mismatched:
+        return None
+    basis = mismatched[0].basis  # only one basis can mismatch a given mode
+    shown = "; ".join(iv.describe(tokenizer) for iv in mismatched[:3])
+    if len(mismatched) > 3:
+        shown += f" (+{len(mismatched) - 3} more)"
+    verb = "uses" if len(mismatched) == 1 else "use"
+    pronoun = "its" if len(mismatched) == 1 else "their"
+    want = "Jacobian" if basis == "jacobian" else "Logit"
+    return (
+        f"⚠ {shown} {verb} {basis} basis — switch Lens to {want} (or Diff) "
+        f"to see {pronoun} effect in the readouts."
+    )
+
+
 def layer_selection(n_layers: int, start, end, stride) -> list[int]:
     """Resolve UI layer-range inputs into a concrete layer list.
 

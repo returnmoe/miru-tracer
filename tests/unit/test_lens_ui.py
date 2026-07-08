@@ -7,6 +7,9 @@ from miru_tracer.core.lens import LensSlice, ReadoutRow
 from miru_tracer.ui.lens_common import (
     get_active_interventions,
     highlighted_tokens,
+    intervened_layer_titles,
+    intervention_visibility_warning,
+    interventions_summary,
     layer_selection,
     lens_mode_key,
     parse_layer_refs,
@@ -229,6 +232,19 @@ class TestLensViews:
         assert ">9<" in out and ">5<" in out
         assert "█" in out  # sparkline
         assert readouts_table_html([]) == ""
+        assert "⚡" not in out  # no intervention caption without the arg
+
+    def test_readouts_table_intervention_caption(self):
+        rows = [ReadoutRow(token_id=9, text="tok", count=5, count_by_layer=[5, 0])]
+        out = readouts_table_html(rows, {0: "ablate 'x' @L0 (logit)"})
+        assert "⚡" in out and "L0:" in out
+        assert "ablate" in out and "@L0" in out and "(logit)" in out
+
+    def test_readouts_table_caption_escapes(self):
+        rows = [ReadoutRow(token_id=9, text="tok", count=5, count_by_layer=[5, 0])]
+        out = readouts_table_html(rows, {2: 'swap "<b>"→"x" @L2 (logit)'})
+        # the user-supplied description is escaped; no raw HTML injection
+        assert "&lt;b&gt;" in out and '"<b>"' not in out
 
     def test_heatmap_grid(self):
         out = heatmap_html(SLICE)
@@ -237,11 +253,23 @@ class TestLensViews:
         assert ">g<" in out  # top-1 cell text
         assert "2. h (0.050)" in out  # hover lists the top-k
         assert "<table" in out and "overflow:auto" in out  # scrolls both ways
+        assert "⚡" not in out  # no marker without the arg
         empty = LensSlice(
             mode="logit", layers=[], positions=[], position_texts=[],
             tokens=[], probs=[], texts=[],
         )
         assert heatmap_html(empty) == ""
+
+    def test_heatmap_marks_intervened_layers(self):
+        out = heatmap_html(SLICE, {2: "steer 'a' @L2 (α=+3) (logit)"})
+        assert "⚡L2" in out and "⚡L0" not in out
+        assert 'title="steer' in out
+        assert "intervened layer" in out  # caption note
+
+    def test_heatmap_intervened_title_escaped(self):
+        out = heatmap_html(SLICE, {2: 'swap "<b>"→"x" @L2 (logit)'})
+        assert "&lt;b&gt;" in out
+        assert 'title="swap "<b>"' not in out  # no raw HTML in the title attr
 
     def test_heatmap_escapes_tokens(self):
         s = LensSlice(
@@ -263,3 +291,61 @@ class TestLensViews:
         assert ">a (3)<" in out
         assert 'title="L0: 2 cells"' in out
         assert distribution_html([], [0]) == ""
+
+    def test_distribution_marks_intervened_layer(self):
+        rows = [ReadoutRow(token_id=1, text="a", count=3, count_by_layer=[2, 1])]
+        out = distribution_html(rows, [0, 2], intervened={2: "steer 'a' @L2 (jacobian)"})
+        assert 'title="steer &#x27;a&#x27; @L2 (jacobian)"' in out
+        assert ">L0<" in out  # unmarked layer label intact
+
+
+class TestInterventionVisibility:
+    def _iv(self, **kw):
+        return Intervention(
+            kind=kw.get("kind", "steer"), layer=kw["layer"],
+            token_id=kw.get("token_id", 1), basis=kw["basis"],
+        )
+
+    def test_intervened_layer_titles_joins_same_layer(self):
+        ivs = [
+            self._iv(layer=5, basis="jacobian"),
+            self._iv(layer=5, basis="logit", kind="ablate"),
+        ]
+        titles = intervened_layer_titles(ivs)
+        assert set(titles) == {5}
+        assert "; " in titles[5]
+        assert "(jacobian)" in titles[5] and "(logit)" in titles[5]
+
+    def test_summary_caps_with_more(self):
+        ivs = [self._iv(layer=i, basis="logit") for i in range(6)]
+        summary = interventions_summary(ivs, limit=4)
+        assert summary.count(";") == 4  # 4 edits + the "+2 more" tail
+        assert "+2 more" in summary
+
+    @pytest.mark.parametrize("basis,mode,layer,warns", [
+        ("jacobian", "logit", 5, True),
+        ("jacobian", "jacobian", 5, False),
+        ("jacobian", "diff", 5, False),
+        ("logit", "jacobian", 5, True),
+        ("logit", "logit", 5, False),
+        ("logit", "diff", 5, False),
+        ("jacobian", "logit", 31, False),  # final layer (n_layers=32) exempt
+    ])
+    def test_warning_truth_table(self, basis, mode, layer, warns):
+        ivs = [self._iv(layer=layer, basis=basis)]
+        result = intervention_visibility_warning(ivs, mode, n_layers=32)
+        if not warns:
+            assert result is None
+        else:
+            assert result is not None and "⚠" in result
+            assert f"{basis} basis" in result
+            assert ("Jacobian" if basis == "jacobian" else "Logit") in result
+
+    def test_warning_names_only_mismatched(self):
+        ivs = [
+            self._iv(layer=5, basis="jacobian"),  # mismatched in logit view
+            self._iv(layer=6, basis="logit"),     # matches logit view
+        ]
+        result = intervention_visibility_warning(ivs, "logit", n_layers=32)
+        assert result is not None
+        assert "@L5" in result and "@L6" not in result

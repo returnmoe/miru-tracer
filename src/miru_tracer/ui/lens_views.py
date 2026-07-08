@@ -108,8 +108,33 @@ def _tok(text: str) -> str:
     return html.escape(visible_whitespace(text))
 
 
-def heatmap_html(slice_: LensSlice) -> str:
-    """Position x layer grid of top-1 readouts; hover (title) lists the top-k."""
+def _layer_label(
+    layer: int, intervened: dict[int, str] | None, *, glyph: bool = True
+) -> str:
+    """Layer label, marked and hoverable when the layer carries an intervention.
+
+    Color lives on the innermost span (Gradio's prose CSS defeats inherited
+    color); ``quote=True`` because ``describe()`` uses ``repr`` and token text
+    can contain quotes or angle brackets.
+    """
+    if not intervened or layer not in intervened:
+        return f"L{layer}"
+    title = html.escape(intervened[layer], quote=True)
+    mark = "⚡" if glyph else ""
+    return (
+        f'<span style="color:{_ACCENT_SPARK}; font-weight:600;" '
+        f'title="{title}">{mark}L{layer}</span>'
+    )
+
+
+def heatmap_html(
+    slice_: LensSlice, intervened: dict[int, str] | None = None
+) -> str:
+    """Position x layer grid of top-1 readouts; hover (title) lists the top-k.
+
+    ``intervened`` maps edited layer indices to a hover description, which
+    marks those layers' row labels.
+    """
     if not slice_.layers or not slice_.positions:
         return ""
 
@@ -131,7 +156,7 @@ def heatmap_html(slice_: LensSlice) -> str:
 
     body = []
     for i in reversed(range(len(slice_.layers))):  # final layer on top
-        cells = [f"<th {_ROW_TH}>L{slice_.layers[i]}</th>"]
+        cells = [f"<th {_ROW_TH}>{_layer_label(slice_.layers[i], intervened)}</th>"]
         for j in range(len(slice_.positions)):
             probs, texts = slice_.probs[i][j], slice_.texts[i][j]
             top1 = _tok(texts[0]) if texts else ""
@@ -153,6 +178,8 @@ def heatmap_html(slice_: LensSlice) -> str:
         f"token after the column's input token · color = top-1 {value_name} · "
         "hover a cell for its top-k · scroll sideways for more positions"
     )
+    if intervened and any(layer in intervened for layer in slice_.layers):
+        caption += " · ⚡ = intervened layer (hover for details)"
     return (
         f"<p {_CAPTION}>{caption}</p>"
         f'{_SCROLL_DIV}<table style="{_GRID_STYLE}">'
@@ -161,10 +188,22 @@ def heatmap_html(slice_: LensSlice) -> str:
     )
 
 
-def readouts_table_html(rows: list[ReadoutRow]) -> str:
-    """Aggregated readouts table with a per-layer sparkline column."""
+def readouts_table_html(
+    rows: list[ReadoutRow], intervened: dict[int, str] | None = None
+) -> str:
+    """Aggregated readouts table with a per-layer sparkline column.
+
+    Rows are tokens (not layers), so ``intervened`` edits are surfaced as a
+    caption above the table rather than per-cell markers.
+    """
     if not rows:
         return ""
+    caption = ""
+    if intervened:
+        items = "; ".join(
+            f"L{layer}: {html.escape(desc)}" for layer, desc in sorted(intervened.items())
+        )
+        caption = f"<p {_CAPTION}>⚡ <b>Interventions</b> — {items}</p>"
     cell = (
         'style="padding:7px 14px; border:0; '
         'border-bottom:1px solid rgba(127,127,127,0.18);"'
@@ -188,22 +227,33 @@ def readouts_table_html(rows: list[ReadoutRow]) -> str:
         f"<th {_COL_TH}>{name}</th>" for name in ("Token", "ID", "Count", "By layer")
     )
     return (
-        f'{_SCROLL_DIV}<table style="{_LIST_STYLE}">'
+        f"{caption}{_SCROLL_DIV}<table style=\"{_LIST_STYLE}\">"
         f"<tr>{header}</tr>{body}</table></div>"
     )
 
 
 def distribution_html(
-    rows: list[ReadoutRow], layers: list[int], *, limit: int = 20
+    rows: list[ReadoutRow], layers: list[int], *, limit: int = 20,
+    intervened: dict[int, str] | None = None,
 ) -> str:
-    """Token x layer grid of readout counts (theme-aware accent scale)."""
+    """Token x layer grid of readout counts (theme-aware accent scale).
+
+    ``intervened`` maps edited layer indices to a hover description, tinting
+    those layers' column headers (no glyph — the columns are too narrow).
+    """
     rows = rows[:limit]
     if not rows or not layers:
         return ""
     peak = max(max(row.count_by_layer) for row in rows) or 1
 
     header = "".join(
-        f"<th {_COL_TH}>{_fixed(f'L{layer}', _COUNT_COL_W)}</th>" for layer in layers
+        (
+            f'<th {_COL_TH} title="{html.escape(intervened[layer], quote=True)}">'
+            if intervened and layer in intervened
+            else f"<th {_COL_TH}>"
+        )
+        + f"{_fixed(_layer_label(layer, intervened, glyph=False), _COUNT_COL_W)}</th>"
+        for layer in layers
     )
     body = []
     for row in rows:

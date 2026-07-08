@@ -74,7 +74,13 @@ class TestLensTabFlow:
             api_name="/generate_and_analyze",
         )
         readout_html, _dist, _heatmap, _pinned, status, text = out[:6]
-        assert "Interventions active: 2" in status
+        # Status names each edit and its basis (replaces the old bare count).
+        assert "Interventions:" in status
+        assert "steer" in status and "@L0" in status and "@L1" in status
+        assert "(jacobian)" in status and "(logit)" in status
+        # No mismatch warning: @L0 jacobian matches the Jacobian view, and the
+        # @L1 logit edit is on the final layer (2-layer model) — basis-exempt.
+        assert "⚠" not in status
         # Both steers compose; the final-layer one dominates greedy decoding,
         # so the generated text must consist of steered tokens.
         generated = text[len("Hello world"):]
@@ -83,11 +89,21 @@ class TestLensTabFlow:
         # (server-rendered HTML table cells).
         assert ">A<" in readout_html and ">B<" in readout_html
         # The other views render lazily from the cached slice when their tab
-        # is opened.
+        # is opened; both edited layers carry the ⚡ marker in the heatmap.
         counts = client.predict(api_name="/open_readouts_view")
         heatmap = client.predict(api_name="/open_heatmap_view")
         pinned = client.predict(api_name="/open_pinned_view")
         assert "<table" in counts and "<table" in heatmap and pinned is not None
+        assert "⚡L0" in heatmap and "⚡L1" in heatmap
+        # Switching to the Logit view surfaces the mismatch warning for the
+        # jacobian-basis @L0 edit (the @L1 logit edit is final-layer exempt).
+        # State inputs (analysis/positions/active_view) are excluded from the
+        # client signature, so this passes only the lens controls.
+        out = client.predict(
+            "Logit", 0, -1, 1, 8, False, "A", api_name="/update_readouts"
+        )
+        status = out[-1]
+        assert "⚠" in status and "jacobian basis" in status and "@L0" in status
 
     def test_remove_and_clear_interventions(self, lens_app):
         client = lens_app
