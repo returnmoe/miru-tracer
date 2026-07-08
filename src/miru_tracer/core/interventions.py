@@ -110,7 +110,7 @@ def lens_vector(
             )
         return u_hat
 
-    J = jlens.jacobians[layer].float()
+    J = jlens.jacobians[layer].float().to(u_hat.device)
     try:
         solution = torch.linalg.lstsq(J, u_hat.unsqueeze(-1)).solution.squeeze(-1)
     except Exception:  # pragma: no cover - driver-dependent

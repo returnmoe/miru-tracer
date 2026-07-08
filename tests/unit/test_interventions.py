@@ -1,5 +1,7 @@
 """Interventions: steer/ablate/swap behavior, composition, cache safety."""
 
+import copy
+
 import pytest
 import torch
 
@@ -83,6 +85,15 @@ class TestLensVectors:
     def test_final_layer_uses_unembed_direction(self, tiny_model, tiny_lens):
         v = lens_vector(tiny_model, TOKEN_A, FINAL, basis="jacobian", jlens=tiny_lens, n_layers=2)
         assert torch.allclose(v, unembed_direction(tiny_model, TOKEN_A))
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+    def test_jacobian_basis_with_cpu_lens_and_cuda_model(self, tiny_model, tiny_lens):
+        """JacobianLens.load puts jacobians on CPU; the model may be on CUDA."""
+        model = copy.deepcopy(tiny_model).to("cuda")
+        v = lens_vector(model, TOKEN_A, 0, basis="jacobian", jlens=tiny_lens, n_layers=2)
+        assert v.device.type == "cuda"
+        assert torch.isfinite(v).all()
+        assert v.norm().item() == pytest.approx(1.0)
 
 
 class TestSteer:
