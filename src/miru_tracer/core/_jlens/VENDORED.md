@@ -15,11 +15,12 @@ repository (package `jlens` v0.1.0), companion code to the paper
 | File | Modifications from upstream |
 |---|---|
 | `hooks.py` | Import paths rewritten `jlens.*` → `miru_tracer.core._jlens.*` |
-| `lens.py` | Import paths rewritten |
-| `fitting.py` | Import paths rewritten |
+| `lens.py` | Import paths rewritten; optional JSON-safe Miru fit metadata added |
+| `fitting.py` | Import paths rewritten; resumable convergence diagnostics, early stopping, and checkpoint provenance checks added |
 | `protocol.py` | Import paths rewritten |
 | `hf.py` | Import paths rewritten |
 | `__init__.py` | New file (subset of upstream public API re-exports) |
+| `fit_metadata.py` | New file (validation for Miru's optional artifact metadata) |
 
 Not vendored: `vis.py` (d3/HTML visualization — Miru Tracer renders lens data
 with its own Plotly code), `examples.py`, `_logging.py`, `data/`.

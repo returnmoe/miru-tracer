@@ -20,6 +20,11 @@ from pathlib import Path
 import torch
 
 from miru_tracer.core._jlens import JacobianLens
+from miru_tracer.core._jlens.fit_metadata import (
+    MAX_FIT_METADATA_BYTES,
+    encode_fit_metadata,
+    normalize_fit_metadata,
+)
 
 FORMAT_MARKER = "miru-tracer/jacobian-lens"
 FORMAT_VERSION = "1"
@@ -28,6 +33,13 @@ _LAYER_KEY_RE = re.compile(r"J\.(0|[1-9][0-9]*)\Z")
 
 def _invalid_artifact(path: Path, detail: str) -> ValueError:
     return ValueError(f"invalid JacobianLens file {path}: {detail}")
+
+
+def _looks_like_legacy_torch_file(path: Path) -> bool:
+    """Recognize current zip and older pickle torch.save containers."""
+    with path.open("rb") as handle:
+        prefix = handle.read(4)
+    return prefix.startswith(b"PK\x03\x04") or prefix.startswith(b"\x80")
 
 
 def _positive_int_metadata(metadata: dict[str, str], key: str, path: Path) -> int:
@@ -81,7 +93,10 @@ def save_lens(lens: JacobianLens, path: str | Path, *, dtype: torch.dtype = torc
         return
     from safetensors.torch import save_file
 
-    tensors = {f"J.{layer}": J.to(dtype).contiguous() for layer, J in lens.jacobians.items()}
+    tensors = {
+        f"J.{layer}": matrix.contiguous()
+        for layer, matrix in lens._jacobians_for_save(dtype).items()
+    }
     metadata = {
         "format": FORMAT_MARKER,
         "version": FORMAT_VERSION,
@@ -89,6 +104,8 @@ def save_lens(lens: JacobianLens, path: str | Path, *, dtype: torch.dtype = torc
         "d_model": str(lens.d_model),
         "source_layers": json.dumps(lens.source_layers),
     }
+    if lens.fit_metadata is not None:
+        metadata["fit_metadata"] = encode_fit_metadata(lens.fit_metadata, n_prompts=lens.n_prompts)
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
     save_file(tensors, str(tmp), metadata=metadata)
     os.replace(tmp, path)
@@ -100,7 +117,7 @@ def load_lens(path: str | Path) -> JacobianLens:
     Raises ValueError with a "not a JacobianLens file" message on non-lens
     files, in both codecs."""
     path = Path(path)
-    if path.suffix != ".safetensors":
+    if path.suffix == ".pt" or _looks_like_legacy_torch_file(path):
         return JacobianLens.load(str(path))
     from safetensors import safe_open
 
@@ -122,6 +139,22 @@ def load_lens(path: str | Path) -> JacobianLens:
         n_prompts = _positive_int_metadata(metadata, "n_prompts", path)
         d_model = _positive_int_metadata(metadata, "d_model", path)
         source_layers = _source_layers_metadata(metadata, path)
+        fit_metadata = None
+        raw_fit_metadata = metadata.get("fit_metadata")
+        if raw_fit_metadata is not None:
+            if len(raw_fit_metadata.encode("utf-8")) > MAX_FIT_METADATA_BYTES:
+                raise _invalid_artifact(
+                    path,
+                    f"fit_metadata exceeds the {MAX_FIT_METADATA_BYTES}-byte size limit",
+                )
+            try:
+                decoded_fit_metadata = json.loads(raw_fit_metadata)
+            except json.JSONDecodeError as exc:
+                raise _invalid_artifact(path, "'fit_metadata' metadata is not valid JSON") from exc
+            try:
+                fit_metadata = normalize_fit_metadata(decoded_fit_metadata, n_prompts=n_prompts)
+            except ValueError as exc:
+                raise _invalid_artifact(path, str(exc)) from exc
 
         # safe_open handles support .keys() but not iteration.
         keys = list(f.keys())  # noqa: SIM118
@@ -160,6 +193,7 @@ def load_lens(path: str | Path) -> JacobianLens:
         jacobians=jacobians,
         n_prompts=n_prompts,
         d_model=d_model,
+        fit_metadata=fit_metadata,
     )
 
 

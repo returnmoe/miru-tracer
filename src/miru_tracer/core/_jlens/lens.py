@@ -1,5 +1,6 @@
 # Copyright 2026 Anthropic PBC
 # SPDX-License-Identifier: Apache-2.0
+# Modified by Miru Tracer: optional JSON-safe fit metadata.
 """Applying a fitted Jacobian lens.
 
 A :class:`JacobianLens` holds the per-layer ``J_l`` matrices produced by
@@ -12,9 +13,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from typing import Any
 
 import torch
 
+from miru_tracer.core._jlens.fit_metadata import normalize_fit_metadata
 from miru_tracer.core._jlens.hooks import ActivationRecorder
 from miru_tracer.core._jlens.protocol import LensModel
 
@@ -28,6 +31,8 @@ class JacobianLens:
         source_layers: Sorted list of fitted layer indices.
         n_prompts: Number of prompts the lens was averaged over.
         d_model: Residual-stream width.
+        fit_metadata: Optional JSON-safe fitting provenance and convergence
+            diagnostics. Older/upstream artifacts leave this as ``None``.
     """
 
     def __init__(
@@ -36,11 +41,32 @@ class JacobianLens:
         *,
         n_prompts: int,
         d_model: int,
+        fit_metadata: dict[str, Any] | None = None,
     ) -> None:
+        if type(n_prompts) is not int or n_prompts <= 0:
+            raise ValueError(f"n_prompts must be a positive integer, got {n_prompts!r}")
+        if type(d_model) is not int or d_model <= 0:
+            raise ValueError(f"d_model must be a positive integer, got {d_model!r}")
+        if not isinstance(jacobians, dict) or not jacobians:
+            raise ValueError("jacobians must be a non-empty layer-to-matrix mapping")
+        expected_shape = (d_model, d_model)
+        for layer, matrix in jacobians.items():
+            if type(layer) is not int or layer < 0:
+                raise ValueError(f"Jacobian layer keys must be nonnegative integers: {layer!r}")
+            if not isinstance(matrix, torch.Tensor) or not matrix.is_floating_point():
+                raise ValueError(f"Jacobian at layer {layer} must be a floating tensor")
+            if tuple(matrix.shape) != expected_shape:
+                raise ValueError(
+                    f"Jacobian at layer {layer} must have shape {expected_shape}, "
+                    f"got {tuple(matrix.shape)}"
+                )
+            if not torch.isfinite(matrix).all():
+                raise ValueError(f"Jacobian at layer {layer} contains non-finite values")
         self.jacobians = {layer: J.float() for layer, J in jacobians.items()}
         self.source_layers = sorted(self.jacobians)
         self.n_prompts = n_prompts
         self.d_model = d_model
+        self.fit_metadata = normalize_fit_metadata(fit_metadata, n_prompts=n_prompts)
 
     def __repr__(self) -> str:
         return (
@@ -49,19 +75,39 @@ class JacobianLens:
             f"({len(self.source_layers)} layers))"
         )
 
+    def _jacobians_for_save(self, dtype: torch.dtype) -> dict[int, torch.Tensor]:
+        try:
+            floating = torch.empty((), dtype=dtype).is_floating_point()
+        except (TypeError, RuntimeError) as exc:
+            raise ValueError(f"lens storage dtype must be floating, got {dtype!r}") from exc
+        if not floating:
+            raise ValueError(f"lens storage dtype must be floating, got {dtype}")
+        serialized: dict[int, torch.Tensor] = {}
+        for layer, matrix in self.jacobians.items():
+            cast = matrix.to(dtype)
+            if not torch.isfinite(cast).all():
+                raise ValueError(
+                    f"Jacobian at layer {layer} overflows or becomes non-finite "
+                    f"when stored as {dtype}; choose a wider floating dtype"
+                )
+            serialized[layer] = cast
+        return serialized
+
     def save(self, path: str, *, dtype: torch.dtype = torch.float16) -> None:
         """Save to ``path``. Jacobians are stored as ``dtype`` (default fp16:
         halves file size; entries are O(1) so the range is not a constraint
         and fp16's extra mantissa bits beat bf16 here)."""
-        torch.save(
-            {
-                "J": {layer: J.to(dtype) for layer, J in self.jacobians.items()},
-                "n_prompts": self.n_prompts,
-                "source_layers": self.source_layers,
-                "d_model": self.d_model,
-            },
-            path,
-        )
+        payload = {
+            "J": self._jacobians_for_save(dtype),
+            "n_prompts": self.n_prompts,
+            "source_layers": self.source_layers,
+            "d_model": self.d_model,
+        }
+        if self.fit_metadata is not None:
+            payload["fit_metadata"] = normalize_fit_metadata(
+                self.fit_metadata, n_prompts=self.n_prompts
+            )
+        torch.save(payload, path)
 
     @classmethod
     def load(cls, path: str) -> JacobianLens:
@@ -72,10 +118,26 @@ class JacobianLens:
                 f"{path} is not a JacobianLens file "
                 f"(found keys {sorted(checkpoint)!r}; a fit() checkpoint?)"
             )
+        jacobians = checkpoint["J"]
+        if not isinstance(jacobians, dict):
+            raise ValueError(f"{path} is not a valid JacobianLens file ('J' must be a mapping)")
+        if any(type(layer) is not int or layer < 0 for layer in jacobians):
+            raise ValueError(
+                f"{path} is not a valid JacobianLens file "
+                "(Jacobian layer keys must be nonnegative integers)"
+            )
+        stored_layers = checkpoint.get("source_layers")
+        actual_layers = sorted(jacobians)
+        if stored_layers is not None and stored_layers != actual_layers:
+            raise ValueError(
+                f"{path} is not a valid JacobianLens file "
+                f"(source_layers={stored_layers!r}, tensor layers={actual_layers!r})"
+            )
         return cls(
-            jacobians=checkpoint["J"],
+            jacobians=jacobians,
             n_prompts=checkpoint["n_prompts"],
             d_model=checkpoint["d_model"],
+            fit_metadata=checkpoint.get("fit_metadata"),
         )
 
     @classmethod
@@ -118,18 +180,15 @@ class JacobianLens:
             raise ValueError("merge() needs at least one lens")
         first = lenses[0]
         for other in lenses[1:]:
-            if (
-                other.source_layers != first.source_layers
-                or other.d_model != first.d_model
-            ):
+            if other.source_layers != first.source_layers or other.d_model != first.d_model:
                 raise ValueError("lenses disagree on source_layers / d_model")
         n_total = sum(lens.n_prompts for lens in lenses)
         merged: dict[int, torch.Tensor] = {}
         for layer in first.source_layers:
-            weighted_sum = sum(
-                lens.jacobians[layer] * lens.n_prompts for lens in lenses
-            )
+            weighted_sum = sum(lens.jacobians[layer] * lens.n_prompts for lens in lenses)
             merged[layer] = weighted_sum / n_total
+        # Per-run convergence histories cannot be combined into a valid history
+        # for the weighted mean, so merged artifacts deliberately omit them.
         return cls(jacobians=merged, n_prompts=n_total, d_model=first.d_model)
 
     def transport(self, residual: torch.Tensor, layer: int) -> torch.Tensor:

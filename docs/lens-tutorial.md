@@ -27,11 +27,12 @@ it once you have it.
 ## 1. What a fit file is
 
 A fit file (`lens.safetensors`) contains one `d_model × d_model` matrix per
-layer — the model's input–output Jacobian averaged over a text corpus — plus a
-little metadata (layer indices, prompt count, `d_model`). For a 0.6B model that's
-~50MB (fp16); for larger models it scales with `n_layers × d_model²`, not
-with parameter count, so even a 27B-class model's fit file stays in the
-single-digit GB range.
+layer — the model's input–output Jacobian averaged over a text corpus — plus
+metadata describing its shape, model/corpus provenance, fit settings, and
+convergence history (the most recent 1,000 points for unusually long fits).
+For a 0.6B model that's ~50MB (fp16); for larger models
+it scales with `n_layers × d_model²`, not with parameter count, so even a
+27B-class model's fit file stays in the single-digit GB range.
 
 Fit files are **per model** (same architecture, same weights). A lens fitted
 for `Qwen/Qwen3-0.6B` is meaningless for any other checkpoint, and Miru
@@ -40,9 +41,11 @@ refuses files whose `d_model` doesn't match the loaded model.
 ## 2. Fitting (do this on a GPU)
 
 Fitting runs one forward pass plus `d_model / dim_batch` **backward** passes
-per prompt, over 100–1,000 prompts. On a CPU that is minutes per prompt —
-hours to days in total. On a single modern GPU it is minutes to an hour.
-Fit where the compute is, then copy the file to wherever you run Miru.
+per prompt. The default budget is up to 1,000 prompts, but fitting can stop
+after convergence once at least 100 prompts have succeeded. On a CPU that is
+minutes per prompt — hours to days in total. On a single modern GPU it is
+minutes to an hour. Fit where the compute is, then copy the file to wherever
+you run Miru.
 
 On the GPU instance:
 
@@ -55,18 +58,69 @@ Useful flags:
 
 | Flag | Meaning |
 |---|---|
-| `--num-prompts N` | Corpus size (default 100). More prompts = a better-converged average; the paper used ~1,000. Quality degrades gracefully below that. |
-| `--prompts-file f.txt` | Use your own corpus (one prompt per line) instead of wikitext-103. Prompts should look like the model's pretraining distribution and be at least a few hundred characters (the fitter skips the first 16 token positions). |
+| `--num-prompts N` | Maximum prompt budget (default 1,000). The run may finish earlier when the convergence criterion below is met. |
+| `--min-prompts N` | Minimum number of successful prompts before convergence can stop the run (default 100). |
+| `--stop-window N` | Number of recent successful prompt updates used for the rolling convergence check (default 10). |
+| `--stop-at-delta X` | Stop when the window's mean relative change is strictly below `X` (default 0.002). Set `0` to disable convergence stopping and use the full prompt budget. |
+| `--prompts-file f.txt` | Use your own corpus (one prompt per line, still capped by `--num-prompts`) instead of WikiText-103. Prompts should look like the model's pretraining distribution and be at least a few hundred characters (the fitter skips the first 16 token positions). |
 | `--dim-batch K` | Jacobian rows per backward pass. Higher = fewer backward passes but more memory. 4–8 on CPU, 16–64 on GPU. |
-| `--max-length N` | Truncate prompts to N tokens (default 128). Longer = more positions averaged per prompt, more memory. |
+| `--max-length N` | Maximum sequence length (default 128 tokens); longer prompts are truncated, while shorter prompts remain shorter. Raising it averages more positions but uses more memory. |
 | `--device cuda --dtype bfloat16` | Defaults resolve to this automatically when CUDA is available. |
 | `--out path/lens.safetensors` | Write somewhere specific (default: Miru's lens cache). A `.pt` extension writes the legacy torch.save format instead. |
 | `--fresh` | Discard the checkpoint and start over. |
 
+### Paper parity and convergence
+
+The paper's default lens used 1,000 sequences of exactly 128 tokens sampled
+from an unnamed pretraining-like distribution. Miru matches the 1,000-prompt
+budget and 128-token maximum, and its default WikiText-103 corpus serves the
+same broad purpose, but it is not claimed to be the paper's undisclosed corpus.
+For WikiText, Miru follows Neuronpedia by concatenating source rows and
+rechunking them into roughly 2,000-character contexts before tokenization.
+Sequences are truncated rather than padded, so a short custom or final partial
+prompt can still contribute fewer than 128 tokens. Like the
+[released reference fitter](https://github.com/anthropics/jacobian-lens/blob/main/jlens/fitting.py),
+it excludes the first 16 positions and the final position from each sequence
+average.
+
+This is parity with the released open-model fitter, not every experimental
+choice in the paper: the paper's primary Sonnet 4.5 lens targeted the
+penultimate residual layer, while the public fitter—and Miru's Qwen fits—use
+the final residual layer by default.
+
+The paper swept from 1 to 1,000 prompts: on its Sonnet 4.5 evaluations the
+J-lens beat logit- and tuned-lens baselines with as few as 10 prompts, with
+modest improvements from additional data. Miru nevertheless uses a
+conservative floor of 100 successful prompts, then checks the mean relative
+change over a rolling 10-prompt window. The default run stops when that mean
+is strictly below 0.002. For each successful prompt, the relative change is
+the mean across layers of
+`‖new running mean − old running mean‖_F / ‖new running mean‖_F`; the stop
+statistic is the arithmetic mean of those changes over the latest window.
+This convergence stop is an operational addition, not a change to the
+Jacobian estimator; the resulting artifact records the actual number of
+prompts averaged. The Neuronpedia Qwen3-4B fit, for example,
+[met the default criterion after 479 prompts](https://huggingface.co/neuronpedia/jacobian-lens/blob/main/qwen3-4b/jlens/Salesforce-wikitext/config.yaml).
+
+To reproduce the paper's full prompt-count budget rather than allow an early
+stop, disable the threshold explicitly:
+
+```bash
+miru-tracer-fit-lens Qwen/Qwen3-4B --dim-batch 32 --stop-at-delta 0
+```
+
 Practical notes:
 
 - **Interrupt freely.** Fitting checkpoints after every prompt. Ctrl-C (or a
-  spot-instance reclaim) loses nothing; re-running the same command resumes.
+  spot-instance reclaim) loses nothing; re-running the same command resumes
+  both the Jacobian average and its rolling convergence window. New checkpoints
+  record and validate the ordered prompt prefix, model identifier/revision when
+  available, model-config and tokenizer fingerprints, dtype, and
+  estimator-affecting settings. Checkpoints created before this metadata was
+  introduced cannot be matched to the newly rechunked corpus, so Miru refuses
+  to resume them and directs you to restart with `--fresh`. Finished lens
+  artifacts remain compatible. Mutable local model paths still cannot prove
+  that their underlying weight file contents stayed unchanged.
 - **Partial fits work.** The output `lens.safetensors` is (re)written after
   every chunk and is a valid lens averaged over the prompts so far. You can
   start using it while the rest of the corpus finishes.
@@ -75,9 +129,10 @@ Practical notes:
   from older versions still load, and
   `miru-tracer-convert-lens lens.pt` rewrites one as `lens.safetensors`
   (uploading a `.pt` in the app converts it too).
-- Watch the per-prompt log line `max_d_mean` — it tracks how much each new
-  prompt still moves the running average. Once it's consistently small, more
-  prompts buy little.
+- The progress log reports the convergence delta and rolling mean. Early
+  stopping is considered only after `--min-prompts` successful prompts and a
+  complete `--stop-window`; lower the threshold for a stricter fit, or use
+  `--stop-at-delta 0` to disable it.
 
 ### Model-specific notes
 

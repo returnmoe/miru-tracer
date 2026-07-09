@@ -106,8 +106,16 @@ miru-tracer-fit-lens Qwen/Qwen3-0.6B --dim-batch 32
 # MIRU_LENS_DIR)
 ```
 
-Fitting is checkpointed (interrupt + re-run resumes) and partial fits are
-usable. The full walkthrough — corpus choice, flags, loading, reading the
+By default the fitter considers up to 1,000 prompts, truncates each sequence
+at 128 tokens, and will not stop for convergence before 100 prompts succeed.
+After that floor, it stops when the rolling arithmetic mean of the latest 10
+relative-change updates falls below 0.002; for example, the Neuronpedia
+[Qwen3-4B fit](https://huggingface.co/neuronpedia/jacobian-lens/blob/main/qwen3-4b/jlens/Salesforce-wikitext/config.yaml)
+converged after 479 prompts.
+Tune the floor and window with `--min-prompts` and `--stop-window`, or pass
+`--stop-at-delta 0` to force the full 1,000-prompt budget. Fitting is
+checkpointed (interrupt + re-run resumes), and partial fits are usable. The
+full walkthrough — corpus choice, convergence flags, loading, and reading the
 plots — is in [docs/lens-tutorial.md](docs/lens-tutorial.md).
 
 In the **Lens tab** you can select layer ranges and token positions, browse
