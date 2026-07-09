@@ -278,6 +278,12 @@ def get_generation_stats(
 # --------------------------------------------------------------------- lenses
 
 
+def _lens_position_context(slice_: LensSlice, index: int) -> str:
+    position = slice_.positions[index]
+    token = _hover_text(slice_.position_texts[index])
+    return f"Readout at token {token} (position {position})"
+
+
 def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
     """Position x layer heatmap of top-1 lens readouts (paper Figure-5 style).
 
@@ -302,11 +308,15 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
             z_row.append(probs[0] if probs else 0.0)
             text_row.append(_display_text(texts[0]) if texts else "")
             hover_row.append(
-                "<br>".join(
+                _lens_position_context(slice_, j)
+                + "<br>"
+                + (
+                    "<br>".join(
                     f"{rank + 1}. {_hover_text(t)} ({p:.3f})"
                     for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
+                    )
+                    or "(empty)"
                 )
-                or "(empty)"
             )
         z.append(z_row)
         text.append(text_row)
@@ -328,9 +338,9 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
     )
     fig.update_layout(
         title=f"Lens readouts — {slice_.mode}<br>"
-        "<sub>Each cell predicts the NEXT token after the column's input "
-        "token | Hover for top-k | Drag to pan, double-click to reset</sub>",
-        xaxis_title="Position (input token; readout = its next token)",
+        "<sub>Readout at displayed token position | Logit/final predicts next token | "
+        "Hover for top-k | Drag to pan, double-click to reset</sub>",
+        xaxis_title="Selected token position",
         yaxis_title="Layer",
         height=max(400, 30 * len(slice_.layers) + 150),
         # IMPORTANT: keep autosize=True — a fixed-width figure inside a
@@ -372,11 +382,15 @@ def _lens_heatmap_data(slice_: LensSlice) -> tuple[list, list, list]:
             z_row.append(probs[0] if probs else 0.0)
             text_row.append(_display_text(texts[0]) if texts else "")
             hover_row.append(
-                "<br>".join(
+                _lens_position_context(slice_, j)
+                + "<br>"
+                + (
+                    "<br>".join(
                     f"{rank + 1}. {_hover_text(t)} ({p:.3f})"
                     for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
+                    )
+                    or "(empty)"
                 )
-                or "(empty)"
             )
         z.append(z_row)
         text.append(text_row)
@@ -447,6 +461,7 @@ def plot_lens_heatmap_comparison(
         title=(
             "Lens readout comparison — Jacobian / Logit<br>"
             "<sub>Independent top-1 probabilities on a shared color scale | "
+            "readout at displayed token; Logit/final predicts next token | "
             "Hover for each lens's top-k</sub>"
         ),
         coloraxis=dict(
@@ -460,7 +475,7 @@ def plot_lens_heatmap_comparison(
         dragmode="pan",
         hovermode="closest",
     )
-    fig.update_xaxes(title_text="Position (input token; readout = its next token)")
+    fig.update_xaxes(title_text="Selected token position")
     fig.update_yaxes(title_text="Layer", row=1, col=1)
     return fig
 

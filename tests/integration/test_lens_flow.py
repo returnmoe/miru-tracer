@@ -5,6 +5,8 @@ lens fitted on the fly; in the integration folder because it launches a real
 server and drives it with gradio_client.
 """
 
+import re
+
 import pytest
 from gradio_client import Client
 
@@ -80,7 +82,7 @@ class TestLensTabFlow:
         out = client.predict(
             "Completion", "Hello world", "[]", "", "Template default", "",
             6, "greedy", 1.0,
-            "Jacobian", 0, -1, 1, 8, False,
+            "Jacobian", 0, -1, 1, 8, 100, False,
             api_name="/generate_and_analyze",
         )
         readout_html, _dist, _heatmap, _pinned, status, text = out[:6]
@@ -103,14 +105,15 @@ class TestLensTabFlow:
         counts = client.predict(api_name="/open_readouts_view")
         heatmap = client.predict(api_name="/open_heatmap_view")
         pinned = client.predict(api_name="/open_pinned_view")
-        assert "<table" in counts and "<table" in heatmap and pinned is not None
+        assert "data-readout-inspector" in counts
+        assert "<table" in heatmap and pinned is not None
         assert "⚡L0" in heatmap and "⚡L1" in heatmap
         # Switching to the Logit view surfaces the mismatch warning for the
         # jacobian-basis @L0 edit (the @L1 logit edit is final-layer exempt).
         # State inputs (analysis/positions/active_view) are excluded from the
         # client signature, so this passes only the lens controls.
         out = client.predict(
-            "Logit", 0, -1, 1, 8, False, api_name="/update_readouts"
+            "Logit", 0, -1, 1, 8, 100, False, api_name="/update_readouts"
         )
         status = out[-1]
         assert "⚠" in status and "jacobian basis" in status and "@L0" in status
@@ -141,14 +144,18 @@ class TestLensTabFlow:
         out = lens_app.predict(
             "Completion", "Hello world", "[]", "", "Template default", "",
             3, "greedy", 1.0,
-            "Logit", 0, -1, 1, 5, False,
+            "Logit", 0, -1, 1, 5, 100, False,
             api_name="/generate_and_analyze",
         )
         status = out[4]
         assert "logit lens" in status
+        shown = re.search(r"showing (\d+) of", status)
+        assert shown is not None and int(shown.group(1)) > 5
         assert "<table" in out[0]  # summary table (the eagerly rendered view)
         assert "<table" in lens_app.predict(api_name="/open_heatmap_view")
-        assert "<table" in lens_app.predict(api_name="/open_readouts_view")
+        assert "data-readout-inspector" in lens_app.predict(
+            api_name="/open_readouts_view"
+        )
 
     def test_compare_mode_renders_two_independent_views(self, lens_app):
         pinned = lens_app.predict("A", "Text", api_name="/add_pinned")
@@ -157,7 +164,7 @@ class TestLensTabFlow:
         out = lens_app.predict(
             "Completion", "Hello world", "[]", "", "Template default", "",
             3, "greedy", 1.0,
-            "Compare (Jacobian / Logit)", 0, -1, 1, 5, True,
+            "Compare (Jacobian / Logit)", 0, -1, 1, 5, 100, True,
             api_name="/generate_and_analyze",
         )
         summary, status = out[0], out[4]
@@ -171,10 +178,12 @@ class TestLensTabFlow:
         counts = lens_app.predict(api_name="/open_readouts_view")
         heatmap = lens_app.predict(api_name="/open_heatmap_view")
         pinned_plot = lens_app.predict(api_name="/open_pinned_view")
-        for rendered in (counts, heatmap):
-            assert 'data-lens-mode="jacobian"' in rendered
-            assert 'data-lens-mode="logit"' in rendered
-            assert "Δprob" not in rendered
+        assert "data-readout-inspector" in counts
+        assert "miru-readout-compare" in counts
+        assert "Jacobian Lens" in counts and "Logit Lens" in counts
+        assert 'data-lens-mode="jacobian"' in heatmap
+        assert 'data-lens-mode="logit"' in heatmap
+        assert "Δprob" not in counts and "Δprob" not in heatmap
         assert pinned_plot is not None
         assert "Pinned token rank comparison" in str(pinned_plot)
 

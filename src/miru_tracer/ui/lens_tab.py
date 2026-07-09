@@ -56,6 +56,7 @@ from miru_tracer.ui.helpers import (
 )
 from miru_tracer.ui.lens_common import (
     INTERVENTIONS_TABLE_JS,
+    JACOBIAN_DEFAULT_LAYER_FRACTION,
     LENS_MODE_CHOICES,
     TOKEN_COLOR_MAP,
     add_pinned_token,
@@ -70,7 +71,7 @@ from miru_tracer.ui.lens_common import (
     intervention_visibility_warning,
     interventions_summary,
     interventions_table_html,
-    layer_selection,
+    lens_layer_selection,
     lens_mode_key,
     parse_layer_refs,
     pinned_token_choices,
@@ -83,10 +84,11 @@ from miru_tracer.ui.lens_common import (
     token_ref_to_id,
 )
 from miru_tracer.ui.lens_views import (
+    READOUT_INSPECTOR_JS,
     comparison_heatmap_html,
     comparison_html,
-    distribution_html,
     heatmap_html,
+    readout_inspector_html,
     readouts_table_html,
 )
 from miru_tracer.visualization.plots import (
@@ -291,7 +293,10 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     )
                     with gr.Row():
                         layer_start = gr.Number(
-                            minimum=0, value=0, precision=0, label="From layer"
+                            minimum=-1,
+                            value=-1,
+                            precision=0,
+                            label="From layer (-1 = recommended)",
                         )
                         layer_end = gr.Number(
                             value=-1, precision=0, label="To (-1 = last)"
@@ -302,9 +307,17 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     with gr.Accordion("Display options", open=False):
                         readouts_per_cell = gr.Number(
                             minimum=1,
-                            value=50,
+                            maximum=50,
+                            value=8,
                             precision=0,
-                            label="Readouts per layer+pos",
+                            label="Candidates per layer+position",
+                        )
+                        readout_rows = gr.Number(
+                            minimum=1,
+                            maximum=200,
+                            value=100,
+                            precision=0,
+                            label="All Layers rows",
                         )
                         skip_non_words = gr.Checkbox(
                             label="Hide non-word tokens", value=True
@@ -334,9 +347,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
                 tokens_display = gr.HighlightedText(
                     label="Sequence — click tokens to select positions "
-                    "(none = all). A position's readout predicts its NEXT "
-                    "token: select “is” to see where “Paris” "
-                    "emerges.",
+                    "(none = all). Readouts stay anchored to the selected token: "
+                    "J-lens shows verbalizable concepts at that position, while "
+                    "Logit/final output predicts the next token.",
                     value=[],
                     color_map=TOKEN_COLOR_MAP,
                     show_inline_category=False,
@@ -362,7 +375,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             with gr.Tab("Summary") as summary_tab:
                 readout_table = gr.HTML("")
             with gr.Tab("Readouts") as readouts_tab:
-                dist_plot = gr.HTML("")
+                dist_plot = gr.HTML("", js_on_load=READOUT_INSPECTOR_JS)
             with gr.Tab("Heatmap") as heatmap_tab:
                 heatmap_plot = gr.HTML("")
             with gr.Tab("Pinned ranks") as pinned_tab:
@@ -387,7 +400,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
         def compute_slice_bundle(
             analysis, positions, mode_choice, l_start, l_end, l_stride,
-            per_cell, skip_nw, pinned_ids,
+            per_cell, row_limit, skip_nw, pinned_ids,
         ):
             """One forward pass over the stored sequence -> (bundle, status)."""
             if analysis is None:
@@ -410,7 +423,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 )
 
             try:
-                layers = layer_selection(analysis["n_layers"], l_start, l_end, l_stride)
+                layers = lens_layer_selection(
+                    analysis["n_layers"], l_start, l_end, l_stride, mode
+                )
                 if mode in ("jacobian", "compare") and jlens is not None:
                     fitted = set(jlens.source_layers) | {analysis["n_layers"] - 1}
                     dropped = [layer for layer in layers if layer not in fitted]
@@ -439,11 +454,13 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     analysis["activations"] = activations
 
                 readout_limit = max(1, int(per_cell))
+                aggregate_limit = max(1, int(row_limit))
                 requested_modes = (
                     ("jacobian", "logit") if mode == "compare" else (mode,)
                 )
                 slices = {}
                 rows_by_mode = {}
+                all_rows_by_mode = {}
                 for readout_mode in requested_modes:
                     slice_ = compute_lens_slice(
                         model,
@@ -460,9 +477,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         activations=activations,
                     )
                     slices[readout_mode] = slice_
-                    rows_by_mode[readout_mode] = aggregate_readouts(
-                        slice_, limit=readout_limit
-                    )
+                    all_rows = aggregate_readouts(slice_, limit=None)
+                    all_rows_by_mode[readout_mode] = all_rows
+                    rows_by_mode[readout_mode] = all_rows[:aggregate_limit]
 
                 representative = slices[requested_modes[0]]
                 n_cells = len(representative.layers) * len(representative.positions)
@@ -476,18 +493,33 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         f"comparison: Jacobian and Logit lenses over "
                         f"{len(representative.layers)} layers × {where} = "
                         f"{n_cells} cells each; "
-                        f"{len(rows_by_mode['jacobian'])} / "
-                        f"{len(rows_by_mode['logit'])} distinct readout tokens."
+                        f"showing {len(rows_by_mode['jacobian'])} / "
+                        f"{len(rows_by_mode['logit'])} of "
+                        f"{len(all_rows_by_mode['jacobian'])} / "
+                        f"{len(all_rows_by_mode['logit'])} distinct readout tokens."
                     )
                 else:
                     status = (
                         f"{representative.mode} lens: "
                         f"{len(representative.layers)} layers × {where} "
                         f"= {n_cells} cells, "
-                        f"{len(rows_by_mode[mode])} distinct readout tokens."
+                        f"showing {len(rows_by_mode[mode])} of "
+                        f"{len(all_rows_by_mode[mode])} distinct readout tokens."
                     )
                 if dropped:
                     status += f" (skipped unfitted layers: {dropped})"
+                recommended_start = int(
+                    analysis["n_layers"] * JACOBIAN_DEFAULT_LAYER_FRACTION
+                )
+                explicit_start = int(l_start) if l_start is not None else -1
+                if (
+                    mode in ("jacobian", "compare")
+                    and 0 <= explicit_start < recommended_start
+                ):
+                    status += (
+                        f" Early J-lens layers below L{recommended_start} are often "
+                        "degenerate; they were included because the range was explicit."
+                    )
                 intervened: dict[int, str] = {}
                 if analysis["iset"] is not None:
                     ivs = analysis["iset"].interventions
@@ -502,6 +534,8 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     "mode": mode,
                     "slices": slices,
                     "rows": rows_by_mode,
+                    "all_rows": all_rows_by_mode,
+                    "recommended_start": recommended_start,
                     "intervened": intervened,
                 }, status
             except Exception as e:
@@ -533,23 +567,12 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         def show_readouts_view(bundle):
             if bundle is None:
                 return ""
-            if bundle["mode"] == "compare":
-                return comparison_html(
-                    distribution_html(
-                        bundle["rows"]["jacobian"],
-                        bundle["slices"]["jacobian"].layers,
-                        intervened=bundle.get("intervened"),
-                    ),
-                    distribution_html(
-                        bundle["rows"]["logit"],
-                        bundle["slices"]["logit"].layers,
-                        intervened=bundle.get("intervened"),
-                    ),
-                )
-            mode = bundle["mode"]
-            return distribution_html(
-                bundle["rows"][mode], bundle["slices"][mode].layers,
-                intervened=bundle.get("intervened"),
+            return readout_inspector_html(
+                mode=bundle["mode"],
+                slices=bundle["slices"],
+                rows=bundle["rows"],
+                all_rows=bundle["all_rows"],
+                recommended_start=bundle["recommended_start"],
             )
 
         def show_heatmap_view(bundle):
@@ -609,11 +632,11 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
         def update_readouts(
             analysis, positions, active_view, mode_choice, l_start, l_end,
-            l_stride, per_cell, skip_nw, pinned_ids,
+            l_stride, per_cell, row_limit, skip_nw, pinned_ids,
         ):
             bundle, status = compute_slice_bundle(
                 analysis, positions, mode_choice, l_start, l_end, l_stride,
-                per_cell, skip_nw, pinned_ids,
+                per_cell, row_limit, skip_nw, pinned_ids,
             )
             return (bundle, *render_active_view(bundle, active_view), status)
 
@@ -621,7 +644,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             mode, prompt, chat_msgs, raw_text, think_choice, think_text,
             n_tokens, strat, temp,
             interventions, active_view, mode_choice, l_start, l_end, l_stride,
-            per_cell, skip_nw, pinned_ids,
+            per_cell, row_limit, skip_nw, pinned_ids,
         ):
             def progress(status, text=""):
                 """Streaming yield: only status/text change while generating."""
@@ -705,7 +728,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 positions: list[int] = []  # all
                 bundle, status = compute_slice_bundle(
                     analysis, positions, mode_choice, l_start, l_end, l_stride,
-                    per_cell, skip_nw, pinned_ids,
+                    per_cell, row_limit, skip_nw, pinned_ids,
                 )
                 yield (
                     bundle,
@@ -934,7 +957,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
         lens_controls = [
             lens_mode, layer_start, layer_end, layer_stride,
-            readouts_per_cell, skip_non_words, pinned_tokens_state,
+            readouts_per_cell, readout_rows, skip_non_words, pinned_tokens_state,
         ]
 
         generate_button.click(

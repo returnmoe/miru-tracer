@@ -163,22 +163,39 @@ Load a model (Model Loader tab), then open the **Lens** tab:
    *Logit*, *Jacobian*, or *Compare (Jacobian / Logit)* (the two independent
    visualizations side by side) — and press **Update readouts** to re-slice without
    regenerating.
-3. **Readouts**: the aggregated table shows which tokens appear across the
-   selected cells and at which layers (sparkline column); below it are the
-   count-by-layer heatmap, the position × layer top-1 heatmap, and rank
-   trajectories for any **pinned tokens** (comma-separated text or ids).
+3. **Readouts**: All Layers ranks tokens by reciprocal-rank relevance and shows
+   occurrence strips across layers. With exactly one sequence token selected,
+   hover a layer to preview its exact candidates and probabilities, click to
+   lock it, and use **All Layers** to clear the lock. Compare shares one layer
+   selector across independent Jacobian and Logit columns.
 4. **Interactive Mode** has a *"Layer Lens"* accordion showing the per-layer
-   readout of the current next-token position while you step.
+   readout at the current token position while you step.
+
+**Candidates per layer+position** controls the top-N retained in each cell
+(default 8). **All Layers rows** independently caps the aggregate list (default
+100), so requesting eight candidates no longer limits the whole Readouts view
+to eight tokens.
 
 Lens labels preserve the tokenizer's exact vocabulary form. When a byte-level
 token decodes to useful non-ASCII text, the readable form is appended—for
 example, Qwen's `æ³ķåĽ½` appears as `æ³ķåĽ½ (法国)`. Ordinary ASCII labels stay
 compact, while incomplete UTF-8 fragments remain in their raw tokenizer form.
 
-Reading the picture: with a fitted J-lens, meaningful tokens typically appear
-from the early-middle layers onward and sharpen toward the top; the logit
-lens usually only becomes readable in the last few layers. Both agree at the
-final layer (which is exactly the model's real next-token distribution).
+Selecting token position `p` reads the activation **at that same token
+position**; Miru does not move the selection to `p+1`. A fitted Jacobian readout
+describes verbalizable concepts present there, including concepts that may
+influence outputs now or later. The Logit lens and final identity layer have a
+narrower interpretation: they are next-token predictions from that position.
+This distinction is why a selected token such as `planning` can have J-lens
+readouts such as `plans` or `plan`, while the final row still predicts the token
+that follows it.
+
+The recommended Jacobian/Compare range starts after the first 29% of layers,
+which are commonly degenerate, and always includes the final model-output layer
+as a reference. Enter a nonnegative **From layer** explicitly to override this;
+early included layers are marked with a warning. Meaningful J-lens tokens
+typically appear from the early-middle layers onward and sharpen toward the
+top, while the logit lens often becomes readable only in the last few layers.
 
 ## 5. Interventions (steer / swap / ablate)
 

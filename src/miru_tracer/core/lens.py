@@ -322,7 +322,7 @@ def compute_lens_slice(
                 wrapper.unembed(torch.cat(stack)).float(), dim=-1
             )  # [len(group) * P, vocab]
 
-            for group_idx, _layer in enumerate(group):
+            for group_idx, layer in enumerate(group):
                 scores = probs_all[group_idx * n_pos : (group_idx + 1) * n_pos]
                 probs_for_pin = scores
 
@@ -343,10 +343,21 @@ def compute_lens_slice(
 
                 layer_tokens, layer_probs, layer_texts = [], [], []
                 for p in range(n_pos):
-                    ids = top_ids[p].tolist()
-                    vals = top_scores[p].tolist()
+                    pairs = list(
+                        zip(top_ids[p].tolist(), top_scores[p].tolist(), strict=True)
+                    )
+                    if skip_non_words and layer == final_layer:
+                        # The final row is the model's true next-token output.
+                        # Preserve its actual top-1 even when it is punctuation
+                        # or a special token, then fill the remaining slots with
+                        # the requested word-like candidates.
+                        true_id = int(scores[p].argmax().item())
+                        true_value = float(scores[p, true_id].item())
+                        pairs = [(true_id, true_value)] + [
+                            pair for pair in pairs if pair[0] != true_id
+                        ]
                     row_t, row_p, row_s = [], [], []
-                    for token_id, value in zip(ids, vals, strict=True):
+                    for token_id, value in pairs:
                         text = decode_token(tokenizer, token_id)
                         row_t.append(token_id)
                         row_p.append(float(value))
@@ -413,16 +424,28 @@ class ReadoutRow:
     text: str
     count: int  # cells (layer, position) whose top-k contains the token
     count_by_layer: list[int]  # aligned with slice.layers
+    relevance_score: float = 0.0
+    relevance_by_layer: list[float] = field(default_factory=list)
+    best_rank_by_layer: list[int | None] = field(default_factory=list)
+    peak_prob_by_layer: list[float] = field(default_factory=list)
 
 
 def aggregate_readouts(slice_: LensSlice, *, limit: int | None = 50) -> list[ReadoutRow]:
-    """Neuronpedia-style aggregation: which tokens appear across the selected
-    cells, how often, and at which layers."""
+    """Aggregate tokens across selected cells using reciprocal-rank relevance.
+
+    Occurrence counts remain available for Neuronpedia-style layer strips, but
+    row order favors high-ranked tokens over persistent low-rank noise.
+    """
     counts: dict[int, ReadoutRow] = {}
     for i, _layer in enumerate(slice_.layers):
         for j in range(len(slice_.positions)):
-            for token_id, text in zip(
-                slice_.tokens[i][j], slice_.texts[i][j], strict=True
+            for rank, (token_id, text, probability) in enumerate(
+                zip(
+                    slice_.tokens[i][j],
+                    slice_.texts[i][j],
+                    slice_.probs[i][j],
+                    strict=True,
+                )
             ):
                 row = counts.get(token_id)
                 if row is None:
@@ -431,9 +454,30 @@ def aggregate_readouts(slice_: LensSlice, *, limit: int | None = 50) -> list[Rea
                         text=text,
                         count=0,
                         count_by_layer=[0] * len(slice_.layers),
+                        relevance_by_layer=[0.0] * len(slice_.layers),
+                        best_rank_by_layer=[None] * len(slice_.layers),
+                        peak_prob_by_layer=[0.0] * len(slice_.layers),
                     )
                     counts[token_id] = row
+                relevance = 1.0 / (rank + 1)
                 row.count += 1
                 row.count_by_layer[i] += 1
-    ranked = sorted(counts.values(), key=lambda r: (-r.count, r.token_id))
+                row.relevance_score += relevance
+                row.relevance_by_layer[i] += relevance
+                best = row.best_rank_by_layer[i]
+                row.best_rank_by_layer[i] = rank if best is None else min(best, rank)
+                row.peak_prob_by_layer[i] = max(
+                    row.peak_prob_by_layer[i], float(probability)
+                )
+    # Dict insertion order is the final tie-break: position, layer, then
+    # per-cell probability rank. Token-id order is arbitrary and often makes
+    # a small result cap look less relevant.
+    ranked = sorted(
+        counts.values(),
+        key=lambda r: (
+            -r.relevance_score,
+            -r.count,
+            -max(r.peak_prob_by_layer, default=0.0),
+        ),
+    )
     return ranked if limit is None else ranked[:limit]

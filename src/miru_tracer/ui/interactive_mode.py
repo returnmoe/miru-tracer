@@ -43,7 +43,7 @@ from miru_tracer.ui.helpers import (
 from miru_tracer.ui.lens_common import (
     LENS_MODE_CHOICES,
     get_active_interventions,
-    layer_selection,
+    lens_layer_selection,
     lens_mode_key,
 )
 from miru_tracer.visualization.plots import (
@@ -217,8 +217,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         with gr.Accordion("Layer Lens (current position)", open=False):
             gr.Markdown(
-                "Per-layer readout of the **next-token** position via the "
-                "Logit lens, Jacobian lens, or their side-by-side comparison. "
+                "Per-layer readout **at the current token position**. The Jacobian "
+                "lens surfaces verbalizable concepts present there; Logit/final "
+                "output predicts the next token. "
                 "Refresh runs one extra forward pass. "
                 "Interventions added in the Lens tab can be applied to this "
                 "session here. ⚠️ *Experimental — still being tested; "
@@ -240,7 +241,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     "Apply Lens-tab interventions to this session", size="sm"
                 )
             lens_status = gr.Textbox(label="Lens status", interactive=False, lines=1)
-            lens_plot = gr.Plot(label="Layer readouts at the next-token position")
+            lens_plot = gr.Plot(label="Layer readouts at the current token position")
 
         gr.Markdown("### Navigation & Export")
         with gr.Row():
@@ -289,7 +290,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     )
                 try:
                     n_layers = tracer.model.config.get_text_config().num_hidden_layers
-                    layers = layer_selection(n_layers, 0, -1, stride)
+                    layers = lens_layer_selection(n_layers, -1, -1, stride, mode)
                     if mode in ("jacobian", "compare") and jlens is not None:
                         fitted = set(jlens.source_layers) | {n_layers - 1}
                         layers = [layer for layer in layers if layer in fitted]

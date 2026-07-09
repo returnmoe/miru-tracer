@@ -84,6 +84,80 @@ _COMPARISON_STYLE = """
 </style>
 """.strip()
 
+READOUT_INSPECTOR_JS = """
+const renderLayer = (root, layer) => {
+  const wanted = layer == null ? 'all' : String(layer);
+  root.querySelectorAll('[data-readout-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.readoutPanel !== wanted;
+  });
+  root.querySelectorAll('[data-readout-layer]').forEach((slot) => {
+    slot.classList.toggle('miru-readout-layer-active', String(slot.dataset.readoutLayer) === wanted);
+  });
+  const label = root.querySelector('[data-readout-active-label]');
+  if (label) label.textContent = layer == null ? 'All Layers' : `Layer ${layer}`;
+};
+element.addEventListener('pointerover', (event) => {
+  const slot = event.target.closest?.('[data-readout-layer]');
+  const root = slot?.closest?.('[data-readout-inspector]');
+  if (!slot || !root) return;
+  renderLayer(root, slot.dataset.readoutLayer);
+});
+element.addEventListener('pointerout', (event) => {
+  const slot = event.target.closest?.('[data-readout-layer]');
+  const root = slot?.closest?.('[data-readout-inspector]');
+  if (!slot || !root) return;
+  const next = event.relatedTarget?.closest?.('[data-readout-layer]');
+  if (next?.closest?.('[data-readout-inspector]') === root) return;
+  renderLayer(root, root.dataset.lockedLayer || null);
+});
+element.addEventListener('click', (event) => {
+  const all = event.target.closest?.('[data-readout-all]');
+  const slot = event.target.closest?.('[data-readout-layer]');
+  const root = (all || slot)?.closest?.('[data-readout-inspector]');
+  if (!root) return;
+  if (all) {
+    root.dataset.lockedLayer = '';
+    renderLayer(root, null);
+  } else if (slot) {
+    root.dataset.lockedLayer = slot.dataset.readoutLayer;
+    renderLayer(root, slot.dataset.readoutLayer);
+  }
+});
+"""
+
+_INSPECTOR_STYLE = """
+<style>
+.miru-readout-inspector { margin-top: 6px; }
+.miru-readout-context { margin: 2px 0 8px; font-size: .9em; }
+.miru-readout-note { opacity: .78; font-size: .82em; }
+.miru-readout-selector { display:flex; gap:12px; align-items:stretch; margin:8px 0 12px; }
+.miru-readout-all { width:68px; min-height:46px; border:1px solid rgba(100,116,139,.55); border-radius:7px; background:rgba(148,163,184,.15); font-size:.72em; font-weight:650; text-transform:uppercase; }
+.miru-readout-layer-track { display:flex; flex:1; min-width:0; height:46px; border:1px solid rgba(148,163,184,.35); border-radius:7px; overflow:hidden; }
+.miru-readout-layer-slot { flex:1; min-width:2px; border:0; border-left:1px solid rgba(100,116,139,.09); background:rgba(148,163,184,.14); padding:0; cursor:pointer; }
+.miru-readout-layer-slot:hover, .miru-readout-layer-active { background:rgba(71,85,105,.35) !important; box-shadow:inset 0 0 0 1px rgba(51,65,85,.65); }
+.miru-readout-layer-slot.miru-readout-early { background:rgba(245,158,11,.10); }
+.miru-readout-layer-slot.miru-readout-output { border-left:2px solid rgba(79,70,229,.75); }
+.miru-readout-layer-labels { display:flex; justify-content:space-between; font-size:.7em; opacity:.65; margin-top:2px; }
+.miru-readout-columns { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; }
+.miru-readout-columns.miru-readout-compare { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.miru-readout-column { min-width:0; }
+.miru-readout-column h3 { margin:3px 0 7px; font-size:1em; }
+.miru-readout-panel[hidden] { display:none; }
+.miru-readout-panel-head { display:grid; grid-template-columns:minmax(9rem,1fr) 5rem minmax(12rem,1.35fr); gap:8px; padding:4px 8px; font-size:.72em; text-transform:uppercase; opacity:.68; border-bottom:1px solid rgba(127,127,127,.18); }
+.miru-readout-row { display:grid; grid-template-columns:minmax(9rem,1fr) 5rem minmax(12rem,1.35fr); gap:8px; align-items:center; padding:5px 8px; border-bottom:1px solid rgba(127,127,127,.12); font-size:.88em; }
+.miru-readout-token { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--font-mono,monospace); }
+.miru-readout-number { text-align:right; font-variant-numeric:tabular-nums; }
+.miru-readout-mini { display:flex; height:20px; overflow:hidden; border:1px solid rgba(148,163,184,.28); border-radius:3px; background:rgba(241,245,249,.25); }
+.miru-readout-mini span { flex:1; min-width:1px; cursor:pointer; }
+.miru-readout-warning { margin:5px 8px; padding:5px 8px; border:1px solid rgba(245,158,11,.35); border-radius:5px; background:rgba(245,158,11,.08); font-size:.8em; }
+.miru-readout-empty { padding:14px 8px; opacity:.7; }
+@media (max-width:900px) {
+  .miru-readout-columns.miru-readout-compare { grid-template-columns:minmax(0,1fr); }
+  .miru-readout-panel-head, .miru-readout-row { grid-template-columns:minmax(8rem,1fr) 4.2rem minmax(9rem,1fr); }
+}
+</style>
+""".strip()
+
 
 def _color(v: float) -> tuple[int, int, int]:
     """Interpolate the YlOrRd scale at v in [0, 1]."""
@@ -194,6 +268,13 @@ def _top1_values(slice_: LensSlice) -> list[float]:
     ]
 
 
+def _position_header(slice_: LensSlice, index: int) -> tuple[str, str]:
+    position = slice_.positions[index]
+    token = slice_.position_texts[index]
+    relation = f"Readout at token {token}, position {position}"
+    return f'{position}<br>{_tok(token)}', relation
+
+
 def heatmap_html(
     slice_: LensSlice,
     intervened: dict[int, str] | None = None,
@@ -208,11 +289,14 @@ def heatmap_html(
     if not slice_.layers or not slice_.positions:
         return ""
 
-    header = "".join(
-        f"<th {_COL_TH} title=\"{p}: {_tok(text)}\">"
-        f"{_fixed(f'{p}<br>{_tok(text)}', _HEAT_COL_W)}</th>"
-        for p, text in zip(slice_.positions, slice_.position_texts, strict=True)
-    )
+    header_cells = []
+    for index in range(len(slice_.positions)):
+        label, relation = _position_header(slice_, index)
+        header_cells.append(
+            f'<th {_COL_TH} title="{html.escape(relation, quote=True)}">'
+            f"{_fixed(label, _HEAT_COL_W)}</th>"
+        )
+    header = "".join(header_cells)
 
     # Contrast-normalize like Plotly's autoscaled colorbar. Comparison mode
     # supplies one shared range so colors have the same meaning in both panes.
@@ -239,8 +323,10 @@ def heatmap_html(
         body.append('<tr style="border:0;">' + "".join(cells) + "</tr>")
 
     caption = (
-        f"<b>Lens readouts — {slice_.mode}</b> · each cell predicts the NEXT "
-        "token after the column's input token · color = top-1 probability · "
+        f"<b>Lens readouts — {slice_.mode}</b> · each column is anchored to its "
+        "displayed token; J-lens surfaces verbalizable concepts at that position, "
+        "while Logit/final output predicts the next token · "
+        "color = top-1 probability · "
         "hover a cell for its top-k · scroll sideways for more positions"
     )
     if intervened and any(layer in intervened for layer in slice_.layers):
@@ -323,6 +409,214 @@ def readouts_table_html(
     return (
         f"{caption}{_SCROLL_DIV}<table style=\"{_LIST_STYLE}\">"
         f"<tr>{header}</tr>{body}</table></div>"
+    )
+
+
+def _layer_strip_html(
+    row: ReadoutRow | None,
+    layers: list[int],
+    *,
+    interactive: bool,
+) -> str:
+    counts = row.count_by_layer if row is not None else []
+    peak = max(counts, default=0)
+    cells = []
+    for index, layer in enumerate(layers):
+        count = counts[index] if index < len(counts) else 0
+        best = (
+            row.best_rank_by_layer[index]
+            if row is not None and index < len(row.best_rank_by_layer)
+            else None
+        )
+        probability = (
+            row.peak_prob_by_layer[index]
+            if row is not None and index < len(row.peak_prob_by_layer)
+            else 0.0
+        )
+        alpha = 0.0 if count == 0 else 0.12 + 0.78 * count / max(peak, 1)
+        details = [f"L{layer}: {count} occurrence{'s' if count != 1 else ''}"]
+        if best is not None:
+            details.append(f"best displayed rank {best + 1}")
+            details.append(f"peak probability {probability:.3%}")
+        data = f' data-readout-layer="{layer}"' if interactive else ""
+        cells.append(
+            f'<span{data} style="background:rgba({_ACCENT},{alpha:.3f});" '
+            f'title="{html.escape(" · ".join(details), quote=True)}"></span>'
+        )
+    return f'<div class="miru-readout-mini">{"".join(cells)}</div>'
+
+
+def _aggregate_inspector_rows(
+    rows: list[ReadoutRow], layers: list[int], *, interactive: bool
+) -> str:
+    if not rows:
+        return '<div class="miru-readout-empty">No readout tokens in this scope.</div>'
+    return "".join(
+        '<div class="miru-readout-row">'
+        f'<div class="miru-readout-token" title="{html.escape(row.text, quote=True)}">'
+        f"{_tok(row.text)}</div>"
+        f'<div class="miru-readout-number" title="relevance score {row.relevance_score:.3f}">'
+        f"{row.count}</div>"
+        f"{_layer_strip_html(row, layers, interactive=interactive)}"
+        "</div>"
+        for row in rows
+    )
+
+
+def _exact_layer_rows(
+    slice_: LensSlice,
+    layer_index: int,
+    stats_by_id: dict[int, ReadoutRow],
+    *,
+    interactive: bool,
+) -> str:
+    if len(slice_.positions) != 1:
+        return ""
+    tokens = slice_.tokens[layer_index][0]
+    texts = slice_.texts[layer_index][0]
+    probabilities = slice_.probs[layer_index][0]
+    return "".join(
+        '<div class="miru-readout-row">'
+        f'<div class="miru-readout-token" title="rank {rank + 1} · '
+        f'{html.escape(text, quote=True)}">{_tok(text)}</div>'
+        f'<div class="miru-readout-number">{probability:.2%}</div>'
+        f"{_layer_strip_html(stats_by_id.get(token_id), slice_.layers, interactive=interactive)}"
+        "</div>"
+        for rank, (token_id, text, probability) in enumerate(
+            zip(tokens, texts, probabilities, strict=True)
+        )
+    )
+
+
+def _inspector_column_html(
+    slice_: LensSlice,
+    rows: list[ReadoutRow],
+    all_rows: list[ReadoutRow],
+    *,
+    recommended_start: int,
+    interactive: bool,
+) -> str:
+    stats_by_id = {row.token_id: row for row in all_rows}
+    all_panel = (
+        '<div class="miru-readout-panel" data-readout-panel="all">'
+        '<div class="miru-readout-panel-head"><span>Readout token</span>'
+        '<span style="text-align:right">Count</span><span>Count by layer</span></div>'
+        f"{_aggregate_inspector_rows(rows, slice_.layers, interactive=interactive)}"
+        "</div>"
+    )
+    layer_panels = []
+    if interactive:
+        final = slice_.layers[-1]
+        for index, layer in enumerate(slice_.layers):
+            if layer == final:
+                label = f"Layer {layer} · final model output (next token)"
+            elif slice_.mode == "logit":
+                label = f"Layer {layer} · Logit next-token readout"
+            else:
+                label = f"Layer {layer} · J-lens concepts at selected token"
+            warning = ""
+            if slice_.mode == "jacobian" and layer < recommended_start:
+                warning = (
+                    '<div class="miru-readout-warning">This early fitted layer is '
+                    "often degenerate; interpret its J-lens tokens cautiously.</div>"
+                )
+            layer_panels.append(
+                f'<div class="miru-readout-panel" data-readout-panel="{layer}" hidden>'
+                f'<div class="miru-readout-panel-head"><span>{label}</span>'
+                '<span style="text-align:right">Probability</span>'
+                '<span>Count by layer</span></div>'
+                f"{warning}{_exact_layer_rows(slice_, index, stats_by_id, interactive=True)}"
+                "</div>"
+            )
+    return (
+        '<section class="miru-readout-column">'
+        f"<h3>{slice_.mode.title()} Lens</h3>{all_panel}{''.join(layer_panels)}</section>"
+    )
+
+
+def readout_inspector_html(
+    *,
+    mode: str,
+    slices: dict[str, LensSlice],
+    rows: dict[str, list[ReadoutRow]],
+    all_rows: dict[str, list[ReadoutRow]],
+    recommended_start: int,
+) -> str:
+    """Neuronpedia-style aggregate and exact-layer readout inspector."""
+    modes = ["jacobian", "logit"] if mode == "compare" else [mode]
+    if not modes or any(name not in slices for name in modes):
+        return ""
+    representative = slices[modes[0]]
+    single_position = len(representative.positions) == 1
+
+    if single_position:
+        position = representative.positions[0]
+        token = representative.position_texts[0]
+        context = (
+            '<p class="miru-readout-context"><b>Selected token</b> '
+            f'<code>{_tok(token)}</code> · position {position}</p>'
+        )
+    else:
+        context = (
+            f'<p class="miru-readout-context"><b>{len(representative.positions)} positions</b> '
+            "aggregated. Select exactly one sequence token to inspect exact per-layer "
+            "probabilities.</p>"
+        )
+
+    selector = ""
+    if single_position and representative.layers:
+        final = representative.layers[-1]
+        slots = []
+        for layer in representative.layers:
+            classes = ["miru-readout-layer-slot"]
+            if mode in ("jacobian", "compare") and layer < recommended_start:
+                classes.append("miru-readout-early")
+            if layer == final:
+                classes.append("miru-readout-output")
+            title = f"Layer {layer}"
+            if layer == final:
+                title += " · final model output for the next token"
+            elif layer < recommended_start and mode in ("jacobian", "compare"):
+                title += " · early J-lens layer; often degenerate"
+            slots.append(
+                f'<button type="button" class="{" ".join(classes)}" '
+                f'data-readout-layer="{layer}" title="{title}" '
+                f'aria-label="Preview layer {layer}"></button>'
+            )
+        selector = (
+            '<div class="miru-readout-selector">'
+            '<button type="button" class="miru-readout-all" data-readout-all>'
+            'All<br>Layers</button><div style="flex:1;min-width:0">'
+            f'<div class="miru-readout-layer-track">{"".join(slots)}</div>'
+            '<div class="miru-readout-layer-labels">'
+            f"<span>Layer {representative.layers[0]}</span>"
+            '<span data-readout-active-label>All Layers</span>'
+            f"<span>Layer {representative.layers[-1]} · output</span>"
+            "</div></div></div>"
+        )
+
+    columns = "".join(
+        _inspector_column_html(
+            slices[name],
+            rows[name],
+            all_rows[name],
+            recommended_start=recommended_start,
+            interactive=single_position,
+        )
+        for name in modes
+    )
+    compare_class = " miru-readout-compare" if mode == "compare" else ""
+    return (
+        f"{_INSPECTOR_STYLE}"
+        '<div class="miru-readout-inspector" data-readout-inspector>'
+        f"{context}"
+        '<p class="miru-readout-note">The inspector reads the activation at the '
+        "selected token position; it does not shift the selection forward. J-lens "
+        "rows describe verbalizable concepts present there (including concepts that "
+        "may affect future output). Logit rows and the final model-output row are "
+        "next-token predictions.</p>"
+        f'{selector}<div class="miru-readout-columns{compare_class}">{columns}</div>'
+        "</div>"
     )
 
 

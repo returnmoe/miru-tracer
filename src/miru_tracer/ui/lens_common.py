@@ -14,6 +14,7 @@ from miru_tracer.core.tokenizer_utils import (
 from miru_tracer.ui.helpers import static_table_html
 
 LENS_MODE_CHOICES = ("Logit", "Jacobian", "Compare (Jacobian / Logit)")
+JACOBIAN_DEFAULT_LAYER_FRACTION = 0.29
 
 _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
 
@@ -406,6 +407,36 @@ def layer_selection(n_layers: int, start, end, stride) -> list[int]:
     layers = list(range(start, end + 1, stride))
     if layers[-1] != end:
         layers.append(end)
+    return layers
+
+
+def lens_layer_selection(
+    n_layers: int,
+    start,
+    end,
+    stride,
+    mode: str,
+    *,
+    include_final: bool = True,
+) -> list[int]:
+    """Mode-aware layer selection for lens views.
+
+    ``start=-1`` selects the recommended default: the first 29% of layers are
+    skipped for Jacobian/Compare because their fitted readouts are commonly
+    degenerate, while Logit starts at L0. An explicit nonnegative start always
+    wins. The final identity/output layer remains available as a reference.
+    """
+    resolved_start = int(start) if start is not None else -1
+    if resolved_start < 0:
+        resolved_start = (
+            int(n_layers * JACOBIAN_DEFAULT_LAYER_FRACTION)
+            if mode in ("jacobian", "compare")
+            else 0
+        )
+    layers = layer_selection(n_layers, resolved_start, end, stride)
+    final = n_layers - 1
+    if include_final and final not in layers:
+        layers.append(final)
     return layers
 
 

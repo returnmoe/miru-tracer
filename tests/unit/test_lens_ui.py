@@ -19,6 +19,7 @@ from miru_tracer.ui.lens_common import (
     interventions_summary,
     interventions_table_html,
     layer_selection,
+    lens_layer_selection,
     lens_mode_key,
     parse_layer_refs,
     parse_token_refs,
@@ -33,8 +34,10 @@ from miru_tracer.ui.lens_common import (
     token_ref_to_id,
 )
 from miru_tracer.ui.lens_views import (
+    READOUT_INSPECTOR_JS,
     distribution_html,
     heatmap_html,
+    readout_inspector_html,
     readouts_table_html,
 )
 from miru_tracer.visualization.plots import (
@@ -166,6 +169,21 @@ class TestLayerSelection:
 
     def test_none_inputs(self):
         assert layer_selection(3, None, None, None) == [0, 1, 2]
+
+    def test_jacobian_auto_start_skips_first_29_percent(self):
+        layers = lens_layer_selection(64, -1, -1, 1, "jacobian")
+        assert layers[0] == 18
+        assert layers[-1] == 63
+
+    def test_compare_auto_start_and_explicit_zero(self):
+        assert lens_layer_selection(36, -1, -1, 1, "compare")[0] == 10
+        assert lens_layer_selection(36, 0, -1, 1, "compare")[0] == 0
+
+    def test_logit_auto_starts_at_zero(self):
+        assert lens_layer_selection(8, -1, -1, 2, "logit") == [0, 2, 4, 6, 7]
+
+    def test_final_output_is_appended_outside_requested_range(self):
+        assert lens_layer_selection(16, 5, 9, 2, "jacobian") == [5, 7, 9, 15]
 
 
 class TestSparkline:
@@ -511,6 +529,87 @@ class TestLensViews:
         assert ">a (3)<" in out
         assert 'title="L0: 2 cells"' in out
         assert distribution_html([], [0]) == ""
+
+
+class TestReadoutInspector:
+    @staticmethod
+    def _slice(mode="jacobian"):
+        return LensSlice(
+            mode=mode,
+            layers=[0, 2],
+            positions=[4],
+            position_texts=["planning"],
+            tokens=[[[7, 8]], [[9, 7]]],
+            probs=[[[0.2, 0.1]], [[0.7, 0.05]]],
+            texts=[[['plans', 'plan']], [['to', 'plans']]],
+        )
+
+    @staticmethod
+    def _rows():
+        return [
+            ReadoutRow(
+                token_id=7,
+                text="plans",
+                count=2,
+                count_by_layer=[1, 1],
+                relevance_score=1.5,
+                relevance_by_layer=[1.0, 0.5],
+                best_rank_by_layer=[0, 1],
+                peak_prob_by_layer=[0.2, 0.05],
+            )
+        ]
+
+    def test_single_position_has_layer_preview_and_exact_probabilities(self):
+        slice_ = self._slice()
+        rows = self._rows()
+        out = readout_inspector_html(
+            mode="jacobian",
+            slices={"jacobian": slice_},
+            rows={"jacobian": rows},
+            all_rows={"jacobian": rows},
+            recommended_start=1,
+        )
+        assert "Selected token" in out and "planning" in out and "position 4" in out
+        assert "All<br>Layers" in out
+        assert 'data-readout-layer="0"' in out
+        assert 'data-readout-panel="0"' in out
+        assert "20.00%" in out and "final model output (next token)" in out
+        assert "often degenerate" in out
+        assert "best displayed rank 1" in out
+
+    def test_compare_uses_one_shared_selector_and_two_columns(self):
+        jacobian = self._slice("jacobian")
+        logit = self._slice("logit")
+        rows = self._rows()
+        out = readout_inspector_html(
+            mode="compare",
+            slices={"jacobian": jacobian, "logit": logit},
+            rows={"jacobian": rows, "logit": rows},
+            all_rows={"jacobian": rows, "logit": rows},
+            recommended_start=1,
+        )
+        assert out.count('<div class="miru-readout-selector">') == 1
+        assert "Jacobian Lens" in out and "Logit Lens" in out
+        assert "miru-readout-compare" in out
+
+    def test_multiple_positions_stays_aggregate(self):
+        rows = self._rows()
+        out = readout_inspector_html(
+            mode="logit",
+            slices={"logit": SLICE},
+            rows={"logit": rows},
+            all_rows={"logit": rows},
+            recommended_start=0,
+        )
+        assert "2 positions" in out
+        assert "Select exactly one" in out
+        assert '<div class="miru-readout-selector">' not in out
+
+    def test_js_supports_hover_preview_click_lock_and_all_layers(self):
+        assert "pointerover" in READOUT_INSPECTOR_JS
+        assert "pointerout" in READOUT_INSPECTOR_JS
+        assert "lockedLayer" in READOUT_INSPECTOR_JS
+        assert "data-readout-all" in READOUT_INSPECTOR_JS
 
     def test_distribution_marks_intervened_layer(self):
         rows = [ReadoutRow(token_id=1, text="a", count=3, count_by_layer=[2, 1])]

@@ -116,7 +116,7 @@ which layers), pin tokens to track their rank across layers, and add
 **steer / swap / ablate** interventions on readout directions. Multiple
 interventions can be active at once; they apply during generation and are
 also reflected in the readouts. Interactive Mode has a "Layer Lens" panel
-showing the per-layer readout of the current next-token position and can
+showing the per-layer readout at the current token position and can
 apply the Lens tab's interventions to its session.
 
 Architecture support: the Llama/Qwen/Mistral/Gemma family, **Gemma 4**

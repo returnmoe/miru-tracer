@@ -218,6 +218,41 @@ class TestComputeLensSlice:
         assert set(slice_.tokens[0][0]) == set(words.tolist())
         assert len(slice_.tokens[0][0]) == 5
 
+    def test_final_output_preserves_true_non_word_top1(
+        self, tiny_model, tiny_tokenizer, input_ids, monkeypatch
+    ):
+        wrapper = wrap_model(tiny_model, tiny_tokenizer)
+        mask = word_token_mask(tiny_tokenizer, tiny_model.config.vocab_size)
+        non_word = int((~mask).nonzero(as_tuple=True)[0][0])
+        words = mask.nonzero(as_tuple=True)[0][:5]
+
+        def unembed_with_punctuation_top1(residual):
+            logits = torch.full(
+                (residual.shape[0], tiny_model.config.vocab_size),
+                -100.0,
+                device=residual.device,
+            )
+            logits[:, non_word] = 20.0
+            logits[:, words] = torch.arange(
+                5, 0, -1, dtype=logits.dtype, device=logits.device
+            )
+            return logits
+
+        monkeypatch.setattr(wrapper, "unembed", unembed_with_punctuation_top1)
+        final = tiny_model.config.num_hidden_layers - 1
+        slice_ = compute_lens_slice(
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=[final],
+            positions=[0],
+            mode="logit",
+            top_k=5,
+            skip_non_words=True,
+        )
+        assert slice_.tokens[0][0][0] == non_word
+        assert len(slice_.tokens[0][0]) == 5
+
 
 class TestAggregate:
     def test_counts_hand_checkable(self):
@@ -234,8 +269,38 @@ class TestAggregate:
         by_id = {r.token_id: r for r in rows}
         assert by_id[7].count == 3
         assert by_id[7].count_by_layer == [2, 1]
+        assert by_id[7].relevance_score == pytest.approx(3.0)
+        assert by_id[7].best_rank_by_layer == [0, 0]
+        assert by_id[7].peak_prob_by_layer == [0.5, 0.5]
         assert by_id[8].count == 2
-        assert rows[0].token_id == 7  # sorted by count desc
+        assert rows[0].token_id == 7  # sorted by reciprocal-rank relevance
+
+    def test_rank_weighted_relevance_beats_persistent_low_rank_noise(self):
+        tokens = []
+        texts = []
+        probs = []
+        for position in range(4):
+            row = [7] + list(range(20 + position * 10, 26 + position * 10)) + [8]
+            if position >= 2:
+                row[0] = 100 + position
+            tokens.append(row)
+            texts.append([str(token_id) for token_id in row])
+            probs.append([0.5, 0.1, 0.09, 0.08, 0.07, 0.06, 0.05, 0.01])
+        slice_ = LensSlice(
+            mode="logit",
+            layers=[0],
+            positions=[0, 1, 2, 3],
+            position_texts=["a", "b", "c", "d"],
+            tokens=[tokens],
+            probs=[probs],
+            texts=[texts],
+        )
+        rows = aggregate_readouts(slice_, limit=None)
+        by_id = {row.token_id: row for row in rows}
+        assert by_id[8].count == 4
+        assert by_id[7].count == 2
+        assert by_id[7].relevance_score > by_id[8].relevance_score
+        assert rows.index(by_id[7]) < rows.index(by_id[8])
 
     def test_limit(self):
         slice_ = LensSlice(
