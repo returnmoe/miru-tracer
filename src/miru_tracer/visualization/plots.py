@@ -6,6 +6,7 @@ All functions take a plain ``list[TokenStep]`` (from a live tracer's
 
 from __future__ import annotations
 
+import html
 from typing import Any
 
 import numpy as np
@@ -15,14 +16,20 @@ from plotly.subplots import make_subplots
 
 from miru_tracer.core.lens import LensSlice, ReadoutRow
 from miru_tracer.core.schema import TokenStep
-from miru_tracer.core.tokenizer_utils import visible_whitespace
+from miru_tracer.core.tokenizer_utils import format_token_label, visible_whitespace
 
 _TRUNCATE_AT = 15
 
 
 def _display_text(text: str) -> str:
     text = visible_whitespace(text)
-    return text[:12] + "..." if len(text) > _TRUNCATE_AT else text
+    compact = text[:12] + "..." if len(text) > _TRUNCATE_AT else text
+    return html.escape(compact)
+
+
+def _hover_text(text: str) -> str:
+    """Untruncated, HTML-safe token text for Plotly hover labels."""
+    return html.escape(visible_whitespace(text))
 
 
 def _step_entropy(step: TokenStep) -> tuple[float, bool]:
@@ -296,7 +303,7 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
             text_row.append(_display_text(texts[0]) if texts else "")
             hover_row.append(
                 "<br>".join(
-                    f"{rank + 1}. {_display_text(t)} ({p:.3f})"
+                    f"{rank + 1}. {_hover_text(t)} ({p:.3f})"
                     for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
                 )
                 or "(empty)"
@@ -366,7 +373,7 @@ def _lens_heatmap_data(slice_: LensSlice) -> tuple[list, list, list]:
             text_row.append(_display_text(texts[0]) if texts else "")
             hover_row.append(
                 "<br>".join(
-                    f"{rank + 1}. {_display_text(t)} ({p:.3f})"
+                    f"{rank + 1}. {_hover_text(t)} ({p:.3f})"
                     for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
                 )
                 or "(empty)"
@@ -470,9 +477,13 @@ def plot_readout_distribution(
             z=[row.count_by_layer for row in rows],
             x=[f"L{layer}" for layer in layers],
             y=[f"{_display_text(row.text)} ({row.count})" for row in rows],
+            customdata=[
+                [f"{_hover_text(row.text)} ({row.count})"] * len(layers)
+                for row in rows
+            ],
             colorscale="Greys",
             colorbar=dict(title="Count"),
-            hovertemplate="%{y}<br>%{x}: %{z} cells<extra></extra>",
+            hovertemplate="%{customdata}<br>%{x}: %{z} cells<extra></extra>",
         )
     )
     fig.update_layout(
@@ -497,15 +508,15 @@ def plot_pinned_token_ranks(slice_: LensSlice, tokenizer=None) -> go.Figure | No
         medians = [float(np.median(row)) for row in grid]  # per layer
         label = str(token_id)
         if tokenizer is not None:
-            label = tokenizer.convert_ids_to_tokens([token_id])[0]
+            label = format_token_label(tokenizer, token_id)
         fig.add_trace(
             go.Scatter(
                 x=[f"L{layer}" for layer in slice_.layers],
                 y=[m + 1 for m in medians],  # 1-indexed for log axis
                 mode="lines+markers",
-                name=_display_text(label),
+                name=_hover_text(label),
                 hovertemplate="%{x}<br>median rank %{y:.0f}<extra>"
-                + _display_text(label)
+                + _hover_text(label)
                 + "</extra>",
             )
         )
@@ -525,8 +536,8 @@ def plot_pinned_token_ranks(slice_: LensSlice, tokenizer=None) -> go.Figure | No
 def _pinned_label(token_id: int, tokenizer=None) -> str:
     label = str(token_id)
     if tokenizer is not None:
-        label = tokenizer.convert_ids_to_tokens([token_id])[0]
-    return _display_text(label)
+        label = format_token_label(tokenizer, token_id)
+    return _hover_text(label)
 
 
 def plot_pinned_token_ranks_comparison(

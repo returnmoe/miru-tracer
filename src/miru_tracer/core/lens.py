@@ -33,7 +33,7 @@ from miru_tracer.core._jlens.hooks import ActivationRecorder
 from miru_tracer.core.interventions import InterventionSet, apply_interventions
 from miru_tracer.core.lens_io import load_lens
 from miru_tracer.core.logging_config import get_logger
-from miru_tracer.core.tokenizer_utils import safe_decode_token
+from miru_tracer.core.tokenizer_utils import format_token_label
 
 logger = get_logger(__name__)
 
@@ -388,7 +388,7 @@ _decode_cache: tuple[int, dict[int, str]] | None = None
 
 
 def decode_token(tokenizer, token_id: int) -> str:
-    """Best-effort display text for a token (memoized).
+    """Best-effort multilingual display label for a token (memoized).
 
     Falls back to ``<id>`` for ids outside the tokenizer vocabulary — models
     commonly pad the embedding matrix past the tokenizer size (Qwen3 included),
@@ -400,10 +400,7 @@ def decode_token(tokenizer, token_id: int) -> str:
     cache = _decode_cache[1]
     text = cache.get(token_id)
     if text is None:
-        decoded, raw, _ = safe_decode_token(tokenizer, token_id)
-        text = raw if raw else decoded
-        if text is None:
-            text = f"<{token_id}>"
+        text = format_token_label(tokenizer, token_id)
         cache[token_id] = text
     return text
 

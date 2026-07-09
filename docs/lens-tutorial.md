@@ -170,6 +170,11 @@ Load a model (Model Loader tab), then open the **Lens** tab:
 4. **Interactive Mode** has a *"Layer Lens"* accordion showing the per-layer
    readout of the current next-token position while you step.
 
+Lens labels preserve the tokenizer's exact vocabulary form. When a byte-level
+token decodes to useful non-ASCII text, the readable form is appended—for
+example, Qwen's `æ³ķåĽ½` appears as `æ³ķåĽ½ (法国)`. Ordinary ASCII labels stay
+compact, while incomplete UTF-8 fragments remain in their raw tokenizer form.
+
 Reading the picture: with a fitted J-lens, meaningful tokens typically appear
 from the early-middle layers onward and sharpen toward the top; the logit
 lens usually only becomes readable in the last few layers. Both agree at the

@@ -325,8 +325,14 @@ class TestIsWordToken:
 
     def test_qwen_byte_tokens_are_classified_by_decoded_text(self):
         class QwenLikeTokenizer:
-            raw = ["âĢĶ\"", "Ġlove", "Âł", "can\'t"]
-            decoded = ["—\"", " love", "\N{NO-BREAK SPACE}", "can't"]
+            raw = ["âĢĶ\"", "Ġlove", "Âł", "can\'t", "æ³ķåĽ½"]
+            decoded = [
+                "—\"",
+                " love",
+                "\N{NO-BREAK SPACE}",
+                "can't",
+                "法国",
+            ]
 
             def decode(self, ids, **_kwargs):
                 return self.decoded[ids[0]]
@@ -335,10 +341,11 @@ class TestIsWordToken:
                 return [self.raw[token_id] for token_id in ids]
 
         tokenizer = QwenLikeTokenizer()
-        assert word_token_mask(tokenizer, 4).tolist() == [False, True, False, True]
-        # Filtering and display are deliberately separate: tables retain the
-        # exact tokenizer form even though classification used decoded text.
+        assert word_token_mask(tokenizer, 5).tolist() == [False, True, False, True, True]
+        # Filtering and display are deliberately separate: ordinary ASCII
+        # stays raw while multilingual text gets a readable annotation.
         assert decode_token(tokenizer, 1) == "Ġlove"
+        assert decode_token(tokenizer, 4) == "æ³ķåĽ½ (法国)"
 
 
 class TestDecodeToken:

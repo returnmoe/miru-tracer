@@ -28,6 +28,7 @@ import torch
 
 from miru_tracer.core._jlens import JacobianLens
 from miru_tracer.core.logging_config import get_logger
+from miru_tracer.core.tokenizer_utils import format_token_label
 
 logger = get_logger(__name__)
 
@@ -71,7 +72,7 @@ class Intervention:
         def name(token_id):
             if tokenizer is None:
                 return str(token_id)
-            return repr(tokenizer.convert_ids_to_tokens([token_id])[0])
+            return repr(format_token_label(tokenizer, token_id))
 
         if self.kind == "steer":
             return f"steer {name(self.token_id)} @L{self.layer} (α={self.strength:+g})"

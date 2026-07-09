@@ -106,6 +106,32 @@ def safe_decode_token(
         return None, token_str, None
 
 
+def format_token_label(tokenizer, token_id: int) -> str:
+    """Format one token for compact, multilingual-aware UI display.
+
+    The tokenizer's exact vocabulary form stays primary. When decoding adds
+    useful non-ASCII text, append that readable form in parentheses; ordinary
+    ASCII byte-BPE labels stay compact. Incomplete UTF-8 tokens retain only
+    their raw representation, while ids outside the tokenizer vocabulary use
+    an explicit ``<id>`` placeholder.
+    """
+    try:
+        decoded, raw, _incomplete = safe_decode_token(tokenizer, token_id)
+    except Exception:
+        return f"<{token_id}>"
+    if not raw:
+        return f"<{token_id}>"
+    if decoded is None:
+        return raw
+
+    readable = decoded.strip()
+    if not readable or readable == raw:
+        return raw
+    if not any(ord(char) > 127 for char in readable):
+        return raw
+    return f"{raw} ({readable})"
+
+
 def detect_byte_level_bpe(tokenizer) -> bool:
     """
     Detect if this is a byte-level BPE tokenizer.

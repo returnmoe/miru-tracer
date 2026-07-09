@@ -44,6 +44,14 @@ from miru_tracer.visualization.plots import (
 )
 
 
+class MultilingualTokenizer:
+    def convert_ids_to_tokens(self, ids):
+        return ["æ³ķåĽ½" if token_id == 7 else str(token_id) for token_id in ids]
+
+    def decode(self, ids, **_kwargs):
+        return "法国" if ids[0] == 7 else str(ids[0])
+
+
 class TestLensModeKey:
     @pytest.mark.parametrize("ui,key", [
         ("Logit", "logit"),
@@ -240,6 +248,12 @@ class TestActiveInterventionsTable:
         assert 'style="width:100%; border:1px solid rgba(127,127,127,0.18) !important;' in out
         assert "border:1px solid rgba(127,127,127,0.18) !important" in out
 
+    def test_multilingual_token_label(self):
+        iv = Intervention(kind="ablate", layer=0, token_id=7, basis="logit")
+        out = interventions_table_html([intervention_group([iv])], MultilingualTokenizer())
+        assert "æ³ķåĽ½ (法国)" in out
+        assert "æ³ķåĽ½ (法国)" in iv.describe(MultilingualTokenizer())
+
     def test_table_js_triggers_gradio_html_click(self):
         assert "trigger('click'" in INTERVENTIONS_TABLE_JS
         assert "miru-iv-action-payload" not in INTERVENTIONS_TABLE_JS
@@ -333,6 +347,14 @@ class TestPinnedTokens:
         out = pinned_tokens_table_html([token_id], tiny_tokenizer)
         assert "<table" in out and str(token_id) in out
 
+    def test_multilingual_choices_and_table(self):
+        tokenizer = MultilingualTokenizer()
+        assert pinned_token_choices([7], tokenizer) == [
+            ("7: æ³ķåĽ½ (法国)", "7")
+        ]
+        table = pinned_tokens_table_html([7], tokenizer)
+        assert "æ³ķåĽ½" in table and "法国" in table
+
 
 SLICE = LensSlice(
     mode="logit",
@@ -377,6 +399,26 @@ class TestLensPlots:
         # median of [10,3] is 6.5 -> +1 for the 1-indexed log axis
         assert fig.data[0].y[0] == pytest.approx(7.5)
 
+    def test_multilingual_pinned_rank_label(self):
+        fig = plot_pinned_token_ranks(SLICE, MultilingualTokenizer())
+        assert fig.data[0].name == "æ³ķåĽ½ (法国)"
+
+    def test_multilingual_hover_is_complete_and_escaped(self):
+        multilingual = LensSlice(
+            mode="logit",
+            layers=[0],
+            positions=[0],
+            position_texts=["ctx"],
+            tokens=[[[7, 8]]],
+            probs=[[[0.8, 0.1]]],
+            texts=[[["æ³ķåĽ½ (法国)", "raw<script> (日本)"]]],
+        )
+        fig = plot_lens_heatmap(multilingual)
+        hover = fig.data[0].customdata[0][0]
+        assert "æ³ķåĽ½ (法国)" in hover
+        assert "raw&lt;script&gt; (日本)" in hover
+        assert "..." not in hover
+
     def test_pinned_ranks_none_when_empty(self):
         empty = LensSlice(
             mode="logit", layers=[0], positions=[0], position_texts=["x"],
@@ -410,6 +452,19 @@ class TestLensViews:
         out = readouts_table_html(rows, {2: 'swap "<b>"→"x" @L2 (logit)'})
         # the user-supplied description is escaped; no raw HTML injection
         assert "&lt;b&gt;" in out and '"<b>"' not in out
+
+    def test_multilingual_label_is_preserved_and_escaped(self):
+        rows = [
+            ReadoutRow(
+                token_id=7,
+                text="raw<script> (法国)",
+                count=1,
+                count_by_layer=[1],
+            )
+        ]
+        out = readouts_table_html(rows, layers=[0])
+        assert "raw&lt;script&gt; (法国)" in out
+        assert "raw<script>" not in out
 
     def test_heatmap_grid(self):
         out = heatmap_html(SLICE)

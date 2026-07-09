@@ -6,7 +6,11 @@ import html
 import json
 
 from miru_tracer.core.interventions import Intervention
-from miru_tracer.core.tokenizer_utils import visible_whitespace
+from miru_tracer.core.tokenizer_utils import (
+    format_token_label,
+    safe_decode_token,
+    visible_whitespace,
+)
 from miru_tracer.ui.helpers import static_table_html
 
 LENS_MODE_CHOICES = ("Logit", "Jacobian", "Compare (Jacobian / Logit)")
@@ -161,7 +165,7 @@ def pinned_token_choices(pinned_ids: list[int], tokenizer=None) -> list[tuple[st
     for token_id in pinned_ids or []:
         label = str(token_id)
         if tokenizer is not None:
-            label = f"{token_id}: {tokenizer.convert_ids_to_tokens([token_id])[0]}"
+            label = f"{token_id}: {format_token_label(tokenizer, token_id)}"
         choices.append((label, str(token_id)))
     return choices
 
@@ -173,8 +177,9 @@ def pinned_tokens_table_html(pinned_ids: list[int], tokenizer=None) -> str:
     for token_id in pinned_ids:
         raw = decoded = str(token_id)
         if tokenizer is not None:
-            raw = tokenizer.convert_ids_to_tokens([token_id])[0]
-            decoded = tokenizer.decode([token_id])
+            decoded_text, raw_text, incomplete = safe_decode_token(tokenizer, token_id)
+            raw = raw_text or f"<{token_id}>"
+            decoded = decoded_text or incomplete or "[unavailable]"
         rows.append([token_id, raw, decoded])
     return static_table_html(["ID", "Token", "Decoded"], rows)
 
@@ -227,7 +232,7 @@ def intervention_description(iv: Intervention, tokenizer=None) -> str:
     def token_name(token_id: int) -> str:
         if tokenizer is None:
             return str(token_id)
-        return repr(tokenizer.convert_ids_to_tokens([token_id])[0])
+        return repr(format_token_label(tokenizer, token_id))
 
     if iv.kind == "steer":
         return f"steer {token_name(iv.token_id)} (α={iv.strength:+g})"
