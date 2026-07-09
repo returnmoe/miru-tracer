@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import plotly.graph_objects as go
+from plotly.colors import qualitative
 from plotly.subplots import make_subplots
 
 from miru_tracer.core.lens import LensSlice, ReadoutRow
@@ -273,8 +274,8 @@ def get_generation_stats(
 def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
     """Position x layer heatmap of top-1 lens readouts (paper Figure-5 style).
 
-    Cell color is the top-1 readout probability (score for "diff" mode); cell
-    text is the top-1 token; hover lists the full top-k of the cell.
+    Cell color is the top-1 readout probability; cell text is the top-1 token;
+    hover lists the full top-k of the cell.
     """
     if not slice_.layers or not slice_.positions:
         return None
@@ -304,7 +305,6 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
         text.append(text_row)
         hover.append(hover_row)
 
-    value_name = "Δprob (J-lens − logit)" if slice_.mode == "diff" else "Probability"
     fig = go.Figure(
         go.Heatmap(
             z=z,
@@ -315,7 +315,7 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
             x=x_labels,
             y=y_labels,
             colorscale="YlOrRd",
-            colorbar=dict(title=value_name),
+            colorbar=dict(title="Probability"),
             hovertemplate="%{x}<br>%{y}<br>%{customdata}<extra></extra>",
         )
     )
@@ -340,6 +340,121 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
         fig.update_xaxes(
             range=[len(slice_.positions) - max_visible - 0.5, len(slice_.positions) - 0.5]
         )
+    return fig
+
+
+def _comparison_slices(
+    jacobian: LensSlice, logit: LensSlice
+) -> tuple[LensSlice, LensSlice]:
+    """Validate the fixed presentation order used by lens comparisons."""
+    if jacobian.mode != "jacobian" or logit.mode != "logit":
+        raise ValueError(
+            "lens comparison requires a jacobian slice followed by a logit slice"
+        )
+    return jacobian, logit
+
+
+def _lens_heatmap_data(slice_: LensSlice) -> tuple[list, list, list]:
+    """Top-1 values, labels, and top-k hover text for a lens slice."""
+    z, text, hover = [], [], []
+    for i in range(len(slice_.layers)):
+        z_row, text_row, hover_row = [], [], []
+        for j in range(len(slice_.positions)):
+            probs = slice_.probs[i][j]
+            texts = slice_.texts[i][j]
+            z_row.append(probs[0] if probs else 0.0)
+            text_row.append(_display_text(texts[0]) if texts else "")
+            hover_row.append(
+                "<br>".join(
+                    f"{rank + 1}. {_display_text(t)} ({p:.3f})"
+                    for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
+                )
+                or "(empty)"
+            )
+        z.append(z_row)
+        text.append(text_row)
+        hover.append(hover_row)
+    return z, text, hover
+
+
+def plot_lens_heatmap_comparison(
+    jacobian: LensSlice, logit: LensSlice
+) -> go.Figure | None:
+    """Side-by-side Jacobian and Logit heatmaps on one probability scale.
+
+    Each trace is built directly from its own ``LensSlice``.  No subtraction
+    or cross-lens token ranking is performed.
+    """
+    slices = _comparison_slices(jacobian, logit)
+    if not any(slice_.layers and slice_.positions for slice_ in slices):
+        return None
+
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Jacobian Lens", "Logit Lens"),
+        shared_yaxes=True,
+        horizontal_spacing=0.08,
+    )
+    all_values: list[float] = []
+    max_layers = 0
+    max_visible = 20
+    for col, slice_ in enumerate(slices, start=1):
+        if not slice_.layers or not slice_.positions:
+            continue
+        z, text, hover = _lens_heatmap_data(slice_)
+        all_values.extend(value for row in z for value in row)
+        max_layers = max(max_layers, len(slice_.layers))
+        fig.add_trace(
+            go.Heatmap(
+                z=z,
+                text=text,
+                customdata=hover,
+                texttemplate="%{text}",
+                textfont={"size": 11},
+                x=[
+                    f"{p}: {_display_text(token_text)}"
+                    for p, token_text in zip(
+                        slice_.positions, slice_.position_texts, strict=True
+                    )
+                ],
+                y=[f"L{layer}" for layer in slice_.layers],
+                coloraxis="coloraxis",
+                hovertemplate="%{x}<br>%{y}<br>%{customdata}<extra></extra>",
+            ),
+            row=1,
+            col=col,
+        )
+        if len(slice_.positions) > max_visible:
+            fig.update_xaxes(
+                range=[
+                    len(slice_.positions) - max_visible - 0.5,
+                    len(slice_.positions) - 0.5,
+                ],
+                row=1,
+                col=col,
+            )
+
+    shared_max = max(all_values, default=0.0)
+    fig.update_layout(
+        title=(
+            "Lens readout comparison — Jacobian / Logit<br>"
+            "<sub>Independent top-1 probabilities on a shared color scale | "
+            "Hover for each lens's top-k</sub>"
+        ),
+        coloraxis=dict(
+            colorscale="YlOrRd",
+            cmin=0.0,
+            cmax=shared_max if shared_max > 0 else 1.0,
+            colorbar=dict(title="Probability"),
+        ),
+        height=max(400, 30 * max_layers + 150),
+        autosize=True,
+        dragmode="pan",
+        hovermode="closest",
+    )
+    fig.update_xaxes(title_text="Position (input token; readout = its next token)")
+    fig.update_yaxes(title_text="Layer", row=1, col=1)
     return fig
 
 
@@ -404,4 +519,82 @@ def plot_pinned_token_ranks(slice_: LensSlice, tokenizer=None) -> go.Figure | No
         dragmode=False,
         hovermode="x unified",
     )
+    return fig
+
+
+def _pinned_label(token_id: int, tokenizer=None) -> str:
+    label = str(token_id)
+    if tokenizer is not None:
+        label = tokenizer.convert_ids_to_tokens([token_id])[0]
+    return _display_text(label)
+
+
+def plot_pinned_token_ranks_comparison(
+    jacobian: LensSlice, logit: LensSlice, tokenizer=None
+) -> go.Figure | None:
+    """Compare independent pinned ranks with shared axes and token colors."""
+    slices = _comparison_slices(jacobian, logit)
+    token_ids = list(
+        dict.fromkeys(
+            token_id
+            for slice_ in slices
+            for token_id in slice_.pinned_ranks
+        )
+    )
+    if not token_ids:
+        return None
+
+    palette = qualitative.Dark24
+    colors = {
+        token_id: palette[index % len(palette)]
+        for index, token_id in enumerate(token_ids)
+    }
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Jacobian Lens", "Logit Lens"),
+        shared_yaxes=True,
+        horizontal_spacing=0.08,
+    )
+    shown_in_legend: set[int] = set()
+    for col, slice_ in enumerate(slices, start=1):
+        for token_id in token_ids:
+            grid = slice_.pinned_ranks.get(token_id)
+            if grid is None:
+                continue
+            label = _pinned_label(token_id, tokenizer)
+            showlegend = token_id not in shown_in_legend
+            shown_in_legend.add(token_id)
+            medians = [float(np.median(row)) for row in grid]
+            fig.add_trace(
+                go.Scatter(
+                    x=[f"L{layer}" for layer in slice_.layers],
+                    y=[median + 1 for median in medians],
+                    mode="lines+markers",
+                    name=label,
+                    legendgroup=str(token_id),
+                    showlegend=showlegend,
+                    line={"color": colors[token_id]},
+                    marker={"color": colors[token_id]},
+                    hovertemplate=(
+                        "%{x}<br>median rank %{y:.0f}<extra>" + label + "</extra>"
+                    ),
+                ),
+                row=1,
+                col=col,
+            )
+
+    fig.update_layout(
+        title=(
+            "Pinned token rank comparison — Jacobian / Logit<br>"
+            "<sub>Independent median ranks over the selected positions "
+            "(lower = closer to top-1)</sub>"
+        ),
+        height=450,
+        dragmode=False,
+        hovermode="x unified",
+    )
+    fig.update_xaxes(title_text="Layer")
+    fig.update_yaxes(type="log", autorange="reversed")
+    fig.update_yaxes(title_text="Rank (log scale)", row=1, col=1)
     return fig

@@ -9,9 +9,12 @@ from miru_tracer.core.lens import (
     LensStore,
     aggregate_readouts,
     compute_lens_slice,
+    decode_token,
     is_word_token,
     record_lens_activations,
     sanitize_model_name,
+    word_token_mask,
+    wrap_model,
 )
 from miru_tracer.core.lens_io import save_lens
 
@@ -134,6 +137,19 @@ class TestComputeLensSlice:
                 tiny_model, tiny_tokenizer, input_ids, layers=[0], mode="tuned"
             )
 
+    def test_synthetic_diff_mode_is_rejected(
+        self, tiny_model, tiny_tokenizer, input_ids, tiny_lens
+    ):
+        with pytest.raises(ValueError, match="Unknown lens mode"):
+            compute_lens_slice(
+                tiny_model,
+                tiny_tokenizer,
+                input_ids,
+                layers=[0],
+                mode="diff",
+                jlens=tiny_lens,
+            )
+
     def test_pinned_ranks_top_token_is_rank_zero(
         self, tiny_model, tiny_tokenizer, input_ids
     ):
@@ -154,8 +170,53 @@ class TestComputeLensSlice:
             tiny_model, tiny_tokenizer, input_ids,
             layers=[0], mode="logit", top_k=5, skip_non_words=True,
         )
-        for row in slice_.texts[0]:
-            assert all(is_word_token(t) for t in row)
+        for token_ids in slice_.tokens[0]:
+            assert all(
+                is_word_token(tiny_tokenizer.decode([token_id]))
+                for token_id in token_ids
+            )
+
+    def test_word_mask_searches_full_vocab_not_four_x_top_k(
+        self, tiny_model, tiny_tokenizer, input_ids, monkeypatch
+    ):
+        wrapper = wrap_model(tiny_model, tiny_tokenizer)
+        mask = word_token_mask(tiny_tokenizer, tiny_model.config.vocab_size)
+        non_words = (~mask).nonzero(as_tuple=True)[0][:24]
+        words = mask.nonzero(as_tuple=True)[0][:5]
+        assert len(non_words) >= 20 and len(words) == 5
+
+        def punctuation_dominated_unembed(residual):
+            logits = torch.full(
+                (residual.shape[0], tiny_model.config.vocab_size),
+                -100.0,
+                device=residual.device,
+            )
+            # The old candidate_k=4*top_k path saw punctuation only.
+            logits[:, non_words] = torch.arange(
+                len(non_words),
+                0,
+                -1,
+                device=residual.device,
+                dtype=logits.dtype,
+            )
+            logits[:, words] = -torch.arange(
+                len(words), device=residual.device, dtype=logits.dtype
+            )
+            return logits
+
+        monkeypatch.setattr(wrapper, "unembed", punctuation_dominated_unembed)
+        slice_ = compute_lens_slice(
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=[0],
+            positions=[0],
+            mode="logit",
+            top_k=5,
+            skip_non_words=True,
+        )
+        assert set(slice_.tokens[0][0]) == set(words.tolist())
+        assert len(slice_.tokens[0][0]) == 5
 
 
 class TestAggregate:
@@ -253,10 +314,31 @@ class TestLensStore:
 class TestIsWordToken:
     @pytest.mark.parametrize("text,expected", [
         (" hello", True), ("虚假", True), ("123", True),
+        ("can't", True), ("well-being", True), ("l’amour", True),
         (" ", False), ("...", False), ("\n", False), ("", False),
+        ("**word", False), ("word!", False), ("-word", False),
+        ("word-", False), ("snake_case", False), ("<|endoftext|>", False),
+        ("<pad>", False), ("�", False),
     ])
     def test_cases(self, text, expected):
         assert is_word_token(text) is expected
+
+    def test_qwen_byte_tokens_are_classified_by_decoded_text(self):
+        class QwenLikeTokenizer:
+            raw = ["âĢĶ\"", "Ġlove", "Âł", "can\'t"]
+            decoded = ["—\"", " love", "\N{NO-BREAK SPACE}", "can't"]
+
+            def decode(self, ids, **_kwargs):
+                return self.decoded[ids[0]]
+
+            def convert_ids_to_tokens(self, ids):
+                return [self.raw[token_id] for token_id in ids]
+
+        tokenizer = QwenLikeTokenizer()
+        assert word_token_mask(tokenizer, 4).tolist() == [False, True, False, True]
+        # Filtering and display are deliberately separate: tables retain the
+        # exact tokenizer form even though classification used decoded text.
+        assert decode_token(tokenizer, 1) == "Ġlove"
 
 
 class TestDecodeToken:

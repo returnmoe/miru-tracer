@@ -1,4 +1,4 @@
-"""Lens tab: layer-by-layer readouts (logit / Jacobian / diff) with
+"""Lens tab: layer-by-layer Logit/Jacobian readouts and visual comparison with
 position and layer selection, aggregated readout browsing, multi-intervention
 steering, and fit-file management (fitting itself runs offline via the
 ``miru-tracer-fit-lens`` CLI — see docs/lens-tutorial.md).
@@ -9,12 +9,13 @@ with; changing the intervention list requires Generate & Analyze again (the
 status line says so). This keeps the displayed text and the displayed
 readouts always consistent with each other.
 
-Rendering: "Update readouts" (and Generate & Analyze) compute ONE lens slice
-and cache it in ``slice_state``; the result views (Readouts / Heatmap /
-Pinned ranks) render lazily from that cache when their tab is opened. Only
-the currently open view is rendered eagerly — building Plotly figures inside
-hidden tabs is what historically triggered relayout/freeze trouble (see
-theme.py's ResizeObserver note).
+Rendering: "Update readouts" (and Generate & Analyze) records activations once
+and caches one ordinary slice per requested lens. Compare mode contains an
+independent Jacobian slice and Logit slice; it never subtracts their scores.
+Result views render lazily from that cache when their tab is opened. Only the
+currently open view is rendered eagerly — building Plotly figures inside hidden
+tabs is what historically triggered relayout/freeze trouble (see theme.py's
+ResizeObserver note).
 """
 
 from __future__ import annotations
@@ -82,11 +83,16 @@ from miru_tracer.ui.lens_common import (
     token_ref_to_id,
 )
 from miru_tracer.ui.lens_views import (
+    comparison_heatmap_html,
+    comparison_html,
     distribution_html,
     heatmap_html,
     readouts_table_html,
 )
-from miru_tracer.visualization.plots import plot_pinned_token_ranks
+from miru_tracer.visualization.plots import (
+    plot_pinned_token_ranks,
+    plot_pinned_token_ranks_comparison,
+)
 
 logger = get_logger(__name__)
 
@@ -281,7 +287,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         choices=list(LENS_MODE_CHOICES),
                         value="Logit",
                         label="Lens",
-                        info="Jacobian/Diff need a fitted lens.",
+                        info="Jacobian/Compare need a fitted lens.",
                     )
                     with gr.Row():
                         layer_start = gr.Number(
@@ -396,7 +402,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
             mode = lens_mode_key(mode_choice)
             jlens = get_lens_store().get(analysis["model_name"])
-            if mode in ("jacobian", "diff") and jlens is None:
+            if mode in ("jacobian", "compare") and jlens is None:
                 return None, (
                     "Error: no fitted Jacobian lens for "
                     f"{analysis['model_name']}. Fit one below or run:\n"
@@ -405,7 +411,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
             try:
                 layers = layer_selection(analysis["n_layers"], l_start, l_end, l_stride)
-                if mode in ("jacobian", "diff") and jlens is not None:
+                if mode in ("jacobian", "compare") and jlens is not None:
                     fitted = set(jlens.source_layers) | {analysis["n_layers"] - 1}
                     dropped = [layer for layer in layers if layer not in fitted]
                     layers = [layer for layer in layers if layer in fitted]
@@ -433,32 +439,53 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     analysis["activations"] = activations
 
                 readout_limit = max(1, int(per_cell))
-                slice_ = compute_lens_slice(
-                    model,
-                    tokenizer,
-                    analysis["input_ids"],
-                    layers=layers,
-                    positions=selected,
-                    mode=mode,
-                    jlens=jlens,
-                    top_k=readout_limit,
-                    skip_non_words=bool(skip_nw),
-                    pinned_token_ids=list(pinned_ids or []),
-                    interventions=analysis["iset"],
-                    activations=activations,
+                requested_modes = (
+                    ("jacobian", "logit") if mode == "compare" else (mode,)
                 )
-                rows = aggregate_readouts(slice_, limit=readout_limit)
+                slices = {}
+                rows_by_mode = {}
+                for readout_mode in requested_modes:
+                    slice_ = compute_lens_slice(
+                        model,
+                        tokenizer,
+                        analysis["input_ids"],
+                        layers=layers,
+                        positions=selected,
+                        mode=readout_mode,
+                        jlens=jlens,
+                        top_k=readout_limit,
+                        skip_non_words=bool(skip_nw),
+                        pinned_token_ids=list(pinned_ids or []),
+                        interventions=analysis["iset"],
+                        activations=activations,
+                    )
+                    slices[readout_mode] = slice_
+                    rows_by_mode[readout_mode] = aggregate_readouts(
+                        slice_, limit=readout_limit
+                    )
 
-                n_cells = len(slice_.layers) * len(slice_.positions)
+                representative = slices[requested_modes[0]]
+                n_cells = len(representative.layers) * len(representative.positions)
                 where = (
-                    f"{len(slice_.positions)} selected positions"
+                    f"{len(representative.positions)} selected positions"
                     if selected is not None
-                    else f"all {len(slice_.positions)} positions"
+                    else f"all {len(representative.positions)} positions"
                 )
-                status = (
-                    f"{slice_.mode} lens: {len(slice_.layers)} layers × {where} "
-                    f"= {n_cells} cells, {len(rows)} distinct readout tokens."
-                )
+                if mode == "compare":
+                    status = (
+                        f"comparison: Jacobian and Logit lenses over "
+                        f"{len(representative.layers)} layers × {where} = "
+                        f"{n_cells} cells each; "
+                        f"{len(rows_by_mode['jacobian'])} / "
+                        f"{len(rows_by_mode['logit'])} distinct readout tokens."
+                    )
+                else:
+                    status = (
+                        f"{representative.mode} lens: "
+                        f"{len(representative.layers)} layers × {where} "
+                        f"= {n_cells} cells, "
+                        f"{len(rows_by_mode[mode])} distinct readout tokens."
+                    )
                 if dropped:
                     status += f" (skipped unfitted layers: {dropped})"
                 intervened: dict[int, str] = {}
@@ -471,7 +498,12 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     )
                     if warning:
                         status += f"\n{warning}"
-                return {"slice": slice_, "rows": rows, "intervened": intervened}, status
+                return {
+                    "mode": mode,
+                    "slices": slices,
+                    "rows": rows_by_mode,
+                    "intervened": intervened,
+                }, status
             except Exception as e:
                 logger.error(f"Lens readout error: {e}", exc_info=True)
                 return None, f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
@@ -481,29 +513,69 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         def show_summary_view(bundle):
             if bundle is None:
                 return ""
+            if bundle["mode"] == "compare":
+                return comparison_html(
+                    readouts_table_html(
+                        bundle["rows"]["jacobian"], bundle.get("intervened"),
+                        layers=bundle["slices"]["jacobian"].layers,
+                    ),
+                    readouts_table_html(
+                        bundle["rows"]["logit"], bundle.get("intervened"),
+                        layers=bundle["slices"]["logit"].layers,
+                    ),
+                )
+            mode = bundle["mode"]
             return readouts_table_html(
-                bundle["rows"], bundle.get("intervened"),
-                layers=bundle["slice"].layers,
+                bundle["rows"][mode], bundle.get("intervened"),
+                layers=bundle["slices"][mode].layers,
             )
 
         def show_readouts_view(bundle):
             if bundle is None:
                 return ""
+            if bundle["mode"] == "compare":
+                return comparison_html(
+                    distribution_html(
+                        bundle["rows"]["jacobian"],
+                        bundle["slices"]["jacobian"].layers,
+                        intervened=bundle.get("intervened"),
+                    ),
+                    distribution_html(
+                        bundle["rows"]["logit"],
+                        bundle["slices"]["logit"].layers,
+                        intervened=bundle.get("intervened"),
+                    ),
+                )
+            mode = bundle["mode"]
             return distribution_html(
-                bundle["rows"], bundle["slice"].layers,
+                bundle["rows"][mode], bundle["slices"][mode].layers,
                 intervened=bundle.get("intervened"),
             )
 
         def show_heatmap_view(bundle):
             if bundle is None:
                 return ""
-            return heatmap_html(bundle["slice"], bundle.get("intervened"))
+            if bundle["mode"] == "compare":
+                return comparison_heatmap_html(
+                    bundle["slices"]["jacobian"],
+                    bundle["slices"]["logit"],
+                    bundle.get("intervened"),
+                )
+            return heatmap_html(
+                bundle["slices"][bundle["mode"]], bundle.get("intervened")
+            )
 
         def show_pinned_view(bundle):
             if bundle is None:
                 return None
+            if bundle["mode"] == "compare":
+                return plot_pinned_token_ranks_comparison(
+                    bundle["slices"]["jacobian"],
+                    bundle["slices"]["logit"],
+                    model_manager.get_tokenizer(),
+                )
             return plot_pinned_token_ranks(
-                bundle["slice"], model_manager.get_tokenizer()
+                bundle["slices"][bundle["mode"]], model_manager.get_tokenizer()
             )
 
         def render_active_view(bundle, active_view):

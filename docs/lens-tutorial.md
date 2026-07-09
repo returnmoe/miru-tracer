@@ -160,8 +160,8 @@ Load a model (Model Loader tab), then open the **Lens** tab:
    see below) and computes readouts for every (layer, position) cell.
 2. **Selection**: click tokens in the sequence to restrict positions
    (none selected = all), set the layer range/stride, choose the lens mode —
-   *Logit*, *Jacobian*, or *Diff* (what the J-lens boosts relative to the
-   logit lens) — and press **Update readouts** to re-slice without
+   *Logit*, *Jacobian*, or *Compare (Jacobian / Logit)* (the two independent
+   visualizations side by side) — and press **Update readouts** to re-slice without
    regenerating.
 3. **Readouts**: the aggregated table shows which tokens appear across the
    selected cells and at which layers (sparkline column); below it are the
@@ -227,7 +227,7 @@ error message tells you when it doesn't.
 
 | Symptom | Cause / fix |
 |---|---|
-| "Jacobian/Diff need a fitted lens" | No fit file for the loaded model — see §2–3. Logit mode always works. |
+| "Jacobian/Compare need a fitted lens" | No fit file for the loaded model — see §2–3. Logit mode always works. |
 | "fit file has d_model=X, model has d_model=Y" | The file was fitted for a different model. |
 | "none of the selected layers are fitted" | Your fit covers fewer layers than the range you selected (e.g. a partial fit); widen the stride or refit. |
 | J-lens readouts look like noise everywhere | Too few prompts in the fit, or a corpus very unlike the model's pretraining data. |

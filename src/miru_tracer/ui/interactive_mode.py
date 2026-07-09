@@ -11,7 +11,11 @@ import traceback
 
 import gradio as gr
 
-from miru_tracer.core.lens import compute_lens_slice, get_lens_store
+from miru_tracer.core.lens import (
+    compute_lens_slice,
+    get_lens_store,
+    record_lens_activations,
+)
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.sampling import select_token
@@ -42,7 +46,10 @@ from miru_tracer.ui.lens_common import (
     layer_selection,
     lens_mode_key,
 )
-from miru_tracer.visualization.plots import plot_lens_heatmap
+from miru_tracer.visualization.plots import (
+    plot_lens_heatmap,
+    plot_lens_heatmap_comparison,
+)
 
 logger = get_logger(__name__)
 
@@ -211,7 +218,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         with gr.Accordion("Layer Lens (current position)", open=False):
             gr.Markdown(
                 "Per-layer readout of the **next-token** position via the "
-                "logit or Jacobian lens. Refresh runs one extra forward pass. "
+                "Logit lens, Jacobian lens, or their side-by-side comparison. "
+                "Refresh runs one extra forward pass. "
                 "Interventions added in the Lens tab can be applied to this "
                 "session here. ⚠️ *Experimental — still being tested; "
                 "readouts may currently yield nonsense.*"
@@ -274,7 +282,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 model_name = model_manager.get_model_name()
                 mode = lens_mode_key(mode_choice)
                 jlens = get_lens_store().get(model_name)
-                if mode in ("jacobian", "diff") and jlens is None:
+                if mode in ("jacobian", "compare") and jlens is None:
                     return None, (
                         f"No fitted Jacobian lens for {model_name}. Fit one in "
                         f"the Lens tab or run: miru-tracer-fit-lens {model_name}"
@@ -282,28 +290,57 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 try:
                     n_layers = tracer.model.config.get_text_config().num_hidden_layers
                     layers = layer_selection(n_layers, 0, -1, stride)
-                    if mode in ("jacobian", "diff") and jlens is not None:
+                    if mode in ("jacobian", "compare") and jlens is not None:
                         fitted = set(jlens.source_layers) | {n_layers - 1}
                         layers = [layer for layer in layers if layer in fitted]
-                    slice_ = compute_lens_slice(
-                        tracer.model,
-                        tracer.tokenizer,
-                        tracer.input_ids,
-                        layers=layers,
-                        positions=[tracer.seq_len - 1],
-                        mode=mode,
-                        jlens=jlens,
-                        top_k=int(top_k),
-                        interventions=tracer._intervention_set,
-                    )
+                    common = {
+                        "layers": layers,
+                        "positions": [tracer.seq_len - 1],
+                        "jlens": jlens,
+                        "top_k": int(top_k),
+                        "interventions": tracer._intervention_set,
+                    }
+                    if mode == "compare":
+                        activations = record_lens_activations(
+                            tracer.model,
+                            tracer.tokenizer,
+                            tracer.input_ids,
+                            interventions=tracer._intervention_set,
+                        )
+                        jacobian = compute_lens_slice(
+                            tracer.model,
+                            tracer.tokenizer,
+                            tracer.input_ids,
+                            mode="jacobian",
+                            activations=activations,
+                            **common,
+                        )
+                        logit = compute_lens_slice(
+                            tracer.model,
+                            tracer.tokenizer,
+                            tracer.input_ids,
+                            mode="logit",
+                            activations=activations,
+                            **common,
+                        )
+                        figure = plot_lens_heatmap_comparison(jacobian, logit)
+                    else:
+                        slice_ = compute_lens_slice(
+                            tracer.model,
+                            tracer.tokenizer,
+                            tracer.input_ids,
+                            mode=mode,
+                            **common,
+                        )
+                        figure = plot_lens_heatmap(slice_)
                     active = len(tracer.interventions)
                     status = (
-                        f"{mode} lens over {len(layers)} layers at position "
-                        f"{tracer.seq_len - 1}."
+                        f"{'Jacobian / Logit comparison' if mode == 'compare' else f'{mode} lens'} "
+                        f"over {len(layers)} layers at position {tracer.seq_len - 1}."
                     )
                     if active:
                         status += f" {active} intervention(s) active on this session."
-                    return plot_lens_heatmap(slice_), status
+                    return figure, status
                 except Exception as e:
                     logger.error(f"Interactive lens error: {e}", exc_info=True)
                     return None, f"Error: {e}"

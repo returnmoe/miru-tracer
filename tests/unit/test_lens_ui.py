@@ -48,7 +48,7 @@ class TestLensModeKey:
     @pytest.mark.parametrize("ui,key", [
         ("Logit", "logit"),
         ("Jacobian", "jacobian"),
-        ("Diff (Jacobian − Logit)", "diff"),
+        ("Compare (Jacobian / Logit)", "compare"),
         (None, "logit"),
     ])
     def test_mapping(self, ui, key):
@@ -490,10 +490,10 @@ class TestInterventionVisibility:
     @pytest.mark.parametrize("basis,mode,layer,warns", [
         ("jacobian", "logit", 5, True),
         ("jacobian", "jacobian", 5, False),
-        ("jacobian", "diff", 5, False),
+        ("jacobian", "compare", 5, False),
         ("logit", "jacobian", 5, True),
         ("logit", "logit", 5, False),
-        ("logit", "diff", 5, False),
+        ("logit", "compare", 5, False),
         ("jacobian", "logit", 31, False),  # final layer (n_layers=32) exempt
     ])
     def test_warning_truth_table(self, basis, mode, layer, warns):

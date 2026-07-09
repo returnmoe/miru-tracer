@@ -150,6 +150,52 @@ class TestLensTabFlow:
         assert "<table" in lens_app.predict(api_name="/open_heatmap_view")
         assert "<table" in lens_app.predict(api_name="/open_readouts_view")
 
+    def test_compare_mode_renders_two_independent_views(self, lens_app):
+        pinned = lens_app.predict("A", "Text", api_name="/add_pinned")
+        assert "1 pinned token" in pinned[2]
+
+        out = lens_app.predict(
+            "Completion", "Hello world", "[]", "", "Template default", "",
+            3, "greedy", 1.0,
+            "Compare (Jacobian / Logit)", 0, -1, 1, 5, True,
+            api_name="/generate_and_analyze",
+        )
+        summary, status = out[0], out[4]
+        assert "comparison: Jacobian and Logit lenses" in status
+        assert summary.count('data-lens-comparison="true"') == 1
+        assert summary.index('data-lens-mode="jacobian"') < summary.index(
+            'data-lens-mode="logit"'
+        )
+        assert "Δprob" not in summary
+
+        counts = lens_app.predict(api_name="/open_readouts_view")
+        heatmap = lens_app.predict(api_name="/open_heatmap_view")
+        pinned_plot = lens_app.predict(api_name="/open_pinned_view")
+        for rendered in (counts, heatmap):
+            assert 'data-lens-mode="jacobian"' in rendered
+            assert 'data-lens-mode="logit"' in rendered
+            assert "Δprob" not in rendered
+        assert pinned_plot is not None
+        assert "Pinned token rank comparison" in str(pinned_plot)
+
+    def test_interactive_compare_mode_uses_two_panel_plot(self, lens_app):
+        initialized = lens_app.predict(
+            "Completion", "Hello world", "[]", "", "Template default", "",
+            1.0, 50, 1.0, "greedy", 10,
+            api_name="/initialize_tracer",
+        )
+        assert "Initialized" in initialized[0]
+
+        figure, status = lens_app.predict(
+            "Compare (Jacobian / Logit)", 1, 5, api_name="/refresh_lens"
+        )
+        assert "Jacobian / Logit comparison" in status
+        assert figure is not None
+        rendered = str(figure)
+        assert "Lens readout comparison" in rendered
+        assert "Jacobian Lens" in rendered and "Logit Lens" in rendered
+        assert "Δprob" not in rendered
+
 
 class TestFitFileManagement:
     def test_status_reports_fitted_lens(self, lens_app):

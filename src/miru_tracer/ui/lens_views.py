@@ -63,6 +63,27 @@ _ROW_TH = f'style="position:sticky; left:0; z-index:1; text-align:right; {_TH}"'
 _CORNER_TH = f'style="position:sticky; top:0; left:0; z-index:2; {_TH}"'
 _CAPTION = 'style="margin:2px 0 4px 0; font-size:0.85em; opacity:0.9;"'
 
+_COMPARISON_STYLE = """
+<style>
+.miru-lens-comparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  width: 100%;
+}
+.miru-lens-comparison-panel { min-width: 0; }
+.miru-lens-comparison-title {
+  margin: 4px 0 8px;
+  font-size: 1em;
+  font-weight: 650;
+}
+@media (max-width: 900px) {
+  .miru-lens-comparison { grid-template-columns: minmax(0, 1fr); }
+}
+</style>
+""".strip()
+
 
 def _color(v: float) -> tuple[int, int, int]:
     """Interpolate the YlOrRd scale at v in [0, 1]."""
@@ -143,8 +164,41 @@ def _layer_label(
     )
 
 
+def comparison_html(jacobian_html: str, logit_html: str) -> str:
+    """Place independent Jacobian and Logit views in a responsive grid.
+
+    The inputs are already-rendered views.  This helper only arranges them;
+    it never combines or derives values from either lens.  The order is
+    intentionally fixed so comparison views are consistent throughout the
+    UI: Jacobian first, Logit second.
+    """
+    if not jacobian_html and not logit_html:
+        return ""
+    return (
+        f"{_COMPARISON_STYLE}"
+        '<div class="miru-lens-comparison" data-lens-comparison="true">'
+        '<section class="miru-lens-comparison-panel" data-lens-mode="jacobian">'
+        '<h3 class="miru-lens-comparison-title">Jacobian Lens</h3>'
+        f"{jacobian_html}</section>"
+        '<section class="miru-lens-comparison-panel" data-lens-mode="logit">'
+        '<h3 class="miru-lens-comparison-title">Logit Lens</h3>'
+        f"{logit_html}</section></div>"
+    )
+
+
+def _top1_values(slice_: LensSlice) -> list[float]:
+    return [
+        slice_.probs[i][j][0] if slice_.probs[i][j] else 0.0
+        for i in range(len(slice_.layers))
+        for j in range(len(slice_.positions))
+    ]
+
+
 def heatmap_html(
-    slice_: LensSlice, intervened: dict[int, str] | None = None
+    slice_: LensSlice,
+    intervened: dict[int, str] | None = None,
+    *,
+    value_range: tuple[float, float] | None = None,
 ) -> str:
     """Position x layer grid of top-1 readouts; hover (title) lists the top-k.
 
@@ -160,14 +214,10 @@ def heatmap_html(
         for p, text in zip(slice_.positions, slice_.position_texts, strict=True)
     )
 
-    # Contrast-normalize like Plotly's autoscaled colorbar ("diff" mode can
-    # be negative).
-    values = [
-        slice_.probs[i][j][0] if slice_.probs[i][j] else 0.0
-        for i in range(len(slice_.layers))
-        for j in range(len(slice_.positions))
-    ]
-    vmin, vmax = min(values), max(values)
+    # Contrast-normalize like Plotly's autoscaled colorbar. Comparison mode
+    # supplies one shared range so colors have the same meaning in both panes.
+    values = _top1_values(slice_)
+    vmin, vmax = value_range or (min(values), max(values))
     span = (vmax - vmin) or 1.0
 
     body = []
@@ -188,10 +238,9 @@ def heatmap_html(
             )
         body.append('<tr style="border:0;">' + "".join(cells) + "</tr>")
 
-    value_name = "Δprob (J-lens − logit)" if slice_.mode == "diff" else "probability"
     caption = (
         f"<b>Lens readouts — {slice_.mode}</b> · each cell predicts the NEXT "
-        f"token after the column's input token · color = top-1 {value_name} · "
+        "token after the column's input token · color = top-1 probability · "
         "hover a cell for its top-k · scroll sideways for more positions"
     )
     if intervened and any(layer in intervened for layer in slice_.layers):
@@ -202,6 +251,26 @@ def heatmap_html(
         f'<tr style="border:0;"><th {_CORNER_TH}></th>{header}</tr>{"".join(body)}'
         "</table></div>"
     )
+
+
+def comparison_heatmap_html(
+    jacobian_slice: LensSlice,
+    logit_slice: LensSlice,
+    intervened: dict[int, str] | None = None,
+) -> str:
+    """Render two ordinary heatmaps with one shared probability scale."""
+    if jacobian_slice.mode != "jacobian" or logit_slice.mode != "logit":
+        raise ValueError(
+            "comparison heatmaps require a jacobian slice followed by a logit slice"
+        )
+
+    values = _top1_values(jacobian_slice) + _top1_values(logit_slice)
+    shared_range = (0.0, max(values, default=0.0))
+    jacobian = heatmap_html(
+        jacobian_slice, intervened, value_range=shared_range
+    )
+    logit = heatmap_html(logit_slice, intervened, value_range=shared_range)
+    return comparison_html(jacobian, logit)
 
 
 def readouts_table_html(

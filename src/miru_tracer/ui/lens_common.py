@@ -9,7 +9,7 @@ from miru_tracer.core.interventions import Intervention
 from miru_tracer.core.tokenizer_utils import visible_whitespace
 from miru_tracer.ui.helpers import static_table_html
 
-LENS_MODE_CHOICES = ("Logit", "Jacobian", "Diff (Jacobian − Logit)")
+LENS_MODE_CHOICES = ("Logit", "Jacobian", "Compare (Jacobian / Logit)")
 
 _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
 
@@ -52,8 +52,8 @@ def lens_mode_key(ui_choice: str) -> str:
     choice = (ui_choice or "").lower()
     if choice.startswith("jacobian"):
         return "jacobian"
-    if choice.startswith("diff"):
-        return "diff"
+    if choice.startswith("compare"):
+        return "compare"
     return "logit"
 
 
@@ -362,11 +362,11 @@ def intervention_visibility_warning(
     A jacobian-basis edit moves the residual along pre-transport directions
     (``J_ℓ v = û_t``), visible under the Jacobian lens but nearly invisible
     under the Logit lens — and vice versa. The final layer is basis-independent
-    (both bases use ``û_t`` directly), and Diff renders both readouts, so
+    (both bases use ``û_t`` directly), and Compare renders both readouts, so
     neither triggers a warning. For a fixed ``mode`` at most one basis can
     mismatch, so this returns a single line (or None).
     """
-    if mode == "diff":
+    if mode == "compare":
         return None
     final = n_layers - 1
     mismatched = [iv for iv in interventions if iv.layer != final and iv.basis != mode]
@@ -380,7 +380,7 @@ def intervention_visibility_warning(
     pronoun = "its" if len(mismatched) == 1 else "their"
     want = "Jacobian" if basis == "jacobian" else "Logit"
     return (
-        f"⚠ {shown} {verb} {basis} basis — switch Lens to {want} (or Diff) "
+        f"⚠ {shown} {verb} {basis} basis — switch Lens to {want} (or Compare) "
         f"to see {pronoun} effect in the readouts."
     )
 

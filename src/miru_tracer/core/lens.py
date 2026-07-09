@@ -3,8 +3,9 @@
 Built on the vendored jlens reference implementation
 (:mod:`miru_tracer.core._jlens`, Apache-2.0). The Jacobian lens reads out
 ``unembed(J_l @ h_l)`` where ``J_l`` is a fitted per-layer transport matrix;
-the logit lens is the ``J_l = I`` special case; "diff" surfaces the tokens the
-Jacobian lens boosts most relative to the logit lens.
+the logit lens is the ``J_l = I`` special case. Visual comparison between the
+two lenses is a UI concern: each side is an ordinary, independently ranked
+readout, never a subtraction of their probability distributions.
 
 Design notes:
 - Readouts run their own single ``no_grad`` forward with block-output hooks.
@@ -36,19 +37,64 @@ from miru_tracer.core.tokenizer_utils import safe_decode_token
 
 logger = get_logger(__name__)
 
-LENS_MODES = ("logit", "jacobian", "diff")
+LENS_MODES = ("logit", "jacobian")
 
 # Row budget for one batched unembed: bounds the transient [rows, vocab]
 # logits/probs tensors (~150MB each at a 151k vocab) independent of how many
 # layers are read out.
 _UNEMBED_CHUNK_ROWS = 256
 
-_WORD_RE = re.compile(r"\w", re.UNICODE)
-
 
 def is_word_token(text: str) -> bool:
-    """True if the decoded token contains at least one word character."""
-    return bool(_WORD_RE.search(text))
+    """Whether decoded token text is suitable for word-only lens displays.
+
+    This intentionally mirrors the upstream Jacobian Lens display mask: after
+    trimming surrounding whitespace, every character must be alphanumeric,
+    except that apostrophes and hyphens are allowed inside a word. Merely
+    *containing* a word character is not enough (``"**word"`` is punctuation
+    noise, not a word token).
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if "<|" in stripped or (
+        stripped.startswith("<") and stripped.endswith(">")
+    ):
+        return False
+    return all(
+        char.isalnum()
+        or (0 < pos < len(stripped) - 1 and char in "'-’")
+        for pos, char in enumerate(stripped)
+    )
+
+
+# CPU cache: moved to the score device only while computing a slice. Qwen's
+# padded model vocabulary can extend beyond the tokenizer; undecodable ids
+# remain False and therefore disappear from word-only displays.
+_word_mask_cache: tuple[int, int, torch.Tensor] | None = None
+
+
+def word_token_mask(tokenizer, vocab_size: int) -> torch.Tensor:
+    """Boolean CPU mask of decoded, word-like vocabulary entries."""
+    global _word_mask_cache
+    key = (id(tokenizer), vocab_size)
+    if _word_mask_cache is not None and _word_mask_cache[:2] == key:
+        return _word_mask_cache[2]
+
+    mask = torch.zeros(vocab_size, dtype=torch.bool)
+    for token_id in range(vocab_size):
+        try:
+            decoded = tokenizer.decode(
+                [token_id],
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+            )
+        except Exception:
+            continue
+        if decoded is not None and is_word_token(decoded):
+            mask[token_id] = True
+    _word_mask_cache = (key[0], key[1], mask)
+    return mask
 
 
 LENS_FILENAME = "lens.safetensors"
@@ -196,10 +242,10 @@ def compute_lens_slice(
         input_ids: ``[1, seq_len]`` token ids (as produced by the tracer).
         layers: Block indices to read out (final block = model logits row).
         positions: Sequence positions to read out; None = all.
-        mode: "logit", "jacobian", or "diff" (jacobian-vs-logit probability gain).
-        jlens: Fitted lens; required for "jacobian" and "diff".
+        mode: "logit" or "jacobian".
+        jlens: Fitted lens; required for "jacobian".
         top_k: Readouts per (layer, position) cell.
-        skip_non_words: Drop tokens with no word characters from the top-k.
+        skip_non_words: Rank only decoded, strictly word-like vocabulary tokens.
         pinned_token_ids: Tokens whose rank is tracked in every cell.
         interventions: Active activation edits; entered *before* the recorder
             so the recorded residuals are the edited ones. Ignored when
@@ -209,7 +255,7 @@ def compute_lens_slice(
     """
     if mode not in LENS_MODES:
         raise ValueError(f"Unknown lens mode: {mode!r}. Use one of {LENS_MODES}.")
-    if mode in ("jacobian", "diff") and jlens is None:
+    if mode == "jacobian" and jlens is None:
         raise ValueError(f"mode={mode!r} requires a fitted Jacobian lens")
 
     wrapper = wrap_model(model, tokenizer)
@@ -220,7 +266,7 @@ def compute_lens_slice(
     bad = [layer for layer in layers if not 0 <= layer < wrapper.n_layers]
     if bad:
         raise ValueError(f"layers {bad} out of range (n_layers={wrapper.n_layers})")
-    if mode in ("jacobian", "diff"):
+    if mode == "jacobian":
         missing = set(layers) - set(jlens.source_layers)
         # The final layer works without a J matrix (J = I there by definition).
         missing -= {wrapper.n_layers - 1}
@@ -249,54 +295,51 @@ def compute_lens_slice(
     all_texts: list[list[list[str]]] = []
     pinned: dict[int, list[list[int]]] = {t: [] for t in pinned_token_ids}
 
-    candidate_k = top_k * 4 if skip_non_words else top_k
     n_pos = len(positions)
     # Batch several layers into one unembed matmul: BLAS throughput on a
     # skinny [P, d] @ [d, vocab] is a fraction of a well-fed one (~2.5x
     # end-to-end for short sequences), while the row budget keeps the
     # transient [rows, vocab] probs bounded regardless of layer count.
-    rows_per_layer = 2 if mode == "diff" else 1
-    group_size = max(1, _UNEMBED_CHUNK_ROWS // max(n_pos * rows_per_layer, 1))
+    group_size = max(1, _UNEMBED_CHUNK_ROWS // max(n_pos, 1))
+    display_mask: torch.Tensor | None = None
+    filtered_k = top_k
 
     with torch.no_grad():
         for group_start in range(0, len(layers), group_size):
             group = layers[group_start : group_start + group_size]
-            blocks: list[tuple[int, str]] = []  # (layer, kind), stacking order
             stack: list[torch.Tensor] = []
             for layer in group:
                 residual = activations[layer][0, positions, :].float()  # [P, d]
                 use_transport = (
-                    mode in ("jacobian", "diff")
+                    mode == "jacobian"
                     and layer != final_layer
                     and layer in jlens.jacobians
                 )
-                if mode == "diff" and layer != final_layer:
-                    stack += [residual, jlens.transport(residual, layer)]
-                    blocks += [(layer, "logit"), (layer, "jac")]
-                else:
-                    stack.append(
-                        jlens.transport(residual, layer) if use_transport else residual
-                    )
-                    blocks.append((layer, "main"))
+                stack.append(
+                    jlens.transport(residual, layer) if use_transport else residual
+                )
             probs_all = torch.softmax(
                 wrapper.unembed(torch.cat(stack)).float(), dim=-1
-            )  # [len(blocks) * P, vocab]
-            by_block = {
-                key: probs_all[i * n_pos : (i + 1) * n_pos]
-                for i, key in enumerate(blocks)
-            }
+            )  # [len(group) * P, vocab]
 
-            for layer in group:
-                if mode == "diff" and layer != final_layer:
-                    jac_probs = by_block[(layer, "jac")]
-                    scores = jac_probs - by_block[(layer, "logit")]  # J-lens boosts
-                    probs_for_pin = jac_probs
+            for group_idx, _layer in enumerate(group):
+                scores = probs_all[group_idx * n_pos : (group_idx + 1) * n_pos]
+                probs_for_pin = scores
+
+                ranked_scores = scores
+                if skip_non_words:
+                    if display_mask is None:
+                        display_mask = word_token_mask(
+                            tokenizer, scores.shape[-1]
+                        ).to(scores.device)
+                        filtered_k = min(top_k, int(display_mask.sum().item()))
+                    ranked_scores = scores.masked_fill(~display_mask, float("-inf"))
+                    k = filtered_k
                 else:
-                    scores = by_block[(layer, "main")]
-                    probs_for_pin = scores
-
-                k = min(candidate_k, scores.shape[-1])
-                top_scores, top_ids = torch.topk(scores, k, dim=-1)  # [P, k]
+                    k = min(top_k, scores.shape[-1])
+                top_scores, top_ids = torch.topk(
+                    ranked_scores, k, dim=-1
+                )  # [P, k]
 
                 layer_tokens, layer_probs, layer_texts = [], [], []
                 for p in range(n_pos):
@@ -305,8 +348,6 @@ def compute_lens_slice(
                     row_t, row_p, row_s = [], [], []
                     for token_id, value in zip(ids, vals, strict=True):
                         text = decode_token(tokenizer, token_id)
-                        if skip_non_words and not is_word_token(text):
-                            continue
                         row_t.append(token_id)
                         row_p.append(float(value))
                         row_s.append(text)
