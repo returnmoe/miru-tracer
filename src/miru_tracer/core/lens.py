@@ -360,7 +360,7 @@ def decode_token(tokenizer, token_id: int) -> str:
     text = cache.get(token_id)
     if text is None:
         decoded, raw, _ = safe_decode_token(tokenizer, token_id)
-        text = decoded if decoded else raw
+        text = raw if raw else decoded
         if text is None:
             text = f"<{token_id}>"
         cache[token_id] = text
@@ -377,7 +377,7 @@ class ReadoutRow:
     count_by_layer: list[int]  # aligned with slice.layers
 
 
-def aggregate_readouts(slice_: LensSlice, *, limit: int = 50) -> list[ReadoutRow]:
+def aggregate_readouts(slice_: LensSlice, *, limit: int | None = 50) -> list[ReadoutRow]:
     """Neuronpedia-style aggregation: which tokens appear across the selected
     cells, how often, and at which layers."""
     counts: dict[int, ReadoutRow] = {}
@@ -398,4 +398,4 @@ def aggregate_readouts(slice_: LensSlice, *, limit: int = 50) -> list[ReadoutRow
                 row.count += 1
                 row.count_by_layer[i] += 1
     ranked = sorted(counts.values(), key=lambda r: (-r.count, r.token_id))
-    return ranked[:limit]
+    return ranked if limit is None else ranked[:limit]

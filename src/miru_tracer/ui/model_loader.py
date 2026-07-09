@@ -13,6 +13,29 @@ from miru_tracer.core.session_manager import get_session_manager
 
 logger = get_logger(__name__)
 
+QUICK_MODEL_CHOICES = (
+    "Qwen/Qwen3-0.6B",
+    "Qwen/Qwen3-4B",
+    "Other...",
+)
+
+
+CUSTOM_MODEL_CHOICE = "Other..."
+
+
+def resolve_model_name(quick_choice: str | None, custom_model: str | None) -> str:
+    """Resolve the model name from the preset selector plus optional textbox."""
+    if quick_choice == CUSTOM_MODEL_CHOICE:
+        return (custom_model or "").strip()
+    return (quick_choice or "").strip()
+
+
+def toggle_custom_model_field(quick_choice: str | None):
+    """Show the freeform HF model field only for the custom option."""
+    if quick_choice == CUSTOM_MODEL_CHOICE:
+        return gr.update(visible=True, value="")
+    return gr.update(visible=False, value=quick_choice or "")
+
 
 def create_model_loader_tab(model_manager: ModelManager):
     """
@@ -57,9 +80,17 @@ def create_model_loader_tab(model_manager: ModelManager):
             )
 
         with gr.Row(), gr.Column(scale=3):
+            quick_model = gr.Dropdown(
+                choices=list(QUICK_MODEL_CHOICES),
+                value=QUICK_MODEL_CHOICES[0],
+                label="Quick select",
+                info="Pick a common model, or choose Other... for a HuggingFace identifier.",
+            )
             model_name = gr.Textbox(
-                label="Load a new model",
+                label="HuggingFace model",
                 placeholder="e.g., Qwen/Qwen3-0.6B",
+                value=QUICK_MODEL_CHOICES[0],
+                visible=False,
                 info="Load a model using its HF identifier",
             )
             with gr.Row():
@@ -107,8 +138,11 @@ def create_model_loader_tab(model_manager: ModelManager):
         def buttons_disabled():
             return gr.update(interactive=False), gr.update(interactive=False)
 
-        def load_model_handler(model_name_val, quant_val, trust_val, minimize_ram_val):
+        def load_model_handler(
+            quick_model_val, model_name_val, quant_val, trust_val, minimize_ram_val
+        ):
             """Load a model, streaming status so the user sees progress."""
+            model_name_val = resolve_model_name(quick_model_val, model_name_val)
             if not model_name_val:
                 logger.warning("Model load attempted with empty model name")
                 yield (
@@ -238,9 +272,16 @@ def create_model_loader_tab(model_manager: ModelManager):
                     *buttons_enabled(),
                 )
 
+        quick_model.change(
+            fn=toggle_custom_model_field,
+            inputs=[quick_model],
+            outputs=[model_name],
+        )
         load_button.click(
             fn=load_model_handler,
-            inputs=[model_name, quantization, trust_remote_code, minimize_ram],
+            inputs=[
+                quick_model, model_name, quantization, trust_remote_code, minimize_ram,
+            ],
             outputs=outputs,
         )
         unload_button.click(fn=unload_model_handler, inputs=[], outputs=outputs)

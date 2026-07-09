@@ -61,16 +61,24 @@ class TestLensTabFlow:
     def test_multi_intervention_steering_shows_in_text_and_readouts(self, lens_app):
         client = lens_app
         # Two simultaneous interventions — beyond Neuronpedia's single one.
-        client.predict("steer", "A", "", 0, 3.0, "jacobian", api_name="/add_intervention")
-        result = client.predict(
-            "steer", "B", "", 1, 2.0, "logit", api_name="/add_intervention"
+        client.predict(
+            "steer", "A", "Text", "", "Text", 0, 2.0, "jacobian",
+            api_name="/add_intervention",
         )
-        assert "2 intervention(s)" in result[1]
+        result = client.predict(
+            "steer", "B", "Text", "", "Text", 1, 2.0, "logit",
+            api_name="/add_intervention",
+        )
+        assert "<table" in result[0]
+        assert "steer" in result[0] and "jacobian" in result[0] and "logit" in result[0]
+        assert "2 enabled intervention(s)" in result[1]
+        pinned_result = client.predict("A", "Text", api_name="/add_pinned")
+        assert "1 pinned token" in pinned_result[2]
 
         out = client.predict(
             "Completion", "Hello world", "[]", "", "Template default", "",
             6, "greedy", 1.0,
-            "Jacobian", 0, -1, 1, 8, False, "A",
+            "Jacobian", 0, -1, 1, 8, False,
             api_name="/generate_and_analyze",
         )
         readout_html, _dist, _heatmap, _pinned, status, text = out[:6]
@@ -100,24 +108,34 @@ class TestLensTabFlow:
         # State inputs (analysis/positions/active_view) are excluded from the
         # client signature, so this passes only the lens controls.
         out = client.predict(
-            "Logit", 0, -1, 1, 8, False, "A", api_name="/update_readouts"
+            "Logit", 0, -1, 1, 8, False, api_name="/update_readouts"
         )
         status = out[-1]
         assert "⚠" in status and "jacobian basis" in status and "@L0" in status
 
-    def test_remove_and_clear_interventions(self, lens_app):
+    def test_active_interventions_table_and_clear(self, lens_app):
         client = lens_app
-        client.predict("ablate", "C", "", 0, 1.0, "logit", api_name="/add_intervention")
-        removed = client.predict(0, api_name="/remove_intervention")
-        assert "Removed #0" in removed[1]
+        added = client.predict(
+            "ablate", "C", "Text", "", "Text", 0, 1.0, "logit",
+            api_name="/add_intervention",
+        )
+        assert 'data-miru-iv-action="delete"' in added[0]
+        assert 'style="width:100%; border:1px solid rgba(127,127,127,0.18) !important;' in added[0]
+        duplicate = client.predict(
+            "ablate", "C", "Text", "", "Text", 0, 1.0, "logit",
+            api_name="/add_intervention",
+        )
+        assert duplicate[0].count('data-miru-iv-row="') == 1
+        assert "Skipped 1 duplicate intervention(s)" in duplicate[1]
         cleared = client.predict(api_name="/clear_interventions")
+        assert "No active interventions" in cleared[0]
         assert "Cleared" in cleared[1]
 
     def test_logit_mode_without_fitted_lens_still_works(self, lens_app):
         out = lens_app.predict(
             "Completion", "Hello world", "[]", "", "Template default", "",
             3, "greedy", 1.0,
-            "Logit", 0, -1, 1, 5, False, "",
+            "Logit", 0, -1, 1, 5, False,
             api_name="/generate_and_analyze",
         )
         status = out[4]

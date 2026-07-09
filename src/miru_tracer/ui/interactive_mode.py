@@ -208,6 +208,32 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             undo_button = gr.Button("Step Back (Undo)", variant="secondary")
             step_button = gr.Button("Next Step", variant="primary", size="lg")
 
+        with gr.Accordion("Layer Lens (current position)", open=False):
+            gr.Markdown(
+                "Per-layer readout of the **next-token** position via the "
+                "logit or Jacobian lens. Refresh runs one extra forward pass. "
+                "Interventions added in the Lens tab can be applied to this "
+                "session here. ⚠️ *Experimental — still being tested; "
+                "readouts may currently yield nonsense.*"
+            )
+            with gr.Row():
+                lens_mode_choice = gr.Radio(
+                    choices=list(LENS_MODE_CHOICES), value="Logit", label="Lens"
+                )
+                lens_stride = gr.Number(
+                    minimum=1, value=1, precision=0, label="Layer stride"
+                )
+                lens_top_k = gr.Number(
+                    minimum=1, value=50, precision=0, label="Readouts per layer"
+                )
+            with gr.Row():
+                lens_refresh_button = gr.Button("Refresh lens", variant="secondary")
+                lens_apply_iv_button = gr.Button(
+                    "Apply Lens-tab interventions to this session", size="sm"
+                )
+            lens_status = gr.Textbox(label="Lens status", interactive=False, lines=1)
+            lens_plot = gr.Plot(label="Layer readouts at the next-token position")
+
         gr.Markdown("### Navigation & Export")
         with gr.Row():
             go_to_step_input = gr.Number(
@@ -230,30 +256,6 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             interactive=False,
             variant="secondary",
         )
-
-        with gr.Accordion("Layer Lens (current position)", open=False):
-            gr.Markdown(
-                "Per-layer readout of the **next-token** position via the "
-                "logit or Jacobian lens. Refresh runs one extra forward pass. "
-                "Interventions added in the Lens tab can be applied to this "
-                "session here. ⚠️ *Experimental — still being tested; "
-                "readouts may currently yield nonsense.*"
-            )
-            with gr.Row():
-                lens_mode_choice = gr.Radio(
-                    choices=list(LENS_MODE_CHOICES), value="Logit", label="Lens"
-                )
-                lens_stride = gr.Number(
-                    minimum=1, value=1, precision=0, label="Layer stride"
-                )
-                lens_top_k = gr.Slider(1, 50, value=20, step=1, label="Readouts per layer")
-            with gr.Row():
-                lens_refresh_button = gr.Button("Refresh lens", variant="secondary")
-                lens_apply_iv_button = gr.Button(
-                    "Apply Lens-tab interventions to this session", size="sm"
-                )
-            lens_status = gr.Textbox(label="Lens status", interactive=False, lines=1)
-            lens_plot = gr.Plot(label="Layer readouts at the next-token position")
 
         # Session state - only stores the session ID string
         session_state = gr.State(value=None)

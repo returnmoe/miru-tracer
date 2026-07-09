@@ -2,14 +2,50 @@
 
 from __future__ import annotations
 
-import pandas as pd
+import html
+import json
 
 from miru_tracer.core.interventions import Intervention
 from miru_tracer.core.tokenizer_utils import visible_whitespace
+from miru_tracer.ui.helpers import static_table_html
 
 LENS_MODE_CHOICES = ("Logit", "Jacobian", "Diff (Jacobian − Logit)")
 
 _SPARK_BLOCKS = "▁▂▃▄▅▆▇█"
+
+INTERVENTIONS_TABLE_JS = """
+element.addEventListener('click', (event) => {
+    const target = event.target.closest?.('[data-miru-iv-action]');
+    if (!target || target.dataset.miruIvAction !== 'delete') return;
+    event.preventDefault();
+    event.stopPropagation();
+    trigger('click', {
+        action: 'delete',
+        index: Number(target.dataset.index),
+    });
+});
+element.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (target.dataset?.miruIvAction !== 'toggle') return;
+    trigger('click', {
+        action: 'toggle',
+        index: Number(target.dataset.index),
+        enabled: target.checked === true,
+    });
+});
+"""
+
+_IV_BORDER = "1px solid rgba(127,127,127,0.18)"
+_IV_TABLE_STYLE = (
+    f"width:100%; border:{_IV_BORDER} !important; border-collapse:collapse; "
+    "table-layout:fixed; font-size:0.92rem;"
+)
+_IV_CELL_STYLE = (
+    f"border:{_IV_BORDER} !important; "
+    "padding:0.35rem 0.45rem; vertical-align:middle; overflow-wrap:anywhere;"
+)
+_IV_TH_STYLE = f"{_IV_CELL_STYLE} color:var(--body-text-color-subdued); font-weight:600; text-align:left;"
 
 
 def lens_mode_key(ui_choice: str) -> str:
@@ -104,6 +140,150 @@ def parse_token_refs(text: str, tokenizer, mode: str) -> list[int]:
     return ids
 
 
+def add_pinned_token(
+    pinned_ids: list[int], token_ref: str, tokenizer, mode: str
+) -> list[int]:
+    """Append one pinned token id, preserving order and avoiding duplicates."""
+    token_id = token_ref_to_id(token_ref, tokenizer, mode)
+    updated = list(pinned_ids or [])
+    if token_id not in updated:
+        updated.append(token_id)
+    return updated
+
+
+def remove_pinned_tokens(pinned_ids: list[int], selected: list[str]) -> list[int]:
+    selected_ids = {int(s) for s in (selected or [])}
+    return [token_id for token_id in (pinned_ids or []) if token_id not in selected_ids]
+
+
+def pinned_token_choices(pinned_ids: list[int], tokenizer=None) -> list[tuple[str, str]]:
+    choices = []
+    for token_id in pinned_ids or []:
+        label = str(token_id)
+        if tokenizer is not None:
+            label = f"{token_id}: {tokenizer.convert_ids_to_tokens([token_id])[0]}"
+        choices.append((label, str(token_id)))
+    return choices
+
+
+def pinned_tokens_table_html(pinned_ids: list[int], tokenizer=None) -> str:
+    if not pinned_ids:
+        return '<p style="margin-top:6px; opacity:0.72;">No pinned tokens.</p>'
+    rows = []
+    for token_id in pinned_ids:
+        raw = decoded = str(token_id)
+        if tokenizer is not None:
+            raw = tokenizer.convert_ids_to_tokens([token_id])[0]
+            decoded = tokenizer.decode([token_id])
+        rows.append([token_id, raw, decoded])
+    return static_table_html(["ID", "Token", "Decoded"], rows)
+
+
+def intervention_row(intervention: Intervention, *, enabled: bool = True) -> dict:
+    return {"enabled": bool(enabled), "intervention": intervention}
+
+
+def intervention_signature(iv: Intervention) -> tuple:
+    """Stable key for deciding whether two UI interventions are duplicates."""
+    if iv.kind == "steer":
+        return (iv.kind, iv.layer, iv.token_id, float(iv.strength), iv.basis)
+    if iv.kind == "swap":
+        return (iv.kind, iv.layer, iv.token_id, iv.token_id_to, iv.basis)
+    return (iv.kind, iv.layer, iv.token_id, iv.basis)
+
+
+def add_unique_intervention_rows(
+    rows: list, candidates: list
+) -> tuple[list, list, int]:
+    """Append candidates whose effective intervention parameters are new."""
+    updated = list(rows or [])
+    seen = {
+        intervention_signature(row if isinstance(row, Intervention) else row["intervention"])
+        for row in updated
+    }
+    added = []
+    skipped = 0
+    for row in candidates:
+        iv = row if isinstance(row, Intervention) else row["intervention"]
+        signature = intervention_signature(iv)
+        if signature in seen:
+            skipped += 1
+            continue
+        updated.append(row)
+        added.append(row)
+        seen.add(signature)
+    return updated, added, skipped
+
+
+def enabled_interventions(rows: list) -> list[Intervention]:
+    enabled: list[Intervention] = []
+    for row in rows or []:
+        if isinstance(row, Intervention):
+            enabled.append(row)
+        elif row.get("enabled", True):
+            enabled.append(row["intervention"])
+    return enabled
+
+
+def intervention_row_choices(rows: list, tokenizer=None) -> list[tuple[str, str]]:
+    choices = []
+    for i, row in enumerate(rows or []):
+        iv = row if isinstance(row, Intervention) else row["intervention"]
+        enabled = True if isinstance(row, Intervention) else row.get("enabled", True)
+        mark = "on" if enabled else "off"
+        choices.append((f"{i}: {mark} · {iv.describe(tokenizer)}", str(i)))
+    return choices
+
+
+def set_intervention_rows_enabled(rows: list, selected: list[str], enabled: bool) -> list:
+    selected_ids = {int(s) for s in (selected or [])}
+    updated = []
+    for i, row in enumerate(rows or []):
+        if isinstance(row, Intervention):
+            row = intervention_row(row)
+        updated.append({**row, "enabled": enabled} if i in selected_ids else row)
+    return updated
+
+
+def delete_intervention_rows(rows: list, selected: list[str]) -> list:
+    selected_ids = {int(s) for s in (selected or [])}
+    return [row for i, row in enumerate(rows or []) if i not in selected_ids]
+
+
+def apply_intervention_table_action(rows: list, payload: str | dict) -> tuple[list, str]:
+    """Apply one action emitted by the custom Active Interventions table."""
+    if isinstance(payload, dict):
+        data = payload
+    else:
+        try:
+            data = json.loads(payload or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return list(rows or []), "Ignored invalid intervention action."
+
+    action = data.get("action")
+    try:
+        index = int(data.get("index"))
+    except (TypeError, ValueError):
+        return list(rows or []), "Ignored invalid intervention action."
+
+    updated = []
+    for row in rows or []:
+        updated.append(intervention_row(row) if isinstance(row, Intervention) else row)
+
+    if index < 0 or index >= len(updated):
+        return updated, "Ignored invalid intervention action."
+
+    if action == "toggle":
+        updated[index] = {**updated[index], "enabled": bool(data.get("enabled"))}
+        state = "enabled" if updated[index]["enabled"] else "disabled"
+        return updated, f"Intervention {index} {state}."
+    if action == "delete":
+        return [row for i, row in enumerate(updated) if i != index], (
+            f"Deleted intervention {index}."
+        )
+    return updated, "Ignored invalid intervention action."
+
+
 def sparkline(counts: list[int]) -> str:
     """Compact unicode bar chart of per-layer counts."""
     peak = max(counts) if counts else 0
@@ -115,13 +295,50 @@ def sparkline(counts: list[int]) -> str:
     )
 
 
-def interventions_dataframe(
-    interventions: list[Intervention], tokenizer=None
-) -> pd.DataFrame:
-    return pd.DataFrame(
-        [[i, iv.describe(tokenizer), iv.basis] for i, iv in enumerate(interventions)],
-        columns=["#", "Intervention", "Basis"],
-    )
+def interventions_table_html(interventions: list, tokenizer=None) -> str:
+    if not interventions:
+        return '<p style="margin-top:6px; opacity:0.72;">No active interventions.</p>'
+
+    rows = [
+        '<div class="miru-iv-table-wrap">',
+        f'<table class="miru-iv-table" style="{_IV_TABLE_STYLE}">',
+        "<thead><tr>",
+        f'<th style="{_IV_TH_STYLE}; width:3.2rem; text-align:center;">On</th>'
+        f'<th style="{_IV_TH_STYLE}; width:3.6rem;">#</th>'
+        f'<th style="{_IV_TH_STYLE}; width:5.5rem;">Kind</th>'
+        f'<th style="{_IV_TH_STYLE}">Intervention</th>'
+        f'<th style="{_IV_TH_STYLE}; width:5.5rem;">Basis</th>'
+        f'<th style="{_IV_TH_STYLE}; width:3.6rem;">α</th>'
+        f'<th style="{_IV_TH_STYLE}; width:5.6rem; text-align:right;"></th>',
+        "</tr></thead><tbody>",
+    ]
+    for i, row in enumerate(interventions):
+        iv = row if isinstance(row, Intervention) else row["intervention"]
+        enabled = True if isinstance(row, Intervention) else row.get("enabled", True)
+        strength = f"{iv.strength:+g}" if iv.kind == "steer" else ""
+        checked = " checked" if enabled else ""
+        muted = "" if enabled else " miru-iv-row-disabled"
+        rows.append(
+            f'<tr class="{muted.strip()}" data-miru-iv-row="{i}" '
+            f'data-miru-iv-enabled="{str(enabled).lower()}">'
+            f'<td class="miru-iv-on" style="{_IV_CELL_STYLE} text-align:center;">'
+            f'<input type="checkbox" class="miru-iv-toggle" '
+            f'data-miru-iv-action="toggle" data-index="{i}"{checked} '
+            f'aria-label="Enable intervention {i}">'
+            "</td>"
+            f'<td style="{_IV_CELL_STYLE}">{i}</td>'
+            f'<td style="{_IV_CELL_STYLE}">{html.escape(iv.kind)}</td>'
+            f'<td style="{_IV_CELL_STYLE}">{html.escape(iv.describe(tokenizer))}</td>'
+            f'<td style="{_IV_CELL_STYLE}">{html.escape(iv.basis)}</td>'
+            f'<td style="{_IV_CELL_STYLE}">{html.escape(strength)}</td>'
+            f'<td class="miru-iv-actions" style="{_IV_CELL_STYLE} text-align:right;">'
+            f'<button type="button" class="miru-iv-delete" '
+            f'data-miru-iv-action="delete" data-index="{i}" '
+            f'aria-label="Delete intervention {i}">Remove</button>'
+            "</td></tr>"
+        )
+    rows.append("</tbody></table></div>")
+    return "".join(rows)
 
 
 def describe_with_basis(iv: Intervention, tokenizer=None) -> str:

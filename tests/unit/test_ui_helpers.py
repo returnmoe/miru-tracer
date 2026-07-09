@@ -19,6 +19,7 @@ from miru_tracer.ui.helpers import (
     toggle_think_prefill,
     ui_sampling_params,
 )
+from miru_tracer.ui.theme import footer_js
 
 
 class TestParseChatMessages:
@@ -157,3 +158,13 @@ class TestStaticTableHtml:
 
     def test_empty_rows(self):
         assert static_table_html(["A"], []) == ""
+
+
+class TestThemeJs:
+    def test_footer_js_is_function_expression(self):
+        script = footer_js("test")
+        assert script.lstrip().startswith("() => {")
+        assert not script.lstrip().startswith("function()")
+        assert "miruIvBridgeInstalled" not in script
+        assert "miru-iv-action-apply" not in script
+        assert "footer-version" in script

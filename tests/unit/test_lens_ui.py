@@ -5,17 +5,31 @@ import pytest
 from miru_tracer.core.interventions import Intervention
 from miru_tracer.core.lens import LensSlice, ReadoutRow
 from miru_tracer.ui.lens_common import (
+    INTERVENTIONS_TABLE_JS,
+    add_pinned_token,
+    add_unique_intervention_rows,
+    apply_intervention_table_action,
+    delete_intervention_rows,
+    enabled_interventions,
     get_active_interventions,
     highlighted_tokens,
     intervened_layer_titles,
+    intervention_row,
+    intervention_row_choices,
+    intervention_signature,
     intervention_visibility_warning,
     interventions_summary,
+    interventions_table_html,
     layer_selection,
     lens_mode_key,
     parse_layer_refs,
     parse_token_refs,
+    pinned_token_choices,
+    pinned_tokens_table_html,
+    remove_pinned_tokens,
     selection_summary,
     set_active_interventions,
+    set_intervention_rows_enabled,
     sparkline,
     toggle_position,
     token_mode_key,
@@ -204,6 +218,126 @@ class TestActiveInterventionsRegistry:
         set_active_interventions([])
 
 
+class TestActiveInterventionsTable:
+    def test_empty_message(self):
+        out = interventions_table_html([])
+        assert "No active interventions" in out
+        assert "<table" not in out
+
+    def test_rows_rendered_and_escaped(self, tiny_tokenizer):
+        token_id = tiny_tokenizer.encode("<b>", add_special_tokens=False)[0]
+        iv = Intervention(kind="steer", layer=0, token_id=token_id, basis="logit")
+        out = interventions_table_html([iv], tiny_tokenizer)
+        assert "<table" in out
+        assert ">0<" in out and ">logit<" in out
+        assert "steer" in out
+        assert 'data-miru-iv-action="toggle"' in out
+        assert 'data-miru-iv-action="delete"' in out
+        assert 'style="width:100%; border:1px solid rgba(127,127,127,0.18) !important;' in out
+        assert "border:1px solid rgba(127,127,127,0.18) !important" in out
+
+    def test_table_js_triggers_gradio_html_click(self):
+        assert "trigger('click'" in INTERVENTIONS_TABLE_JS
+        assert "miru-iv-action-payload" not in INTERVENTIONS_TABLE_JS
+
+    def test_enabled_only_and_row_actions(self):
+        first = intervention_row(Intervention(kind="steer", layer=0, token_id=1))
+        second = intervention_row(
+            Intervention(kind="ablate", layer=1, token_id=2), enabled=False
+        )
+        assert enabled_interventions([first, second]) == [first["intervention"]]
+
+        disabled = set_intervention_rows_enabled([first, second], ["0"], False)
+        assert enabled_interventions(disabled) == []
+        enabled = set_intervention_rows_enabled(disabled, ["1"], True)
+        assert enabled_interventions(enabled) == [second["intervention"]]
+        assert delete_intervention_rows(enabled, ["0"]) == [enabled[1]]
+
+    def test_row_choices(self):
+        rows = [intervention_row(Intervention(kind="steer", layer=0, token_id=1))]
+        choices = intervention_row_choices(rows)
+        assert choices[0][1] == "0"
+        assert "on" in choices[0][0]
+
+    def test_duplicate_guard_skips_exact_matches(self):
+        row = intervention_row(
+            Intervention(kind="steer", layer=0, token_id=1, strength=0.5)
+        )
+        duplicate = intervention_row(
+            Intervention(kind="steer", layer=0, token_id=1, strength=0.5)
+        )
+        different = intervention_row(
+            Intervention(kind="steer", layer=0, token_id=1, strength=0.6)
+        )
+        updated, added, skipped = add_unique_intervention_rows(
+            [row], [duplicate, different]
+        )
+        assert updated == [row, different]
+        assert added == [different]
+        assert skipped == 1
+
+    def test_duplicate_signature_ignores_ineffective_strength(self):
+        assert intervention_signature(
+            Intervention(kind="ablate", layer=0, token_id=1, strength=0.0)
+        ) == intervention_signature(
+            Intervention(kind="ablate", layer=0, token_id=1, strength=2.0)
+        )
+        assert intervention_signature(
+            Intervention(
+                kind="swap", layer=0, token_id=1, token_id_to=2, strength=-1.0
+            )
+        ) == intervention_signature(
+            Intervention(
+                kind="swap", layer=0, token_id=1, token_id_to=2, strength=1.0
+            )
+        )
+        assert intervention_signature(
+            Intervention(kind="steer", layer=0, token_id=1, strength=0.0)
+        ) != intervention_signature(
+            Intervention(kind="steer", layer=0, token_id=1, strength=1.0)
+        )
+
+    def test_table_action_toggle_and_delete(self):
+        rows = [
+            intervention_row(Intervention(kind="steer", layer=0, token_id=1)),
+            intervention_row(Intervention(kind="ablate", layer=1, token_id=2)),
+        ]
+        updated, status = apply_intervention_table_action(
+            rows, '{"action":"toggle","index":0,"enabled":false}'
+        )
+        assert "disabled" in status
+        assert enabled_interventions(updated) == [rows[1]["intervention"]]
+
+        updated, status = apply_intervention_table_action(
+            updated, '{"action":"delete","index":1}'
+        )
+        assert "Deleted intervention 1" in status
+        assert len(updated) == 1
+        assert updated[0]["intervention"] == rows[0]["intervention"]
+
+    def test_table_action_rejects_bad_payload(self):
+        rows = [intervention_row(Intervention(kind="steer", layer=0, token_id=1))]
+        updated, status = apply_intervention_table_action(rows, "not-json")
+        assert updated == rows
+        assert "Ignored invalid" in status
+
+
+class TestPinnedTokens:
+    def test_add_remove_and_choices(self, tiny_tokenizer):
+        token_id = tiny_tokenizer.encode("A", add_special_tokens=False)[0]
+        ids = add_pinned_token([], "A", tiny_tokenizer, "text")
+        assert ids == [token_id]
+        assert add_pinned_token(ids, str(token_id), tiny_tokenizer, "id") == ids
+        assert pinned_token_choices(ids, tiny_tokenizer)[0][1] == str(token_id)
+        assert remove_pinned_tokens(ids, [str(token_id)]) == []
+
+    def test_table(self, tiny_tokenizer):
+        assert "No pinned tokens" in pinned_tokens_table_html([])
+        token_id = tiny_tokenizer.encode("A", add_special_tokens=False)[0]
+        out = pinned_tokens_table_html([token_id], tiny_tokenizer)
+        assert "<table" in out and str(token_id) in out
+
+
 SLICE = LensSlice(
     mode="logit",
     layers=[0, 2],
@@ -258,10 +392,14 @@ class TestLensPlots:
 class TestLensViews:
     def test_readouts_table(self):
         rows = [ReadoutRow(token_id=9, text=" tok", count=5, count_by_layer=[5, 0])]
-        out = readouts_table_html(rows)
-        assert ">␣tok<" in out  # leading space made visible
+        out = readouts_table_html(rows, layers=[0, 2])
+        assert "> tok<" in out  # tokenizer-native token text is preserved
         assert ">9<" in out and ">5<" in out
-        assert "█" in out  # sparkline
+        assert "text-align:left" in out
+        assert "border:1px solid rgba(127,127,127,0.18) !important" in out
+        assert "rgba(79,70,229" in out  # fixed layer distribution bars
+        assert 'title="Layer 0: 5 occurrences"' in out
+        assert 'title="Layer 2: 0 occurrences"' in out
         assert readouts_table_html([]) == ""
         assert "⚡" not in out  # no intervention caption without the arg
 

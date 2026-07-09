@@ -46,10 +46,8 @@ MIRU_CSS = """
     margin-right: auto;
 }
 
-/* Tabs with reading-oriented content center a narrower column inside the
-   1400px shell; the Lens tab uses the full width for its two-pane layout. */
+/* Standard page content fills the same 1400px shell as the Lens tab. */
 .miru-narrow {
-    max-width: 1024px;
     width: 100%;
     margin-left: auto !important;
     margin-right: auto !important;
@@ -68,6 +66,130 @@ MIRU_CSS = """
 /* Token sequence (Lens tab): spans toggle position selection on click */
 .miru-token-select .token-container {
     cursor: pointer;
+}
+
+.miru-interventions-panel .block,
+.miru-interventions-panel .form,
+.miru-interventions-panel fieldset {
+    border-color: rgba(127, 127, 127, 0.18) !important;
+}
+
+.miru-interventions-panel .wrap {
+    gap: 0.45rem;
+}
+
+.miru-interventions-panel .miru-iv-pair-row {
+    align-items: end;
+}
+
+.miru-interventions-panel .miru-iv-pair-row > .form {
+    align-items: end;
+}
+
+.miru-hidden-bridge {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    left: -10000px !important;
+    top: auto !important;
+}
+
+.miru-iv-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+}
+
+#miru-iv-table,
+#miru-iv-table .html-container,
+#miru-iv-table .prose {
+    border-color: rgba(127, 127, 127, 0.18) !important;
+    box-shadow: none !important;
+}
+
+#miru-iv-table table,
+#miru-iv-table thead,
+#miru-iv-table tbody,
+#miru-iv-table tr,
+#miru-iv-table th,
+#miru-iv-table td {
+    border-color: rgba(127, 127, 127, 0.18) !important;
+}
+
+.miru-iv-table {
+    width: 100%;
+    border: 1px solid rgba(127, 127, 127, 0.18) !important;
+    border-collapse: collapse;
+    table-layout: fixed;
+    font-size: 0.92rem;
+}
+
+.miru-iv-section-title {
+    padding-top: 0.75rem;
+}
+
+.miru-iv-table th,
+.miru-iv-table td {
+    border: 1px solid rgba(127, 127, 127, 0.18) !important;
+    padding: 0.35rem 0.45rem;
+    vertical-align: middle;
+    overflow-wrap: anywhere;
+}
+
+.miru-iv-table th {
+    color: var(--body-text-color-subdued);
+    font-weight: 600;
+    text-align: left;
+}
+
+.miru-iv-table th:nth-child(1),
+.miru-iv-table td:nth-child(1) {
+    width: 3.2rem;
+    text-align: center;
+}
+
+.miru-iv-table th:nth-child(2),
+.miru-iv-table td:nth-child(2),
+.miru-iv-table th:nth-child(6),
+.miru-iv-table td:nth-child(6) {
+    width: 3.6rem;
+}
+
+.miru-iv-table th:nth-child(3),
+.miru-iv-table td:nth-child(3),
+.miru-iv-table th:nth-child(5),
+.miru-iv-table td:nth-child(5) {
+    width: 5.5rem;
+}
+
+.miru-iv-table th:nth-child(7),
+.miru-iv-table td:nth-child(7) {
+    width: 5.6rem;
+    text-align: right;
+}
+
+.miru-iv-row-disabled {
+    opacity: 0.58;
+}
+
+.miru-iv-toggle {
+    cursor: pointer;
+}
+
+.miru-iv-delete {
+    border: 1px solid var(--border-color-primary);
+    border-radius: 6px;
+    background: var(--button-secondary-background-fill);
+    color: var(--body-text-color);
+    cursor: pointer;
+    font: inherit;
+    padding: 0.2rem 0.45rem;
+}
+
+.miru-iv-delete:hover {
+    border-color: var(--color-accent);
 }
 
 /* Footer items styling */
@@ -92,7 +214,7 @@ def footer_js(version: str) -> str:
     this silently does nothing instead of breaking the app.
     """
     return f"""
-    function() {{
+    () => {{
         const footer = document.querySelector('footer');
         if (!footer) return;
 

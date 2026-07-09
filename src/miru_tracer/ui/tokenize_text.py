@@ -7,7 +7,21 @@ from miru_tracer.core.tokenizer_utils import (
     detect_byte_level_bpe,
     safe_decode_token,
 )
-from miru_tracer.ui.helpers import static_table_html
+
+TOKENIZE_HEADERS = ["Position", "Type", "ID", "Representation"]
+
+
+def tokenize_rows(tokenizer, text: str) -> list[list]:
+    """Build rows for the Tokenize Text results table."""
+    token_ids = tokenizer.encode(text, add_special_tokens=False)
+    special_token_ids = set(getattr(tokenizer, "all_special_ids", []))
+
+    rows = []
+    for i, token_id in enumerate(token_ids):
+        raw_token = safe_decode_token(tokenizer, token_id)[1]
+        token_type = "Special 🟡" if token_id in special_token_ids else "Regular"
+        rows.append([i, token_type, token_id, raw_token])
+    return rows
 
 
 def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
@@ -32,10 +46,12 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
 
         gr.Markdown("### Results")
 
-        # Server-rendered HTML rather than gr.Dataframe: Gradio 6's
-        # virtualized dataframe keeps the previous row count when a new
-        # value changes the table's shape (see helpers.static_table_html).
-        tokens_output = gr.HTML(elem_classes="token-table")
+        tokens_output = gr.Dataframe(
+            headers=TOKENIZE_HEADERS,
+            datatype=["number", "str", "number", "str"],
+            label="Tokens",
+            interactive=False,
+        )
 
         additional_info = gr.Textbox(
             elem_classes="miru-textbox-mono",
@@ -51,44 +67,23 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
             tokenizer = model_manager.get_tokenizer()
 
             if tokenizer is None:
-                return "", "Error: No model loaded. Please load a model first."
+                return [], "Error: No model loaded. Please load a model first."
 
             if not text:
-                return "", "Error: Please enter text to tokenize"
+                return [], "Error: Please enter text to tokenize"
 
             try:
-                # Tokenize with add_special_tokens=False (don't auto-add BOS/EOS)
-                token_ids = tokenizer.encode(text, add_special_tokens=False)
-
-                special_token_ids = set(getattr(tokenizer, "all_special_ids", []))
-
-                # Build table rows
-                rows = []
-                for i, token_id in enumerate(token_ids):
-                    # Get only the raw token (second return value from safe_decode_token)
-                    result = safe_decode_token(tokenizer, token_id)
-                    raw_token = result[1]
-
-                    # Determine token type with visual indicator
-                    token_type = (
-                        "Special 🟡" if token_id in special_token_ids else "Regular"
-                    )
-
-                    rows.append([i, token_type, token_id, raw_token])
-
-                table = static_table_html(
-                    ["Position", "Type", "ID", "Representation"], rows
-                )
-                count_msg = f"Total tokens: {len(token_ids)}"
+                rows = tokenize_rows(tokenizer, text)
+                count_msg = f"Total tokens: {len(rows)}"
 
                 # Check for byte-level BPE
                 if detect_byte_level_bpe(tokenizer):
                     count_msg += "\nThis is a byte-level BPE tokenizer. Some tokens may show as incomplete UTF-8 sequences."
 
-                return table, count_msg
+                return rows, count_msg
 
             except Exception as e:
-                return "", f"Error: {str(e)}"
+                return [], f"Error: {str(e)}"
 
         tokenize_button.click(
             fn=tokenize_handler,

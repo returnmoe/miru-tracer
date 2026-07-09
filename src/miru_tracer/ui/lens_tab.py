@@ -54,17 +54,25 @@ from miru_tracer.ui.helpers import (
     toggle_think_prefill,
 )
 from miru_tracer.ui.lens_common import (
+    INTERVENTIONS_TABLE_JS,
     LENS_MODE_CHOICES,
     TOKEN_COLOR_MAP,
+    add_pinned_token,
+    add_unique_intervention_rows,
+    apply_intervention_table_action,
+    enabled_interventions,
     highlighted_tokens,
     intervened_layer_titles,
+    intervention_row,
     intervention_visibility_warning,
-    interventions_dataframe,
     interventions_summary,
+    interventions_table_html,
     layer_selection,
     lens_mode_key,
     parse_layer_refs,
-    parse_token_refs,
+    pinned_token_choices,
+    pinned_tokens_table_html,
+    remove_pinned_tokens,
     selection_summary,
     set_active_interventions,
     toggle_position,
@@ -140,9 +148,89 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             info=RAW_MODE_HELP,
                             elem_classes=["miru-textbox-mono"],
                         )
-                    generate_button = gr.Button(
-                        "Generate & Analyze", variant="primary", size="lg"
-                    )
+
+                    with gr.Accordion(
+                        "Interventions",
+                        open=False,
+                        elem_classes=["miru-interventions-panel"],
+                    ):
+                        gr.Markdown(
+                            "Steer, swap, or ablate readout directions during generation."
+                        )
+                        with gr.Row(equal_height=True):
+                            iv_kind = gr.Radio(
+                                choices=["steer", "swap", "ablate"],
+                                value="steer",
+                                label="Kind",
+                                scale=3,
+                            )
+                            iv_basis = gr.Radio(
+                                choices=["jacobian", "logit"],
+                                value="jacobian",
+                                label="Basis",
+                                scale=2,
+                            )
+                        with gr.Row(
+                            equal_height=True, elem_classes=["miru-iv-pair-row"]
+                        ):
+                            iv_token = gr.Textbox(
+                                label="Token",
+                                placeholder="e.g. Paris",
+                                scale=5,
+                                min_width=260,
+                            )
+                            iv_token_mode = gr.Radio(
+                                choices=["Text", "ID"],
+                                value="Text",
+                                label="Interpret as",
+                                scale=2,
+                                min_width=160,
+                            )
+                        with gr.Row(
+                            equal_height=True, elem_classes=["miru-iv-pair-row"]
+                        ):
+                            iv_swap_to = gr.Textbox(
+                                label="Swap to",
+                                placeholder="e.g. Paris",
+                                interactive=False,
+                                scale=5,
+                                min_width=260,
+                            )
+                            iv_swap_to_mode = gr.Radio(
+                                choices=["Text", "ID"],
+                                value="Text",
+                                label="Interpret as",
+                                interactive=False,
+                                scale=2,
+                                min_width=160,
+                            )
+                        with gr.Row(equal_height=True):
+                            iv_layer = gr.Textbox(
+                                value="0",
+                                label="Layer(s)",
+                                scale=3,
+                            )
+                            iv_strength = gr.Slider(
+                                -2.0,
+                                2.0,
+                                value=0.0,
+                                step=0.05,
+                                label="Strength (steer)",
+                                scale=4,
+                            )
+                        iv_add_button = gr.Button("Add intervention", variant="secondary")
+                        gr.Markdown(
+                            "#### Active interventions",
+                            elem_classes=["miru-iv-section-title"],
+                        )
+                        iv_table = gr.HTML(
+                            interventions_table_html([]),
+                            elem_id="miru-iv-table",
+                            js_on_load=INTERVENTIONS_TABLE_JS,
+                        )
+                        with gr.Row():
+                            iv_clear_button = gr.Button("Clear all", size="sm")
+
                     with gr.Accordion("Generation settings", open=False), gr.Row():
                         strategy = gr.Radio(
                             choices=["greedy", "sampling"],
@@ -158,6 +246,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             interactive=False,
                             info=TEMPERATURE_GREEDY_INFO,
                         )
+                    generate_button = gr.Button("Generate", variant="primary", size="lg")
 
                 status_output = gr.Textbox(
                     label="Status", interactive=False, lines=2, max_lines=4
@@ -168,6 +257,23 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
             # ------------------------------------------ right: lens controls
             with gr.Column(scale=2):
+                with gr.Accordion("Jacobian lens fit file", open=True):
+                    gr.Markdown(
+                        "Fit `J_ℓ` matrices once per model — on a **GPU "
+                        "instance**: `miru-tracer-fit-lens <model> "
+                        "--dim-batch 32` — then load the `lens.safetensors` "
+                        "here. Logit-lens mode never needs a fit file."
+                    )
+                    lens_file_status = gr.Textbox(
+                        label="Fit file status", interactive=False, lines=3
+                    )
+                    lens_file_upload = gr.File(
+                        label="Load fit file (lens.safetensors or legacy lens.pt)",
+                        file_types=[".safetensors", ".pt"],
+                        type="filepath",
+                    )
+                    lens_file_check_button = gr.Button("Check status", size="sm")
+
                 with gr.Group():
                     lens_mode = gr.Radio(
                         choices=list(LENS_MODE_CHOICES),
@@ -186,23 +292,37 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             minimum=1, value=1, precision=0, label="Stride"
                         )
                     with gr.Accordion("Display options", open=False):
-                        readouts_per_cell = gr.Slider(
-                            1, 50, value=20, step=1, label="Readouts per layer+pos"
+                        readouts_per_cell = gr.Number(
+                            minimum=1,
+                            value=50,
+                            precision=0,
+                            label="Readouts per layer+pos",
                         )
                         skip_non_words = gr.Checkbox(
-                            label="Hide non-word tokens", value=False
+                            label="Hide non-word tokens", value=True
                         )
-                        pinned_tokens = gr.Textbox(
-                            label="Pinned tokens",
-                            placeholder="comma-separated: Paris, is, the",
-                            info="Track these tokens' ranks across layers. "
-                            "All entries read per the Text/ID selector.",
+                        gr.Markdown("#### Pinned tokens")
+                        with gr.Row():
+                            pinned_token_ref = gr.Textbox(
+                                label="Token",
+                                placeholder="e.g. Paris",
+                                info="Add one pinned token at a time.",
+                            )
+                            pinned_token_mode = gr.Radio(
+                                choices=["Text", "ID"],
+                                value="Text",
+                                label="Interpret as",
+                            )
+                        pinned_add_button = gr.Button("Add pinned token", size="sm")
+                        pinned_tokens_table = gr.HTML(pinned_tokens_table_html([]))
+                        pinned_select = gr.Dropdown(
+                            choices=[],
+                            multiselect=True,
+                            label="Pinned tokens to remove",
                         )
-                        pinned_tokens_mode = gr.Radio(
-                            choices=["Text", "ID"],
-                            value="Text",
-                            label="Interpret as",
-                        )
+                        with gr.Row():
+                            pinned_remove_button = gr.Button("Remove selected", size="sm")
+                            pinned_clear_button = gr.Button("Clear pinned", size="sm")
 
                 tokens_display = gr.HighlightedText(
                     label="Sequence — click tokens to select positions "
@@ -222,92 +342,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
                 update_button = gr.Button("Update readouts", variant="secondary")
                 gr.Markdown(
-                    "Recomputes the readouts below for the current sequence, "
-                    "using the token selection above. Interventions "
-                    "only change on **Generate & Analyze**."
+                    "Recomputes the readouts below for the current sequence and token selection. "
+                    "Interventions only change on **Generate**."
                 )
-
-                with gr.Accordion("Interventions", open=False):
-                    gr.Markdown(
-                        "Steer, swap, or ablate readout directions during "
-                        "generation — any number at once. Applied on the next "
-                        "**Generate & Analyze**."
-                    )
-                    with gr.Row():
-                        iv_kind = gr.Radio(
-                            choices=["steer", "swap", "ablate"],
-                            value="steer",
-                            label="Kind",
-                        )
-                        iv_token = gr.Textbox(
-                            label="Token", placeholder="e.g. Paris",
-                            info="Read per the Text/ID selector. In Text mode "
-                            "leading spaces count: ' Paris' ≠ 'Paris'.",
-                        )
-                        iv_token_mode = gr.Radio(
-                            choices=["Text", "ID"],
-                            value="Text",
-                            label="Interpret as",
-                        )
-                        iv_swap_to = gr.Textbox(
-                            label="Swap to", placeholder="e.g. Paris",
-                            visible=False,
-                            info="Read per the Text/ID selector. In Text mode "
-                            "leading spaces count: ' Paris' ≠ 'Paris'.",
-                        )
-                        iv_swap_to_mode = gr.Radio(
-                            choices=["Text", "ID"],
-                            value="Text",
-                            label="Interpret as",
-                            visible=False,
-                        )
-                    with gr.Row():
-                        iv_layer = gr.Textbox(
-                            value="0", label="Layer(s)",
-                            info="List/ranges allowed: 11,12-15,18 adds one "
-                            "intervention per layer.",
-                        )
-                        iv_strength = gr.Slider(
-                            -4.0, 4.0, value=1.0, step=0.1, label="Strength (steer)"
-                        )
-                        iv_basis = gr.Radio(
-                            choices=["jacobian", "logit"],
-                            value="jacobian",
-                            label="Basis",
-                        )
-                    with gr.Row():
-                        iv_add_button = gr.Button(
-                            "Add intervention", variant="secondary"
-                        )
-                        iv_remove_index = gr.Number(
-                            minimum=0, value=0, precision=0,
-                            label="#", scale=0, min_width=80,
-                        )
-                        iv_remove_button = gr.Button("Remove #", size="sm")
-                        iv_clear_button = gr.Button("Clear all", size="sm")
-                    iv_table = gr.Dataframe(
-                        headers=["#", "Intervention", "Basis"],
-                        datatype=["number", "str", "str"],
-                        label="Active interventions",
-                        interactive=False,
-                    )
-
-                with gr.Accordion("Jacobian lens fit file", open=False):
-                    gr.Markdown(
-                        "Fit `J_ℓ` matrices once per model — on a **GPU "
-                        "instance**: `miru-tracer-fit-lens <model> "
-                        "--dim-batch 32` — then load the `lens.safetensors` "
-                        "here. Logit-lens mode never needs a fit file."
-                    )
-                    lens_file_status = gr.Textbox(
-                        label="Fit file status", interactive=False, lines=3
-                    )
-                    lens_file_upload = gr.File(
-                        label="Load fit file (lens.safetensors or legacy lens.pt)",
-                        file_types=[".safetensors", ".pt"],
-                        type="filepath",
-                    )
-                    lens_file_check_button = gr.Button("Check status", size="sm")
 
         # ------------------------------------- full-width results, lazy views
         # Readouts table and heatmap are server-rendered static HTML (see
@@ -328,7 +365,8 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         # prompt_len, position_texts)
         analysis_state = gr.State(None)
         positions_state = gr.State([])  # [] = all positions
-        interventions_state = gr.State([])  # list[Intervention]
+        pinned_tokens_state = gr.State([])  # list[token_id]
+        interventions_state = gr.State([])  # list[dict(enabled, intervention)]
         # slice_state: dict(slice=LensSlice, rows=list[ReadoutRow]) — the
         # cached compute the result views render from.
         slice_state = gr.State(None)
@@ -340,7 +378,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
         def compute_slice_bundle(
             analysis, positions, mode_choice, l_start, l_end, l_stride,
-            per_cell, skip_nw, pinned_text, pinned_mode,
+            per_cell, skip_nw, pinned_ids,
         ):
             """One forward pass over the stored sequence -> (bundle, status)."""
             if analysis is None:
@@ -375,9 +413,6 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         )
                 else:
                     dropped = []
-                pinned_ids = parse_token_refs(
-                    pinned_text, tokenizer, token_mode_key(pinned_mode)
-                )
                 seq_len = int(analysis["input_ids"].shape[1])
                 selected = [p for p in positions if 0 <= p < seq_len] or None
 
@@ -394,6 +429,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     )
                     analysis["activations"] = activations
 
+                readout_limit = max(1, int(per_cell))
                 slice_ = compute_lens_slice(
                     model,
                     tokenizer,
@@ -402,13 +438,13 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     positions=selected,
                     mode=mode,
                     jlens=jlens,
-                    top_k=int(per_cell),
+                    top_k=readout_limit,
                     skip_non_words=bool(skip_nw),
-                    pinned_token_ids=pinned_ids,
+                    pinned_token_ids=list(pinned_ids or []),
                     interventions=analysis["iset"],
                     activations=activations,
                 )
-                rows = aggregate_readouts(slice_)
+                rows = aggregate_readouts(slice_, limit=readout_limit)
 
                 n_cells = len(slice_.layers) * len(slice_.positions)
                 where = (
@@ -442,7 +478,10 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         def show_summary_view(bundle):
             if bundle is None:
                 return ""
-            return readouts_table_html(bundle["rows"], bundle.get("intervened"))
+            return readouts_table_html(
+                bundle["rows"], bundle.get("intervened"),
+                layers=bundle["slice"].layers,
+            )
 
         def show_readouts_view(bundle):
             if bundle is None:
@@ -495,11 +534,11 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
         def update_readouts(
             analysis, positions, active_view, mode_choice, l_start, l_end,
-            l_stride, per_cell, skip_nw, pinned_text, pinned_mode,
+            l_stride, per_cell, skip_nw, pinned_ids,
         ):
             bundle, status = compute_slice_bundle(
                 analysis, positions, mode_choice, l_start, l_end, l_stride,
-                per_cell, skip_nw, pinned_text, pinned_mode,
+                per_cell, skip_nw, pinned_ids,
             )
             return (bundle, *render_active_view(bundle, active_view), status)
 
@@ -507,7 +546,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             mode, prompt, chat_msgs, raw_text, think_choice, think_text,
             n_tokens, strat, temp,
             interventions, active_view, mode_choice, l_start, l_end, l_stride,
-            per_cell, skip_nw, pinned_text, pinned_mode,
+            per_cell, skip_nw, pinned_ids,
         ):
             def progress(status, text=""):
                 """Streaming yield: only status/text change while generating."""
@@ -544,8 +583,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             try:
                 tracer = LLMTracer(model, tokenizer, device)
                 jlens = get_lens_store().get(model_manager.get_model_name())
+                active_interventions = enabled_interventions(interventions)
                 try:
-                    tracer.set_interventions(interventions or None, jlens=jlens)
+                    tracer.set_interventions(active_interventions or None, jlens=jlens)
                 except ValueError as e:
                     yield failed(
                         f"Error in interventions: {e}\n"
@@ -590,7 +630,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 positions: list[int] = []  # all
                 bundle, status = compute_slice_bundle(
                     analysis, positions, mode_choice, l_start, l_end, l_stride,
-                    per_cell, skip_nw, pinned_text, pinned_mode,
+                    per_cell, skip_nw, pinned_ids,
                 )
                 yield (
                     bundle,
@@ -653,53 +693,96 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     if kind == "swap"
                     else None
                 )
+                effective_strength = float(strength) if kind == "steer" else 0.0
                 added = [
-                    Intervention(
-                        kind=kind,
-                        layer=layer,
-                        token_id=token_id,
-                        strength=float(strength),
-                        token_id_to=token_id_to,
-                        basis=basis,
+                    intervention_row(
+                        Intervention(
+                            kind=kind,
+                            layer=layer,
+                            token_id=token_id,
+                            strength=effective_strength,
+                            token_id_to=token_id_to,
+                            basis=basis,
+                        )
                     )
                     for layer in parse_layer_refs(layer_refs)
                 ]
-                updated = [*interventions, *added]
-                set_active_interventions(updated)
-                described = added[0].describe(tokenizer)
-                if len(added) > 1:
-                    described += f" … (+{len(added) - 1} more layers)"
+                updated, added, skipped = add_unique_intervention_rows(
+                    interventions, added
+                )
+                set_active_interventions(enabled_interventions(updated))
+                if added:
+                    described = added[0]["intervention"].describe(tokenizer)
+                    if len(added) > 1:
+                        described += f" … (+{len(added) - 1} more layers)"
+                    action = f"Added: {described}."
+                    if skipped:
+                        action += f" Skipped {skipped} duplicate intervention(s)."
+                else:
+                    action = f"Skipped {skipped} duplicate intervention(s)."
                 return (
                     updated,
-                    interventions_dataframe(updated, tokenizer),
-                    f"Added: {described}. "
-                    f"{len(updated)} intervention(s) — regenerate to apply.",
+                    interventions_table_html(updated, tokenizer),
+                    f"{action} "
+                    f"{len(enabled_interventions(updated))} enabled intervention(s) — regenerate to apply.",
                 )
             except ValueError as e:
                 return interventions, gr.update(), f"Error: {e}"
 
-        def remove_intervention(interventions, index):
+        def apply_intervention_action(interventions, evt: gr.EventData):
             tokenizer = model_manager.get_tokenizer()
-            index = int(index) if index is not None else -1
-            if not 0 <= index < len(interventions):
-                return interventions, gr.update(), f"Error: no intervention #{index}"
-            updated = [iv for i, iv in enumerate(interventions) if i != index]
-            set_active_interventions(updated)
+            updated, action_status = apply_intervention_table_action(
+                interventions, getattr(evt, "_data", {})
+            )
+            set_active_interventions(enabled_interventions(updated))
             return (
                 updated,
-                interventions_dataframe(updated, tokenizer),
-                f"Removed #{index}. {len(updated)} intervention(s) — regenerate to apply.",
+                interventions_table_html(updated, tokenizer),
+                f"{action_status} {len(enabled_interventions(updated))} enabled intervention(s) — regenerate to apply.",
             )
 
         def clear_interventions(_interventions):
             set_active_interventions([])
-            return [], interventions_dataframe([], None), (
+            return [], interventions_table_html([], None), (
                 "Cleared all interventions — regenerate to apply."
             )
 
-        def toggle_swap_field(kind):
-            vis = gr.update(visible=kind == "swap")
-            return vis, vis
+        def add_pinned(pinned_ids, token_ref, token_mode):
+            tokenizer = model_manager.get_tokenizer()
+            if tokenizer is None:
+                return pinned_ids, gr.update(), gr.update(), "Error: No model loaded."
+            try:
+                updated = add_pinned_token(
+                    pinned_ids, token_ref, tokenizer, token_mode_key(token_mode)
+                )
+                return (
+                    updated,
+                    pinned_tokens_table_html(updated, tokenizer),
+                    gr.update(choices=pinned_token_choices(updated, tokenizer), value=[]),
+                    f"{len(updated)} pinned token(s).",
+                )
+            except ValueError as e:
+                return pinned_ids, gr.update(), gr.update(), f"Error: {e}"
+
+        def remove_pinned(pinned_ids, selected):
+            tokenizer = model_manager.get_tokenizer()
+            updated = remove_pinned_tokens(pinned_ids, selected)
+            return (
+                updated,
+                pinned_tokens_table_html(updated, tokenizer),
+                gr.update(choices=pinned_token_choices(updated, tokenizer), value=[]),
+                f"{len(updated)} pinned token(s).",
+            )
+
+        def clear_pinned(_pinned_ids):
+            return [], pinned_tokens_table_html([]), gr.update(choices=[], value=[]), (
+                "Cleared pinned tokens."
+            )
+
+        def toggle_intervention_fields(kind):
+            swap_update = gr.update(interactive=kind == "swap")
+            strength_update = gr.update(interactive=kind == "steer")
+            return swap_update, swap_update, strength_update
 
         # ----------------------------------------------------------- fit file
 
@@ -776,14 +859,14 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             outputs=[think_prefill_box],
         )
         iv_kind.change(
-            fn=toggle_swap_field,
+            fn=toggle_intervention_fields,
             inputs=[iv_kind],
-            outputs=[iv_swap_to, iv_swap_to_mode],
+            outputs=[iv_swap_to, iv_swap_to_mode, iv_strength],
         )
 
         lens_controls = [
             lens_mode, layer_start, layer_end, layer_stride,
-            readouts_per_cell, skip_non_words, pinned_tokens, pinned_tokens_mode,
+            readouts_per_cell, skip_non_words, pinned_tokens_state,
         ]
 
         generate_button.click(
@@ -848,15 +931,37 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             ],
             outputs=[interventions_state, iv_table, status_output],
         )
-        iv_remove_button.click(
-            fn=remove_intervention,
-            inputs=[interventions_state, iv_remove_index],
+        iv_table.click(
+            fn=apply_intervention_action,
+            inputs=[interventions_state],
             outputs=[interventions_state, iv_table, status_output],
         )
         iv_clear_button.click(
             fn=clear_interventions,
             inputs=[interventions_state],
             outputs=[interventions_state, iv_table, status_output],
+        )
+
+        pinned_add_button.click(
+            fn=add_pinned,
+            inputs=[pinned_tokens_state, pinned_token_ref, pinned_token_mode],
+            outputs=[
+                pinned_tokens_state, pinned_tokens_table, pinned_select, status_output,
+            ],
+        )
+        pinned_remove_button.click(
+            fn=remove_pinned,
+            inputs=[pinned_tokens_state, pinned_select],
+            outputs=[
+                pinned_tokens_state, pinned_tokens_table, pinned_select, status_output,
+            ],
+        )
+        pinned_clear_button.click(
+            fn=clear_pinned,
+            inputs=[pinned_tokens_state],
+            outputs=[
+                pinned_tokens_state, pinned_tokens_table, pinned_select, status_output,
+            ],
         )
 
         lens_file_upload.upload(

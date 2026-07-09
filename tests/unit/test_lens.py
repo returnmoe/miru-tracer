@@ -188,6 +188,18 @@ class TestAggregate:
         )
         assert len(aggregate_readouts(slice_, limit=2)) == 2
 
+    def test_no_limit(self):
+        slice_ = LensSlice(
+            mode="logit",
+            layers=[0],
+            positions=[0],
+            position_texts=["a"],
+            tokens=[[[1, 2, 3, 4, 5]]],
+            probs=[[[0.5, 0.2, 0.1, 0.05, 0.02]]],
+            texts=[[["1", "2", "3", "4", "5"]]],
+        )
+        assert len(aggregate_readouts(slice_, limit=None)) == 5
+
 
 class TestLensStore:
     def test_missing_returns_none(self, tmp_path):

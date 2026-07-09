@@ -14,8 +14,8 @@ edge, always reachable). Header rows stick to the top and label columns
 stick to the left while panning. Colors are self-contained bg+fg pairs or
 theme-variable-based, so both light and dark themes stay readable.
 
-The pinned-ranks line chart stays Plotly (small, no per-cell text), as does
-the Interactive Mode lens panel (single position).
+The Interactive Mode lens panel still uses Plotly for its single-position
+view; the Lens tab result views are static HTML.
 """
 
 from __future__ import annotations
@@ -23,8 +23,6 @@ from __future__ import annotations
 import html
 
 from miru_tracer.core.lens import LensSlice, ReadoutRow
-from miru_tracer.core.tokenizer_utils import visible_whitespace
-from miru_tracer.ui.lens_common import sparkline
 
 # YlOrRd (matches the previous Plotly colorscale)
 _YLORRD = [
@@ -40,6 +38,7 @@ _BG = "var(--body-background-fill, #fff)"
 # sparklines in dark mode).
 _ACCENT = "79,70,229"  # indigo
 _ACCENT_SPARK = "#7c7ff2"  # mid indigo, legible on light and dark
+_MUTED_BORDER = "1px solid rgba(127,127,127,0.18)"
 
 _SCROLL_DIV = (
     '<div style="overflow:auto; max-height:75vh; max-width:100%; '
@@ -53,10 +52,10 @@ _GRID_STYLE = (
     "font-family:var(--font-mono, monospace); white-space:nowrap;"
 )
 _LIST_STYLE = (
-    "border:0; border-collapse:collapse; font-size:0.8em; line-height:1.4; "
-    "font-family:var(--font-mono, monospace); white-space:nowrap;"
+    "border:0 !important; border-collapse:collapse; font-size:0.95em; line-height:1.55; "
+    "font-family:var(--font), var(--body-font), system-ui, sans-serif; white-space:nowrap;"
 )
-_TH = f"background:{_BG}; padding:3px 10px; font-weight:600; border:0;"
+_TH = f"background:{_BG}; padding:3px 10px; font-weight:600; border:0 !important;"
 _HEAT_COL_W = "5.5em"  # heatmap column width (top-1 tokens, ellipsized)
 _COUNT_COL_W = "2.2em"  # counts-grid column width (small integers)
 _COL_TH = f'style="position:sticky; top:0; z-index:1; text-align:left; {_TH}"'
@@ -104,8 +103,25 @@ def _fixed(content: str, width: str, color: str | None = None) -> str:
     return f'<div style="{style}">{content}</div>'
 
 
+def _count_bar(counts: list[int], layers: list[int] | None = None) -> str:
+    peak = max(counts) if counts else 0
+    if peak <= 0:
+        return ""
+    layer_labels = layers or list(range(len(counts)))
+    cells = []
+    for layer, count in zip(layer_labels, counts, strict=False):
+        opacity = 0.08 + (0.82 * count / peak if count else 0)
+        noun = "occurrence" if count == 1 else "occurrences"
+        cells.append(
+            '<span style="display:inline-block; width:8px; height:16px; '
+            f'margin-right:2px; border-radius:2px; background:rgba({_ACCENT},{opacity:.3f});" '
+            f'title="Layer {layer}: {count} {noun}"></span>'
+        )
+    return "".join(cells)
+
+
 def _tok(text: str) -> str:
-    return html.escape(visible_whitespace(text))
+    return html.escape(text)
 
 
 def _layer_label(
@@ -189,7 +205,10 @@ def heatmap_html(
 
 
 def readouts_table_html(
-    rows: list[ReadoutRow], intervened: dict[int, str] | None = None
+    rows: list[ReadoutRow],
+    intervened: dict[int, str] | None = None,
+    *,
+    layers: list[int] | None = None,
 ) -> str:
     """Aggregated readouts table with a per-layer sparkline column.
 
@@ -205,26 +224,32 @@ def readouts_table_html(
         )
         caption = f"<p {_CAPTION}>⚡ <b>Interventions</b> — {items}</p>"
     cell = (
-        'style="padding:7px 14px; border:0; '
-        'border-bottom:1px solid rgba(127,127,127,0.18);"'
+        f'style="padding:9px 16px; border:{_MUTED_BORDER} !important;"'
+    )
+    cell_token = (
+        f'style="padding:9px 16px; border:{_MUTED_BORDER} !important; '
+        'font-family:var(--font-mono, monospace);"'
     )
     cell_num = (
-        'style="padding:7px 14px; text-align:center; border:0; '
-        'border-bottom:1px solid rgba(127,127,127,0.18);"'
+        f'style="padding:9px 16px; text-align:left; border:{_MUTED_BORDER} !important;"'
     )
     body = "".join(
         "<tr>"
-        f"<td {cell}>{_tok(row.text)}</td>"
+        f"<td {cell_token}>{_tok(row.text)}</td>"
         f"<td {cell_num}>{row.token_id}</td>"
         f"<td {cell_num}>{row.count}</td>"
-        f'<td {cell} title="count per layer, low to high">'
-        f'<span style="color:{_ACCENT_SPARK};">{sparkline(row.count_by_layer)}'
-        "</span></td>"
+        f'<td {cell} title="count per layer, low to high">{_count_bar(row.count_by_layer, layers)}</td>'
         "</tr>"
         for row in rows
     )
+    summary_th = (
+        f'style="position:sticky; top:0; z-index:1; text-align:left; '
+        f'background:{_BG}; padding:3px 10px; font-weight:600; '
+        f'border:{_MUTED_BORDER} !important;"'
+    )
     header = "".join(
-        f"<th {_COL_TH}>{name}</th>" for name in ("Token", "ID", "Count", "By layer")
+        f"<th {summary_th}>{name}</th>"
+        for name in ("Token", "ID", "Count", "By layer")
     )
     return (
         f"{caption}{_SCROLL_DIV}<table style=\"{_LIST_STYLE}\">"
@@ -233,7 +258,7 @@ def readouts_table_html(
 
 
 def distribution_html(
-    rows: list[ReadoutRow], layers: list[int], *, limit: int = 20,
+    rows: list[ReadoutRow], layers: list[int], *, limit: int | None = None,
     intervened: dict[int, str] | None = None,
 ) -> str:
     """Token x layer grid of readout counts (theme-aware accent scale).
@@ -241,7 +266,7 @@ def distribution_html(
     ``intervened`` maps edited layer indices to a hover description, tinting
     those layers' column headers (no glyph — the columns are too narrow).
     """
-    rows = rows[:limit]
+    rows = rows[:limit] if limit is not None else rows
     if not rows or not layers:
         return ""
     peak = max(max(row.count_by_layer) for row in rows) or 1
