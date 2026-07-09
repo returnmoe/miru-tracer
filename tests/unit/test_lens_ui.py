@@ -38,7 +38,6 @@ from miru_tracer.ui.lens_views import (
     distribution_html,
     heatmap_html,
     readout_inspector_html,
-    readouts_table_html,
 )
 from miru_tracer.visualization.plots import (
     plot_lens_heatmap,
@@ -221,7 +220,9 @@ class TestPositions:
 
     def test_selection_summary(self):
         assert selection_summary([], None) == ""
-        assert "all 5 positions" in selection_summary([], 5)
+        summary_all = selection_summary([], 5)
+        assert "all 4 token-aligned positions" in summary_all
+        assert "position 0" in summary_all
         summary = selection_summary([1, 3], 5)
         assert "2 of 5 positions" in summary and "1, 3" in summary
         many = selection_summary(list(range(20)), 30)
@@ -446,44 +447,6 @@ class TestLensPlots:
 
 
 class TestLensViews:
-    def test_readouts_table(self):
-        rows = [ReadoutRow(token_id=9, text=" tok", count=5, count_by_layer=[5, 0])]
-        out = readouts_table_html(rows, layers=[0, 2])
-        assert "> tok<" in out  # tokenizer-native token text is preserved
-        assert ">9<" in out and ">5<" in out
-        assert "text-align:left" in out
-        assert "border:1px solid rgba(127,127,127,0.18) !important" in out
-        assert "rgba(79,70,229" in out  # fixed layer distribution bars
-        assert 'title="Layer 0: 5 occurrences"' in out
-        assert 'title="Layer 2: 0 occurrences"' in out
-        assert readouts_table_html([]) == ""
-        assert "⚡" not in out  # no intervention caption without the arg
-
-    def test_readouts_table_intervention_caption(self):
-        rows = [ReadoutRow(token_id=9, text="tok", count=5, count_by_layer=[5, 0])]
-        out = readouts_table_html(rows, {0: "ablate 'x' @L0 (logit)"})
-        assert "⚡" in out and "L0:" in out
-        assert "ablate" in out and "@L0" in out and "(logit)" in out
-
-    def test_readouts_table_caption_escapes(self):
-        rows = [ReadoutRow(token_id=9, text="tok", count=5, count_by_layer=[5, 0])]
-        out = readouts_table_html(rows, {2: 'swap "<b>"→"x" @L2 (logit)'})
-        # the user-supplied description is escaped; no raw HTML injection
-        assert "&lt;b&gt;" in out and '"<b>"' not in out
-
-    def test_multilingual_label_is_preserved_and_escaped(self):
-        rows = [
-            ReadoutRow(
-                token_id=7,
-                text="raw<script> (法国)",
-                count=1,
-                count_by_layer=[1],
-            )
-        ]
-        out = readouts_table_html(rows, layers=[0])
-        assert "raw&lt;script&gt; (法国)" in out
-        assert "raw<script>" not in out
-
     def test_heatmap_grid(self):
         out = heatmap_html(SLICE)
         # final layer on top: L2's row markup precedes L0's
@@ -539,9 +502,9 @@ class TestReadoutInspector:
             layers=[0, 2],
             positions=[4],
             position_texts=["planning"],
-            tokens=[[[7, 8]], [[9, 7]]],
+            tokens=[[[7, 8]], [[10, 7]]],
             probs=[[[0.2, 0.1]], [[0.7, 0.05]]],
-            texts=[[['plans', 'plan']], [['to', 'plans']]],
+            texts=[[['plans', 'plan']], [['planning', 'plans']]],
         )
 
     @staticmethod
@@ -570,12 +533,56 @@ class TestReadoutInspector:
             recommended_start=1,
         )
         assert "Selected token" in out and "planning" in out and "position 4" in out
-        assert "All<br>Layers" in out
+        assert "Count ↓" in out
+        assert ">ID</span>" in out
+        assert '<div class="miru-readout-id">7</div>' in out
+        assert '<div class="miru-readout-id">10</div>' in out
+        assert "<span>All</span><span>Layers</span>" in out
         assert 'data-readout-layer="0"' in out
         assert 'data-readout-panel="0"' in out
-        assert "20.00%" in out and "final model output (next token)" in out
+        assert "20.00%" in out and "final model distribution for selected token" in out
+        assert "preceding causal state p−1" in out
         assert "often degenerate" in out
         assert "best displayed rank 1" in out
+        assert "miru-readout-all-active" in out
+        assert "height:clamp(20rem,54vh,34rem)" in out
+        assert "overflow-y:auto" in out
+        assert "scrollbar-gutter:stable" in out
+        assert "miru-readout-layer-focus" in out
+
+    def test_interventions_move_into_readouts_and_are_escaped(self):
+        slice_ = self._slice()
+        rows = self._rows()
+        out = readout_inspector_html(
+            mode="jacobian",
+            slices={"jacobian": slice_},
+            rows={"jacobian": rows},
+            all_rows={"jacobian": rows},
+            recommended_start=1,
+            intervened={2: 'swap "<b>"→"x" @L2 (jacobian)'},
+        )
+        assert "⚡" in out and "Interventions" in out and "L2:" in out
+        assert "&lt;b&gt;" in out and '"<b>"' not in out
+
+    def test_multilingual_aggregate_label_is_preserved_and_escaped(self):
+        slice_ = self._slice()
+        rows = [
+            ReadoutRow(
+                token_id=7,
+                text="raw<script> (法国)",
+                count=1,
+                count_by_layer=[1, 0],
+            )
+        ]
+        out = readout_inspector_html(
+            mode="jacobian",
+            slices={"jacobian": slice_},
+            rows={"jacobian": rows},
+            all_rows={"jacobian": rows},
+            recommended_start=1,
+        )
+        assert "raw&lt;script&gt; (法国)" in out
+        assert "raw<script>" not in out
 
     def test_compare_uses_one_shared_selector_and_two_columns(self):
         jacobian = self._slice("jacobian")
@@ -610,6 +617,12 @@ class TestReadoutInspector:
         assert "pointerout" in READOUT_INSPECTOR_JS
         assert "lockedLayer" in READOUT_INSPECTOR_JS
         assert "data-readout-all" in READOUT_INSPECTOR_JS
+        assert "miru-readout-all-active" in READOUT_INSPECTOR_JS
+        assert "root.querySelectorAll('.miru-readout-layer-slot')" in READOUT_INSPECTOR_JS
+        assert "root.querySelectorAll('[data-readout-layer]').forEach" not in READOUT_INSPECTOR_JS
+        assert "miru-readout-mini [data-readout-layer]" in READOUT_INSPECTOR_JS
+        assert "miru-readout-layer-focus" in READOUT_INSPECTOR_JS
+        assert "keydown" in READOUT_INSPECTOR_JS
 
     def test_distribution_marks_intervened_layer(self):
         rows = [ReadoutRow(token_id=1, text="a", count=3, count_by_layer=[2, 1])]

@@ -38,7 +38,6 @@ _BG = "var(--body-background-fill, #fff)"
 # sparklines in dark mode).
 _ACCENT = "79,70,229"  # indigo
 _ACCENT_SPARK = "#7c7ff2"  # mid indigo, legible on light and dark
-_MUTED_BORDER = "1px solid rgba(127,127,127,0.18)"
 
 _SCROLL_DIV = (
     '<div style="overflow:auto; max-height:75vh; max-width:100%; '
@@ -46,14 +45,10 @@ _SCROLL_DIV = (
 )
 # Grids (heatmap, counts): flush borderless cells, uniform column width
 # (content wrapped in fixed-width divs — max-width on td is ignored in auto
-# table layout). List (readouts): collapsed rows with subtle separators.
+# table layout).
 _GRID_STYLE = (
     "border:0; border-collapse:collapse; font-size:0.8em; line-height:1.5; "
     "font-family:var(--font-mono, monospace); white-space:nowrap;"
-)
-_LIST_STYLE = (
-    "border:0 !important; border-collapse:collapse; font-size:0.95em; line-height:1.55; "
-    "font-family:var(--font), var(--body-font), system-ui, sans-serif; white-space:nowrap;"
 )
 _TH = f"background:{_BG}; padding:3px 10px; font-weight:600; border:0 !important;"
 _HEAT_COL_W = "5.5em"  # heatmap column width (top-1 tokens, ellipsized)
@@ -90,8 +85,18 @@ const renderLayer = (root, layer) => {
   root.querySelectorAll('[data-readout-panel]').forEach((panel) => {
     panel.hidden = panel.dataset.readoutPanel !== wanted;
   });
-  root.querySelectorAll('[data-readout-layer]').forEach((slot) => {
-    slot.classList.toggle('miru-readout-layer-active', String(slot.dataset.readoutLayer) === wanted);
+  const all = root.querySelector('[data-readout-all]');
+  if (all) {
+    all.classList.toggle('miru-readout-all-active', layer == null);
+    all.setAttribute('aria-pressed', String(layer == null));
+  }
+  root.querySelectorAll('.miru-readout-layer-slot').forEach((slot) => {
+    const active = String(slot.dataset.readoutLayer) === wanted;
+    slot.classList.toggle('miru-readout-layer-active', active);
+    slot.setAttribute('aria-pressed', String(active));
+  });
+  root.querySelectorAll('.miru-readout-mini [data-readout-layer]').forEach((cell) => {
+    cell.classList.toggle('miru-readout-layer-focus', String(cell.dataset.readoutLayer) === wanted);
   });
   const label = root.querySelector('[data-readout-active-label]');
   if (label) label.textContent = layer == null ? 'All Layers' : `Layer ${layer}`;
@@ -123,6 +128,13 @@ element.addEventListener('click', (event) => {
     renderLayer(root, slot.dataset.readoutLayer);
   }
 });
+element.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const control = event.target.closest?.('[data-readout-all], .miru-readout-layer-slot');
+  if (!control) return;
+  event.preventDefault();
+  control.click();
+});
 """
 
 _INSPECTOR_STYLE = """
@@ -130,30 +142,36 @@ _INSPECTOR_STYLE = """
 .miru-readout-inspector { margin-top: 6px; }
 .miru-readout-context { margin: 2px 0 8px; font-size: .9em; }
 .miru-readout-note { opacity: .78; font-size: .82em; }
-.miru-readout-selector { display:flex; gap:12px; align-items:stretch; margin:8px 0 12px; }
-.miru-readout-all { width:68px; min-height:46px; border:1px solid rgba(100,116,139,.55); border-radius:7px; background:rgba(148,163,184,.15); font-size:.72em; font-weight:650; text-transform:uppercase; }
-.miru-readout-layer-track { display:flex; flex:1; min-width:0; height:46px; border:1px solid rgba(148,163,184,.35); border-radius:7px; overflow:hidden; }
-.miru-readout-layer-slot { flex:1; min-width:2px; border:0; border-left:1px solid rgba(100,116,139,.09); background:rgba(148,163,184,.14); padding:0; cursor:pointer; }
-.miru-readout-layer-slot:hover, .miru-readout-layer-active { background:rgba(71,85,105,.35) !important; box-shadow:inset 0 0 0 1px rgba(51,65,85,.65); }
-.miru-readout-layer-slot.miru-readout-early { background:rgba(245,158,11,.10); }
+.miru-readout-selector { display:flex; gap:12px; align-items:stretch; margin:8px 0 12px; overflow-anchor:none; }
+.miru-readout-all { box-sizing:border-box; display:flex; flex:0 0 76px; flex-direction:column; align-items:center; justify-content:center; width:76px; min-width:76px; max-width:76px; height:46px; min-height:46px; padding:4px 6px; overflow:hidden; border:1px solid rgba(71,85,105,.65); border-radius:7px; background:rgba(100,116,139,.34); font-size:.70em; font-weight:700; line-height:1.12; text-align:center; white-space:normal; text-transform:uppercase; cursor:pointer; user-select:none; }
+.miru-readout-all:hover, .miru-readout-all-active { background:rgba(79,70,229,.62) !important; border-color:rgba(67,56,202,.85); color:#fff; }
+.miru-readout-layer-track { display:flex; flex:1; min-width:0; height:46px; border:1px solid rgba(71,85,105,.62); border-radius:7px; overflow:hidden; background:rgba(100,116,139,.20); }
+.miru-readout-layer-slot { box-sizing:border-box; display:block; flex:1; min-width:2px; height:100%; border:0; border-left:1px solid rgba(30,41,59,.18); border-radius:0; background:rgba(100,116,139,.38); padding:0; cursor:pointer; transition:background-color 80ms ease, box-shadow 80ms ease; }
+.miru-readout-layer-slot:hover { background:rgba(71,85,105,.58) !important; box-shadow:inset 0 0 0 1px rgba(30,41,59,.72); }
+.miru-readout-layer-active { background:rgba(79,70,229,.72) !important; box-shadow:inset 0 0 0 1px rgba(49,46,129,.90) !important; }
+.miru-readout-layer-slot.miru-readout-early { background:rgba(217,119,6,.30); }
 .miru-readout-layer-slot.miru-readout-output { border-left:2px solid rgba(79,70,229,.75); }
 .miru-readout-layer-labels { display:flex; justify-content:space-between; font-size:.7em; opacity:.65; margin-top:2px; }
 .miru-readout-columns { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; }
 .miru-readout-columns.miru-readout-compare { grid-template-columns:repeat(2,minmax(0,1fr)); }
 .miru-readout-column { min-width:0; }
 .miru-readout-column h3 { margin:3px 0 7px; font-size:1em; }
+.miru-readout-panel { box-sizing:border-box; height:clamp(20rem,54vh,34rem); overflow-y:auto; overflow-x:auto; overscroll-behavior:contain; overflow-anchor:none; scrollbar-gutter:stable; border:1px solid rgba(127,127,127,.16); border-radius:6px; }
 .miru-readout-panel[hidden] { display:none; }
-.miru-readout-panel-head { display:grid; grid-template-columns:minmax(9rem,1fr) 5rem minmax(12rem,1.35fr); gap:8px; padding:4px 8px; font-size:.72em; text-transform:uppercase; opacity:.68; border-bottom:1px solid rgba(127,127,127,.18); }
-.miru-readout-row { display:grid; grid-template-columns:minmax(9rem,1fr) 5rem minmax(12rem,1.35fr); gap:8px; align-items:center; padding:5px 8px; border-bottom:1px solid rgba(127,127,127,.12); font-size:.88em; }
+.miru-readout-panel-head { position:sticky; top:0; z-index:2; display:grid; grid-template-columns:minmax(9rem,1fr) 5.5rem 5rem minmax(12rem,1.35fr); gap:8px; min-width:38rem; padding:6px 8px; background:var(--body-background-fill,#fff); font-size:.72em; text-transform:uppercase; opacity:.94; border-bottom:1px solid rgba(127,127,127,.24); }
+.miru-readout-row { display:grid; grid-template-columns:minmax(9rem,1fr) 5.5rem 5rem minmax(12rem,1.35fr); gap:8px; min-width:38rem; align-items:center; padding:5px 8px; border-bottom:1px solid rgba(127,127,127,.12); font-size:.88em; }
 .miru-readout-token { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--font-mono,monospace); }
+.miru-readout-id { text-align:right; opacity:.72; font-family:var(--font-mono,monospace); font-variant-numeric:tabular-nums; }
 .miru-readout-number { text-align:right; font-variant-numeric:tabular-nums; }
 .miru-readout-mini { display:flex; height:20px; overflow:hidden; border:1px solid rgba(148,163,184,.28); border-radius:3px; background:rgba(241,245,249,.25); }
 .miru-readout-mini span { flex:1; min-width:1px; cursor:pointer; }
+.miru-readout-mini .miru-readout-layer-focus { box-shadow:inset 2px 0 rgba(255,255,255,.72), inset -2px 0 rgba(255,255,255,.72); filter:brightness(1.12); }
 .miru-readout-warning { margin:5px 8px; padding:5px 8px; border:1px solid rgba(245,158,11,.35); border-radius:5px; background:rgba(245,158,11,.08); font-size:.8em; }
+.miru-readout-interventions { margin:7px 0; padding:6px 9px; border:1px solid rgba(245,158,11,.30); border-radius:5px; background:rgba(245,158,11,.07); font-size:.82em; }
 .miru-readout-empty { padding:14px 8px; opacity:.7; }
 @media (max-width:900px) {
   .miru-readout-columns.miru-readout-compare { grid-template-columns:minmax(0,1fr); }
-  .miru-readout-panel-head, .miru-readout-row { grid-template-columns:minmax(8rem,1fr) 4.2rem minmax(9rem,1fr); }
+  .miru-readout-panel { height:clamp(18rem,52vh,30rem); }
 }
 </style>
 """.strip()
@@ -196,23 +214,6 @@ def _fixed(content: str, width: str, color: str | None = None) -> str:
     if color:
         style += f" color:{color};"
     return f'<div style="{style}">{content}</div>'
-
-
-def _count_bar(counts: list[int], layers: list[int] | None = None) -> str:
-    peak = max(counts) if counts else 0
-    if peak <= 0:
-        return ""
-    layer_labels = layers or list(range(len(counts)))
-    cells = []
-    for layer, count in zip(layer_labels, counts, strict=False):
-        opacity = 0.08 + (0.82 * count / peak if count else 0)
-        noun = "occurrence" if count == 1 else "occurrences"
-        cells.append(
-            '<span style="display:inline-block; width:8px; height:16px; '
-            f'margin-right:2px; border-radius:2px; background:rgba({_ACCENT},{opacity:.3f});" '
-            f'title="Layer {layer}: {count} {noun}"></span>'
-        )
-    return "".join(cells)
 
 
 def _tok(text: str) -> str:
@@ -271,7 +272,7 @@ def _top1_values(slice_: LensSlice) -> list[float]:
 def _position_header(slice_: LensSlice, index: int) -> tuple[str, str]:
     position = slice_.positions[index]
     token = slice_.position_texts[index]
-    relation = f"Readout at token {token}, position {position}"
+    relation = f"Readout aligned to token {token}, position {position}"
     return f'{position}<br>{_tok(token)}', relation
 
 
@@ -323,9 +324,8 @@ def heatmap_html(
         body.append('<tr style="border:0;">' + "".join(cells) + "</tr>")
 
     caption = (
-        f"<b>Lens readouts — {slice_.mode}</b> · each column is anchored to its "
-        "displayed token; J-lens surfaces verbalizable concepts at that position, "
-        "while Logit/final output predicts the next token · "
+        f"<b>Lens readouts — {slice_.mode}</b> · each column is aligned to its "
+        "displayed token using the preceding causal state that produced it · "
         "color = top-1 probability · "
         "hover a cell for its top-k · scroll sideways for more positions"
     )
@@ -357,59 +357,6 @@ def comparison_heatmap_html(
     )
     logit = heatmap_html(logit_slice, intervened, value_range=shared_range)
     return comparison_html(jacobian, logit)
-
-
-def readouts_table_html(
-    rows: list[ReadoutRow],
-    intervened: dict[int, str] | None = None,
-    *,
-    layers: list[int] | None = None,
-) -> str:
-    """Aggregated readouts table with a per-layer sparkline column.
-
-    Rows are tokens (not layers), so ``intervened`` edits are surfaced as a
-    caption above the table rather than per-cell markers.
-    """
-    if not rows:
-        return ""
-    caption = ""
-    if intervened:
-        items = "; ".join(
-            f"L{layer}: {html.escape(desc)}" for layer, desc in sorted(intervened.items())
-        )
-        caption = f"<p {_CAPTION}>⚡ <b>Interventions</b> — {items}</p>"
-    cell = (
-        f'style="padding:9px 16px; border:{_MUTED_BORDER} !important;"'
-    )
-    cell_token = (
-        f'style="padding:9px 16px; border:{_MUTED_BORDER} !important; '
-        'font-family:var(--font-mono, monospace);"'
-    )
-    cell_num = (
-        f'style="padding:9px 16px; text-align:left; border:{_MUTED_BORDER} !important;"'
-    )
-    body = "".join(
-        "<tr>"
-        f"<td {cell_token}>{_tok(row.text)}</td>"
-        f"<td {cell_num}>{row.token_id}</td>"
-        f"<td {cell_num}>{row.count}</td>"
-        f'<td {cell} title="count per layer, low to high">{_count_bar(row.count_by_layer, layers)}</td>'
-        "</tr>"
-        for row in rows
-    )
-    summary_th = (
-        f'style="position:sticky; top:0; z-index:1; text-align:left; '
-        f'background:{_BG}; padding:3px 10px; font-weight:600; '
-        f'border:{_MUTED_BORDER} !important;"'
-    )
-    header = "".join(
-        f"<th {summary_th}>{name}</th>"
-        for name in ("Token", "ID", "Count", "By layer")
-    )
-    return (
-        f"{caption}{_SCROLL_DIV}<table style=\"{_LIST_STYLE}\">"
-        f"<tr>{header}</tr>{body}</table></div>"
-    )
 
 
 def _layer_strip_html(
@@ -455,7 +402,9 @@ def _aggregate_inspector_rows(
         '<div class="miru-readout-row">'
         f'<div class="miru-readout-token" title="{html.escape(row.text, quote=True)}">'
         f"{_tok(row.text)}</div>"
-        f'<div class="miru-readout-number" title="relevance score {row.relevance_score:.3f}">'
+        f'<div class="miru-readout-id">{row.token_id}</div>'
+        f'<div class="miru-readout-number" title="{row.count} appearances · '
+        f'reciprocal-rank tie-break {row.relevance_score:.3f}">'
         f"{row.count}</div>"
         f"{_layer_strip_html(row, layers, interactive=interactive)}"
         "</div>"
@@ -479,6 +428,7 @@ def _exact_layer_rows(
         '<div class="miru-readout-row">'
         f'<div class="miru-readout-token" title="rank {rank + 1} · '
         f'{html.escape(text, quote=True)}">{_tok(text)}</div>'
+        f'<div class="miru-readout-id">{token_id}</div>'
         f'<div class="miru-readout-number">{probability:.2%}</div>'
         f"{_layer_strip_html(stats_by_id.get(token_id), slice_.layers, interactive=interactive)}"
         "</div>"
@@ -500,7 +450,8 @@ def _inspector_column_html(
     all_panel = (
         '<div class="miru-readout-panel" data-readout-panel="all">'
         '<div class="miru-readout-panel-head"><span>Readout token</span>'
-        '<span style="text-align:right">Count</span><span>Count by layer</span></div>'
+        '<span style="text-align:right">ID</span>'
+        '<span style="text-align:right">Count ↓</span><span>Count by layer</span></div>'
         f"{_aggregate_inspector_rows(rows, slice_.layers, interactive=interactive)}"
         "</div>"
     )
@@ -509,9 +460,9 @@ def _inspector_column_html(
         final = slice_.layers[-1]
         for index, layer in enumerate(slice_.layers):
             if layer == final:
-                label = f"Layer {layer} · final model output (next token)"
+                label = f"Layer {layer} · final model distribution for selected token"
             elif slice_.mode == "logit":
-                label = f"Layer {layer} · Logit next-token readout"
+                label = f"Layer {layer} · Logit readout for selected token"
             else:
                 label = f"Layer {layer} · J-lens concepts at selected token"
             warning = ""
@@ -523,6 +474,7 @@ def _inspector_column_html(
             layer_panels.append(
                 f'<div class="miru-readout-panel" data-readout-panel="{layer}" hidden>'
                 f'<div class="miru-readout-panel-head"><span>{label}</span>'
+                '<span style="text-align:right">ID</span>'
                 '<span style="text-align:right">Probability</span>'
                 '<span>Count by layer</span></div>'
                 f"{warning}{_exact_layer_rows(slice_, index, stats_by_id, interactive=True)}"
@@ -541,6 +493,7 @@ def readout_inspector_html(
     rows: dict[str, list[ReadoutRow]],
     all_rows: dict[str, list[ReadoutRow]],
     recommended_start: int,
+    intervened: dict[int, str] | None = None,
 ) -> str:
     """Neuronpedia-style aggregate and exact-layer readout inspector."""
     modes = ["jacobian", "logit"] if mode == "compare" else [mode]
@@ -575,18 +528,21 @@ def readout_inspector_html(
                 classes.append("miru-readout-output")
             title = f"Layer {layer}"
             if layer == final:
-                title += " · final model output for the next token"
+                title += " · final model distribution for the selected token"
             elif layer < recommended_start and mode in ("jacobian", "compare"):
                 title += " · early J-lens layer; often degenerate"
             slots.append(
-                f'<button type="button" class="{" ".join(classes)}" '
+                f'<span role="button" tabindex="0" class="{" ".join(classes)}" '
                 f'data-readout-layer="{layer}" title="{title}" '
-                f'aria-label="Preview layer {layer}"></button>'
+                f'aria-label="Preview layer {layer}" aria-pressed="false"></span>'
             )
         selector = (
             '<div class="miru-readout-selector">'
-            '<button type="button" class="miru-readout-all" data-readout-all>'
-            'All<br>Layers</button><div style="flex:1;min-width:0">'
+            '<span role="button" tabindex="0" '
+            'class="miru-readout-all miru-readout-all-active" '
+            'data-readout-all aria-label="Show all layers" aria-pressed="true">'
+            '<span>All</span><span>Layers</span></span>'
+            '<div style="flex:1;min-width:0">'
             f'<div class="miru-readout-layer-track">{"".join(slots)}</div>'
             '<div class="miru-readout-layer-labels">'
             f"<span>Layer {representative.layers[0]}</span>"
@@ -606,15 +562,24 @@ def readout_inspector_html(
         for name in modes
     )
     compare_class = " miru-readout-compare" if mode == "compare" else ""
+    intervention_banner = ""
+    if intervened:
+        items = "; ".join(
+            f"L{layer}: {html.escape(desc)}"
+            for layer, desc in sorted(intervened.items())
+        )
+        intervention_banner = (
+            '<p class="miru-readout-interventions">⚡ <b>Interventions</b> — '
+            f"{items}</p>"
+        )
     return (
         f"{_INSPECTOR_STYLE}"
         '<div class="miru-readout-inspector" data-readout-inspector>'
-        f"{context}"
-        '<p class="miru-readout-note">The inspector reads the activation at the '
-        "selected token position; it does not shift the selection forward. J-lens "
-        "rows describe verbalizable concepts present there (including concepts that "
-        "may affect future output). Logit rows and the final model-output row are "
-        "next-token predictions.</p>"
+        f"{context}{intervention_banner}"
+        '<p class="miru-readout-note">Readouts are aligned to the selected token: '
+        "for token p, Miru decodes the preceding causal state p−1 that produced it. "
+        "The final row is therefore the model distribution for the selected token, "
+        "not for the token that follows it.</p>"
         f'{selector}<div class="miru-readout-columns{compare_class}">{columns}</div>'
         "</div>"
     )

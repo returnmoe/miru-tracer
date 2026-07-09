@@ -217,9 +217,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         with gr.Accordion("Layer Lens (current position)", open=False):
             gr.Markdown(
-                "Per-layer readout **at the current token position**. The Jacobian "
-                "lens surfaces verbalizable concepts present there; Logit/final "
-                "output predicts the next token. "
+                "Per-layer readout **aligned to the current token**. Miru decodes "
+                "the preceding causal state that produced this token, matching the "
+                "token-centered Neuronpedia presentation. "
                 "Refresh runs one extra forward pass. "
                 "Interventions added in the Lens tab can be applied to this "
                 "session here. ⚠️ *Experimental — still being tested; "
@@ -241,7 +241,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     "Apply Lens-tab interventions to this session", size="sm"
                 )
             lens_status = gr.Textbox(label="Lens status", interactive=False, lines=1)
-            lens_plot = gr.Plot(label="Layer readouts at the current token position")
+            lens_plot = gr.Plot(label="Layer readouts aligned to the current token")
 
         gr.Markdown("### Navigation & Export")
         with gr.Row():
@@ -289,6 +289,11 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         f"the Lens tab or run: miru-tracer-fit-lens {model_name}"
                     )
                 try:
+                    if tracer.seq_len < 2:
+                        return None, (
+                            "Need at least two tokens for a current-token lens "
+                            "readout (the first token has no preceding causal state)."
+                        )
                     n_layers = tracer.model.config.get_text_config().num_hidden_layers
                     layers = lens_layer_selection(n_layers, -1, -1, stride, mode)
                     if mode in ("jacobian", "compare") and jlens is not None:
@@ -300,6 +305,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                         "jlens": jlens,
                         "top_k": int(top_k),
                         "interventions": tracer._intervention_set,
+                        "token_aligned": True,
                     }
                     if mode == "compare":
                         activations = record_lens_activations(
@@ -337,7 +343,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     active = len(tracer.interventions)
                     status = (
                         f"{'Jacobian / Logit comparison' if mode == 'compare' else f'{mode} lens'} "
-                        f"over {len(layers)} layers at position {tracer.seq_len - 1}."
+                        f"over {len(layers)} layers aligned to token position "
+                        f"{tracer.seq_len - 1}."
                     )
                     if active:
                         status += f" {active} intervention(s) active on this session."

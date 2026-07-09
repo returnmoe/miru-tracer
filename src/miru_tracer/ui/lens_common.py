@@ -469,7 +469,11 @@ def selection_summary(selected: list[int], seq_len: int | None) -> str:
     if seq_len is None:
         return ""
     if not selected:
-        return f"**Selection:** all {seq_len} positions (readouts cover the whole sequence)."
+        available = max(seq_len - 1, 0)
+        return (
+            f"**Selection:** all {available} token-aligned positions "
+            "(position 0 has no preceding causal state)."
+        )
     shown = ", ".join(str(p) for p in selected[:12])
     if len(selected) > 12:
         shown += ", …"

@@ -58,8 +58,57 @@ class TestComputeLensSlice:
             layers=[0], positions=[2, 5], mode="logit", top_k=3,
         )
         assert slice_.positions == [2, 5]
+        assert slice_.source_positions == [2, 5]
         assert len(slice_.tokens[0]) == 2
         assert len(slice_.position_texts) == 2
+
+    def test_token_alignment_reads_state_that_produced_selected_token(
+        self, tiny_model, tiny_tokenizer, input_ids
+    ):
+        final = tiny_model.config.num_hidden_layers - 1
+        selected_position = 3
+        slice_ = compute_lens_slice(
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=[final],
+            positions=[selected_position],
+            mode="logit",
+            top_k=5,
+            token_aligned=True,
+        )
+        with torch.no_grad():
+            real = tiny_model(input_ids).logits[0, selected_position - 1].float()
+        expected = torch.topk(torch.softmax(real, -1), 5)
+        assert slice_.positions == [selected_position]
+        assert slice_.source_positions == [selected_position - 1]
+        assert slice_.position_texts == [
+            decode_token(tiny_tokenizer, int(input_ids[0, selected_position]))
+        ]
+        assert slice_.tokens[0][0] == expected.indices.tolist()
+        assert slice_.probs[0][0] == pytest.approx(expected.values.tolist(), rel=1e-4)
+
+    def test_token_alignment_omits_unpredictable_first_token(
+        self, tiny_model, tiny_tokenizer, input_ids
+    ):
+        slice_ = compute_lens_slice(
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=[0],
+            token_aligned=True,
+        )
+        assert slice_.positions == list(range(1, input_ids.shape[1]))
+        assert slice_.source_positions == list(range(input_ids.shape[1] - 1))
+        with pytest.raises(ValueError, match="token-aligned positions"):
+            compute_lens_slice(
+                tiny_model,
+                tiny_tokenizer,
+                input_ids,
+                layers=[0],
+                positions=[0],
+                token_aligned=True,
+            )
 
     def test_prerecorded_activations_match_and_skip_forward(
         self, tiny_model, tiny_tokenizer, input_ids, monkeypatch
@@ -273,9 +322,9 @@ class TestAggregate:
         assert by_id[7].best_rank_by_layer == [0, 0]
         assert by_id[7].peak_prob_by_layer == [0.5, 0.5]
         assert by_id[8].count == 2
-        assert rows[0].token_id == 7  # sorted by reciprocal-rank relevance
+        assert rows[0].token_id == 7  # highest occurrence count
 
-    def test_rank_weighted_relevance_beats_persistent_low_rank_noise(self):
+    def test_occurrence_count_precedes_rank_weighted_relevance(self):
         tokens = []
         texts = []
         probs = []
@@ -299,6 +348,22 @@ class TestAggregate:
         by_id = {row.token_id: row for row in rows}
         assert by_id[8].count == 4
         assert by_id[7].count == 2
+        assert by_id[7].relevance_score > by_id[8].relevance_score
+        assert rows.index(by_id[8]) < rows.index(by_id[7])
+
+    def test_rank_weighted_relevance_breaks_count_ties(self):
+        slice_ = LensSlice(
+            mode="logit",
+            layers=[0],
+            positions=[0, 1, 2],
+            position_texts=["a", "b", "c"],
+            tokens=[[[7, 8], [7, 9], [8, 10]]],
+            probs=[[[0.5, 0.1], [0.5, 0.1], [0.5, 0.1]]],
+            texts=[[["7", "8"], ["7", "9"], ["8", "10"]]],
+        )
+        rows = aggregate_readouts(slice_, limit=None)
+        by_id = {row.token_id: row for row in rows}
+        assert by_id[7].count == by_id[8].count == 2
         assert by_id[7].relevance_score > by_id[8].relevance_score
         assert rows.index(by_id[7]) < rows.index(by_id[8])
 

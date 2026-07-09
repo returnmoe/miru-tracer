@@ -86,10 +86,8 @@ from miru_tracer.ui.lens_common import (
 from miru_tracer.ui.lens_views import (
     READOUT_INSPECTOR_JS,
     comparison_heatmap_html,
-    comparison_html,
     heatmap_html,
     readout_inspector_html,
-    readouts_table_html,
 )
 from miru_tracer.visualization.plots import (
     plot_pinned_token_ranks,
@@ -347,9 +345,8 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
                 tokens_display = gr.HighlightedText(
                     label="Sequence — click tokens to select positions "
-                    "(none = all). Readouts stay anchored to the selected token: "
-                    "J-lens shows verbalizable concepts at that position, while "
-                    "Logit/final output predicts the next token.",
+                    "(none = all). Readouts are aligned to the selected token: "
+                    "token p uses the preceding causal state p−1 that produced it.",
                     value=[],
                     color_map=TOKEN_COLOR_MAP,
                     show_inline_category=False,
@@ -368,12 +365,10 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 )
 
         # ------------------------------------- full-width results, lazy views
-        # Readouts table and heatmap are server-rendered static HTML (see
-        # lens_views.py) — gr.Dataframe and per-cell Plotly text both fall
-        # over in the browser at layers x positions scale.
+        # Readouts and heatmap are server-rendered static HTML (see lens_views.py)
+        # — gr.Dataframe and per-cell Plotly text both fall over in the browser
+        # at layers x positions scale.
         with gr.Tabs():
-            with gr.Tab("Summary") as summary_tab:
-                readout_table = gr.HTML("")
             with gr.Tab("Readouts") as readouts_tab:
                 dist_plot = gr.HTML("", js_on_load=READOUT_INSPECTOR_JS)
             with gr.Tab("Heatmap") as heatmap_tab:
@@ -392,9 +387,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         # slice_state: dict(slice=LensSlice, rows=list[ReadoutRow]) — the
         # cached compute the result views render from.
         slice_state = gr.State(None)
-        active_view_state = gr.State("summary")  # which result tab is open
+        active_view_state = gr.State("readouts")  # which result tab is open
 
-        view_components = [readout_table, dist_plot, heatmap_plot, pinned_plot]
+        view_components = [dist_plot, heatmap_plot, pinned_plot]
 
         # ----------------------------------------------------------- compute
 
@@ -438,7 +433,12 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 else:
                     dropped = []
                 seq_len = int(analysis["input_ids"].shape[1])
-                selected = [p for p in positions if 0 <= p < seq_len] or None
+                selected = [p for p in positions if 0 < p < seq_len] or None
+                if positions and selected is None:
+                    return None, (
+                        "Error: token position 0 has no preceding causal state. "
+                        "Select a later token."
+                    )
 
                 # The residuals only depend on (sequence, interventions), both
                 # frozen per analysis — record once, then every Update is
@@ -475,6 +475,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         pinned_token_ids=list(pinned_ids or []),
                         interventions=analysis["iset"],
                         activations=activations,
+                        token_aligned=True,
                     )
                     slices[readout_mode] = slice_
                     all_rows = aggregate_readouts(slice_, limit=None)
@@ -544,26 +545,6 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
 
         # ------------------------------------------------------ view renders
 
-        def show_summary_view(bundle):
-            if bundle is None:
-                return ""
-            if bundle["mode"] == "compare":
-                return comparison_html(
-                    readouts_table_html(
-                        bundle["rows"]["jacobian"], bundle.get("intervened"),
-                        layers=bundle["slices"]["jacobian"].layers,
-                    ),
-                    readouts_table_html(
-                        bundle["rows"]["logit"], bundle.get("intervened"),
-                        layers=bundle["slices"]["logit"].layers,
-                    ),
-                )
-            mode = bundle["mode"]
-            return readouts_table_html(
-                bundle["rows"][mode], bundle.get("intervened"),
-                layers=bundle["slices"][mode].layers,
-            )
-
         def show_readouts_view(bundle):
             if bundle is None:
                 return ""
@@ -573,6 +554,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 rows=bundle["rows"],
                 all_rows=bundle["all_rows"],
                 recommended_start=bundle["recommended_start"],
+                intervened=bundle.get("intervened"),
             )
 
         def show_heatmap_view(bundle):
@@ -604,20 +586,15 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         def render_active_view(bundle, active_view):
             """One value per view component; only the open view is built, the
             other components are cleared so no stale render survives."""
-            table = dist = heat = pin = None
+            dist = heat = pin = None
             if bundle is not None:
-                if active_view == "readouts":
-                    dist = show_readouts_view(bundle)
-                elif active_view == "heatmap":
+                if active_view == "heatmap":
                     heat = show_heatmap_view(bundle)
                 elif active_view == "pinned":
                     pin = show_pinned_view(bundle)
                 else:
-                    table = show_summary_view(bundle)
-            return table, dist, heat, pin
-
-        def open_summary_view(bundle):
-            return "summary", show_summary_view(bundle)
+                    dist = show_readouts_view(bundle)
+            return dist, heat, pin
 
         def open_readouts_view(bundle):
             return "readouts", show_readouts_view(bundle)
@@ -750,6 +727,13 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             if analysis is None:
                 return positions, gr.update(), gr.update()
             texts = analysis["position_texts"]
+            if int(evt.index) == 0:
+                return (
+                    positions,
+                    highlighted_tokens(texts, positions),
+                    "**Selection:** position 0 cannot be read token-aligned because "
+                    "the captured sequence has no preceding causal state.",
+                )
             updated = toggle_position(positions, evt.index)
             return (
                 updated,
@@ -977,11 +961,6 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             fn=update_readouts,
             inputs=[analysis_state, positions_state, active_view_state, *lens_controls],
             outputs=[slice_state, *view_components, status_output],
-        )
-        summary_tab.select(
-            fn=open_summary_view,
-            inputs=[slice_state],
-            outputs=[active_view_state, readout_table],
         )
         readouts_tab.select(
             fn=open_readouts_view,

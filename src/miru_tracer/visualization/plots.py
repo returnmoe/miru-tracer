@@ -281,7 +281,7 @@ def get_generation_stats(
 def _lens_position_context(slice_: LensSlice, index: int) -> str:
     position = slice_.positions[index]
     token = _hover_text(slice_.position_texts[index])
-    return f"Readout at token {token} (position {position})"
+    return f"Readout aligned to token {token} (position {position})"
 
 
 def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
@@ -338,7 +338,7 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
     )
     fig.update_layout(
         title=f"Lens readouts — {slice_.mode}<br>"
-        "<sub>Readout at displayed token position | Logit/final predicts next token | "
+        "<sub>Readout aligned to displayed token via preceding causal state | "
         "Hover for top-k | Drag to pan, double-click to reset</sub>",
         xaxis_title="Selected token position",
         yaxis_title="Layer",
@@ -461,7 +461,7 @@ def plot_lens_heatmap_comparison(
         title=(
             "Lens readout comparison — Jacobian / Logit<br>"
             "<sub>Independent top-1 probabilities on a shared color scale | "
-            "readout at displayed token; Logit/final predicts next token | "
+            "readouts aligned to displayed tokens via preceding causal states | "
             "Hover for each lens's top-k</sub>"
         ),
         coloraxis=dict(

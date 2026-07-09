@@ -163,13 +163,16 @@ Load a model (Model Loader tab), then open the **Lens** tab:
    *Logit*, *Jacobian*, or *Compare (Jacobian / Logit)* (the two independent
    visualizations side by side) — and press **Update readouts** to re-slice without
    regenerating.
-3. **Readouts**: All Layers ranks tokens by reciprocal-rank relevance and shows
+3. **Readouts**: All Layers orders tokens by descending occurrence count, using
+   reciprocal-rank relevance to break ties, and shows each vocabulary ID plus
    occurrence strips across layers. With exactly one sequence token selected,
    hover a layer to preview its exact candidates and probabilities, click to
-   lock it, and use **All Layers** to clear the lock. Compare shares one layer
-   selector across independent Jacobian and Logit columns.
+   lock it, and use **All Layers** to clear the lock. Exact-layer rows retain
+   both token IDs and probabilities. Compare shares one layer selector across
+   independent Jacobian and Logit columns. Active interventions are shown above
+   the inspector.
 4. **Interactive Mode** has a *"Layer Lens"* accordion showing the per-layer
-   readout at the current token position while you step.
+   readout aligned to the current token while you step.
 
 **Candidates per layer+position** controls the top-N retained in each cell
 (default 8). **All Layers rows** independently caps the aggregate list (default
@@ -181,14 +184,15 @@ token decodes to useful non-ASCII text, the readable form is appended—for
 example, Qwen's `æ³ķåĽ½` appears as `æ³ķåĽ½ (法国)`. Ordinary ASCII labels stay
 compact, while incomplete UTF-8 fragments remain in their raw tokenizer form.
 
-Selecting token position `p` reads the activation **at that same token
-position**; Miru does not move the selection to `p+1`. A fitted Jacobian readout
-describes verbalizable concepts present there, including concepts that may
-influence outputs now or later. The Logit lens and final identity layer have a
-narrower interpretation: they are next-token predictions from that position.
-This distinction is why a selected token such as `planning` can have J-lens
-readouts such as `plans` or `plan`, while the final row still predicts the token
-that follows it.
+Selecting token position `p` produces a readout **for that displayed token**.
+Miru decodes the preceding causal state at `p−1`—the state whose output
+distribution produced token `p`—and keeps the UI label and highlight on `p`.
+Consequently, the final identity layer is the model distribution for the
+selected token rather than for the token that follows it. Position 0 is omitted
+because there is no earlier causal state in the captured sequence. A fitted
+Jacobian readout remains broader than the final distribution: it describes
+verbalizable concepts in that preceding state that can influence present or
+future outputs.
 
 The recommended Jacobian/Compare range starts after the first 29% of layers,
 which are commonly degenerate, and always includes the final model-output layer

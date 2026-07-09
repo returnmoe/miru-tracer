@@ -85,7 +85,7 @@ class TestLensTabFlow:
             "Jacobian", 0, -1, 1, 8, 100, False,
             api_name="/generate_and_analyze",
         )
-        readout_html, _dist, _heatmap, _pinned, status, text = out[:6]
+        readout_html, _heatmap, _pinned, status, text = out[:5]
         # Status names each edit and its basis (replaces the old bare count).
         assert "Interventions:" in status
         assert "steer" in status and "@L0" in status and "@L1" in status
@@ -97,9 +97,9 @@ class TestLensTabFlow:
         # so the generated text must consist of steered tokens.
         generated = text[len("Hello world"):]
         assert generated and set(generated) <= {"A", "B"}
-        # ...and both steered tokens surface prominently in the summary
-        # (server-rendered HTML table cells).
+        # ...and both steered tokens surface prominently in Readouts.
         assert ">A<" in readout_html and ">B<" in readout_html
+        assert "Interventions" in readout_html
         # The other views render lazily from the cached slice when their tab
         # is opened; both edited layers carry the ⚡ marker in the heatmap.
         counts = client.predict(api_name="/open_readouts_view")
@@ -147,11 +147,11 @@ class TestLensTabFlow:
             "Logit", 0, -1, 1, 5, 100, False,
             api_name="/generate_and_analyze",
         )
-        status = out[4]
+        status = out[3]
         assert "logit lens" in status
         shown = re.search(r"showing (\d+) of", status)
         assert shown is not None and int(shown.group(1)) > 5
-        assert "<table" in out[0]  # summary table (the eagerly rendered view)
+        assert "data-readout-inspector" in out[0]  # Readouts is the default view
         assert "<table" in lens_app.predict(api_name="/open_heatmap_view")
         assert "data-readout-inspector" in lens_app.predict(
             api_name="/open_readouts_view"
@@ -167,13 +167,11 @@ class TestLensTabFlow:
             "Compare (Jacobian / Logit)", 0, -1, 1, 5, 100, True,
             api_name="/generate_and_analyze",
         )
-        summary, status = out[0], out[4]
+        readouts, status = out[0], out[3]
         assert "comparison: Jacobian and Logit lenses" in status
-        assert summary.count('data-lens-comparison="true"') == 1
-        assert summary.index('data-lens-mode="jacobian"') < summary.index(
-            'data-lens-mode="logit"'
-        )
-        assert "Δprob" not in summary
+        assert "miru-readout-compare" in readouts
+        assert readouts.index("Jacobian Lens") < readouts.index("Logit Lens")
+        assert "Δprob" not in readouts
 
         counts = lens_app.predict(api_name="/open_readouts_view")
         heatmap = lens_app.predict(api_name="/open_heatmap_view")

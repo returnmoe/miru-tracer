@@ -185,6 +185,9 @@ class LensSlice:
     Indexing: ``tokens[i][j]`` is the top-k token-id list for
     ``layers[i]`` at ``positions[j]``; likewise probs/texts.
     ``pinned_ranks[token_id][i][j]`` is that token's rank (0 = top).
+    ``source_positions[j]`` records the residual-stream position actually
+    decoded. It equals ``positions[j]`` for raw state alignment and
+    ``positions[j] - 1`` for token alignment.
     """
 
     mode: str
@@ -194,6 +197,7 @@ class LensSlice:
     tokens: list[list[list[int]]]
     probs: list[list[list[float]]]
     texts: list[list[list[str]]]
+    source_positions: list[int] = field(default_factory=list)
     pinned_ranks: dict[int, list[list[int]]] = field(default_factory=dict)
 
 
@@ -235,13 +239,16 @@ def compute_lens_slice(
     pinned_token_ids: list[int] | None = None,
     interventions: InterventionSet | None = None,
     activations: dict[int, torch.Tensor] | None = None,
+    token_aligned: bool = False,
 ) -> LensSlice:
     """Compute per-(layer, position) top-k lens readouts for a sequence.
 
     Args:
         input_ids: ``[1, seq_len]`` token ids (as produced by the tracer).
         layers: Block indices to read out (final block = model logits row).
-        positions: Sequence positions to read out; None = all.
+        positions: Sequence positions to read out; None = all. With
+            ``token_aligned=True``, these are displayed token positions rather
+            than raw residual positions.
         mode: "logit" or "jacobian".
         jlens: Fitted lens; required for "jacobian".
         top_k: Readouts per (layer, position) cell.
@@ -252,6 +259,10 @@ def compute_lens_slice(
             ``activations`` is given (they were applied at record time).
         activations: Pre-recorded block outputs from
             :func:`record_lens_activations`; skips the forward pass entirely.
+        token_aligned: Interpret ``positions`` as displayed token positions and
+            decode the preceding causal state (``p - 1``), so the readout is
+            aligned with the token at ``p`` rather than the token after it.
+            Position 0 has no preceding state and is therefore unavailable.
     """
     if mode not in LENS_MODES:
         raise ValueError(f"Unknown lens mode: {mode!r}. Use one of {LENS_MODES}.")
@@ -261,7 +272,18 @@ def compute_lens_slice(
     wrapper = wrap_model(model, tokenizer)
     seq_len = int(input_ids.shape[1])
     if positions is None:
-        positions = list(range(seq_len))
+        positions = list(range(1 if token_aligned else 0, seq_len))
+    else:
+        positions = list(positions)
+    first_position = 1 if token_aligned else 0
+    bad_positions = [p for p in positions if not first_position <= p < seq_len]
+    if bad_positions:
+        alignment = "token-aligned " if token_aligned else ""
+        raise ValueError(
+            f"{alignment}positions {bad_positions} out of range "
+            f"({first_position} <= position < {seq_len})"
+        )
+    source_positions = [p - 1 for p in positions] if token_aligned else positions
     layers = sorted(set(layers))
     bad = [layer for layer in layers if not 0 <= layer < wrapper.n_layers]
     if bad:
@@ -309,7 +331,7 @@ def compute_lens_slice(
             group = layers[group_start : group_start + group_size]
             stack: list[torch.Tensor] = []
             for layer in group:
-                residual = activations[layer][0, positions, :].float()  # [P, d]
+                residual = activations[layer][0, source_positions, :].float()  # [P, d]
                 use_transport = (
                     mode == "jacobian"
                     and layer != final_layer
@@ -347,10 +369,11 @@ def compute_lens_slice(
                         zip(top_ids[p].tolist(), top_scores[p].tolist(), strict=True)
                     )
                     if skip_non_words and layer == final_layer:
-                        # The final row is the model's true next-token output.
-                        # Preserve its actual top-1 even when it is punctuation
-                        # or a special token, then fill the remaining slots with
-                        # the requested word-like candidates.
+                        # Preserve the model's true top-1 at the decoded causal
+                        # state even when it is punctuation or a special token,
+                        # then fill the remaining slots with word-like candidates.
+                        # In token-aligned mode this is the distribution that
+                        # produced the displayed token.
                         true_id = int(scores[p].argmax().item())
                         true_value = float(scores[p, true_id].item())
                         pairs = [(true_id, true_value)] + [
@@ -389,6 +412,7 @@ def compute_lens_slice(
         tokens=all_tokens,
         probs=all_probs,
         texts=all_texts,
+        source_positions=list(source_positions),
         pinned_ranks=pinned,
     )
 
@@ -431,10 +455,11 @@ class ReadoutRow:
 
 
 def aggregate_readouts(slice_: LensSlice, *, limit: int | None = 50) -> list[ReadoutRow]:
-    """Aggregate tokens across selected cells using reciprocal-rank relevance.
+    """Aggregate tokens across selected cells in descending occurrence order.
 
-    Occurrence counts remain available for Neuronpedia-style layer strips, but
-    row order favors high-ranked tokens over persistent low-rank noise.
+    This matches Neuronpedia's count-first organization. Reciprocal-rank
+    relevance and peak probability break count ties so higher-ranked candidates
+    remain ahead when two tokens occur equally often.
     """
     counts: dict[int, ReadoutRow] = {}
     for i, _layer in enumerate(slice_.layers):
@@ -470,13 +495,12 @@ def aggregate_readouts(slice_: LensSlice, *, limit: int | None = 50) -> list[Rea
                     row.peak_prob_by_layer[i], float(probability)
                 )
     # Dict insertion order is the final tie-break: position, layer, then
-    # per-cell probability rank. Token-id order is arbitrary and often makes
-    # a small result cap look less relevant.
+    # per-cell probability rank. Token-id order is arbitrary.
     ranked = sorted(
         counts.values(),
         key=lambda r: (
-            -r.relevance_score,
             -r.count,
+            -r.relevance_score,
             -max(r.peak_prob_by_layer, default=0.0),
         ),
     )
