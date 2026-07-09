@@ -62,7 +62,7 @@ class TestLensTabFlow:
         client = lens_app
         # Two simultaneous interventions — beyond Neuronpedia's single one.
         client.predict(
-            "steer", "A", "Text", "", "Text", 0, 2.0, "jacobian",
+            "steer", "A", "Text", "", "Text", "0-1", 2.0, "jacobian",
             api_name="/add_intervention",
         )
         result = client.predict(
@@ -71,7 +71,9 @@ class TestLensTabFlow:
         )
         assert "<table" in result[0]
         assert "steer" in result[0] and "jacobian" in result[0] and "logit" in result[0]
-        assert "2 enabled intervention(s)" in result[1]
+        assert result[0].count('data-miru-iv-row="') == 2
+        assert ">0-1<" in result[0]
+        assert "2 enabled intervention group(s)" in result[1]
         pinned_result = client.predict("A", "Text", api_name="/add_pinned")
         assert "1 pinned token" in pinned_result[2]
 
@@ -121,15 +123,19 @@ class TestLensTabFlow:
         )
         assert 'data-miru-iv-action="delete"' in added[0]
         assert 'style="width:100%; border:1px solid rgba(127,127,127,0.18) !important;' in added[0]
-        duplicate = client.predict(
+        repeated = client.predict(
             "ablate", "C", "Text", "", "Text", 0, 1.0, "logit",
             api_name="/add_intervention",
         )
-        assert duplicate[0].count('data-miru-iv-row="') == 1
-        assert "Skipped 1 duplicate intervention(s)" in duplicate[1]
+        assert repeated[0].count('data-miru-iv-row="') == 2
+        assert "2 enabled intervention group(s)" in repeated[1]
+        from miru_tracer.ui.lens_common import get_active_interventions
+
+        assert len(get_active_interventions()) == 2
         cleared = client.predict(api_name="/clear_interventions")
         assert "No active interventions" in cleared[0]
         assert "Cleared" in cleared[1]
+        assert get_active_interventions() == []
 
     def test_logit_mode_without_fitted_lens_still_works(self, lens_app):
         out = lens_app.predict(

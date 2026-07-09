@@ -58,12 +58,14 @@ from miru_tracer.ui.lens_common import (
     LENS_MODE_CHOICES,
     TOKEN_COLOR_MAP,
     add_pinned_token,
-    add_unique_intervention_rows,
     apply_intervention_table_action,
+    enabled_intervention_group_count,
     enabled_interventions,
+    format_layer_refs,
     highlighted_tokens,
     intervened_layer_titles,
-    intervention_row,
+    intervention_description,
+    intervention_group,
     intervention_visibility_warning,
     interventions_summary,
     interventions_table_html,
@@ -366,7 +368,8 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         analysis_state = gr.State(None)
         positions_state = gr.State([])  # [] = all positions
         pinned_tokens_state = gr.State([])  # list[token_id]
-        interventions_state = gr.State([])  # list[dict(enabled, intervention)]
+        # One row per Add click; each row owns its concrete per-layer edits.
+        interventions_state = gr.State([])  # list[dict(enabled, interventions)]
         # slice_state: dict(slice=LensSlice, rows=list[ReadoutRow]) — the
         # cached compute the result views render from.
         slice_state = gr.State(None)
@@ -694,37 +697,29 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     else None
                 )
                 effective_strength = float(strength) if kind == "steer" else 0.0
-                added = [
-                    intervention_row(
-                        Intervention(
-                            kind=kind,
-                            layer=layer,
-                            token_id=token_id,
-                            strength=effective_strength,
-                            token_id_to=token_id_to,
-                            basis=basis,
-                        )
+                concrete = [
+                    Intervention(
+                        kind=kind,
+                        layer=layer,
+                        token_id=token_id,
+                        strength=effective_strength,
+                        token_id_to=token_id_to,
+                        basis=basis,
                     )
                     for layer in parse_layer_refs(layer_refs)
                 ]
-                updated, added, skipped = add_unique_intervention_rows(
-                    interventions, added
-                )
+                group = intervention_group(concrete)
+                updated = [*(interventions or []), group]
                 set_active_interventions(enabled_interventions(updated))
-                if added:
-                    described = added[0]["intervention"].describe(tokenizer)
-                    if len(added) > 1:
-                        described += f" … (+{len(added) - 1} more layers)"
-                    action = f"Added: {described}."
-                    if skipped:
-                        action += f" Skipped {skipped} duplicate intervention(s)."
-                else:
-                    action = f"Skipped {skipped} duplicate intervention(s)."
+                described = intervention_description(concrete[0], tokenizer)
+                layers = format_layer_refs([iv.layer for iv in concrete])
+                action = f"Added: {described} on layers {layers}."
                 return (
                     updated,
                     interventions_table_html(updated, tokenizer),
                     f"{action} "
-                    f"{len(enabled_interventions(updated))} enabled intervention(s) — regenerate to apply.",
+                    f"{enabled_intervention_group_count(updated)} enabled "
+                    "intervention group(s) — regenerate to apply.",
                 )
             except ValueError as e:
                 return interventions, gr.update(), f"Error: {e}"
@@ -738,7 +733,8 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             return (
                 updated,
                 interventions_table_html(updated, tokenizer),
-                f"{action_status} {len(enabled_interventions(updated))} enabled intervention(s) — regenerate to apply.",
+                f"{action_status} {enabled_intervention_group_count(updated)} enabled "
+                "intervention group(s) — regenerate to apply.",
             )
 
         def clear_interventions(_interventions):

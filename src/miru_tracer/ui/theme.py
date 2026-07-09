@@ -151,7 +151,10 @@ MIRU_CSS = """
 }
 
 .miru-iv-table th:nth-child(2),
-.miru-iv-table td:nth-child(2),
+.miru-iv-table td:nth-child(2) {
+    width: 6.5rem;
+}
+
 .miru-iv-table th:nth-child(6),
 .miru-iv-table td:nth-child(6) {
     width: 3.6rem;

@@ -192,12 +192,13 @@ or `logit` (the raw unembedding direction — always available, most meaningful
 near the final layer).
 
 Unlike Neuronpedia's single-intervention steering, **any number of
-interventions can be active at once** — add several rows and they compose,
-in order, inside every forward pass. They apply on the next
-**Generate & Analyze** (the readouts then reflect the edited activations
-too), and can be applied to an Interactive Mode session from its Layer Lens
-panel. Removing all interventions restores the model exactly — nothing is
-permanently modified.
+interventions can be active at once**. Each Add action creates one table item,
+even when its layer selection expands to several layer edits. Table items (and
+their layer edits) compose in order inside every forward pass. They apply on
+the next **Generate & Analyze** (the readouts then reflect the edited
+activations too), and can be applied to an Interactive Mode session from its
+Layer Lens panel. Removing all interventions restores the model exactly —
+nothing is permanently modified.
 
 Suggested first experiment: prompt `The capital of France is`, add
 `steer, token = " Berlin", layer ≈ 2/3 of the way up, strength 2–3,

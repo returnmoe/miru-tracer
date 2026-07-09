@@ -179,78 +179,64 @@ def pinned_tokens_table_html(pinned_ids: list[int], tokenizer=None) -> str:
     return static_table_html(["ID", "Token", "Decoded"], rows)
 
 
-def intervention_row(intervention: Intervention, *, enabled: bool = True) -> dict:
-    return {"enabled": bool(enabled), "intervention": intervention}
+def intervention_group(
+    interventions: list[Intervention], *, enabled: bool = True
+) -> dict:
+    """Build the UI row created by one Add-intervention action."""
+    concrete = list(interventions)
+    if not concrete:
+        raise ValueError("An intervention group needs at least one layer edit")
+    return {"enabled": bool(enabled), "interventions": concrete}
 
 
-def intervention_signature(iv: Intervention) -> tuple:
-    """Stable key for deciding whether two UI interventions are duplicates."""
+def enabled_interventions(groups: list) -> list[Intervention]:
+    """Flatten enabled UI groups in click order, then per-group layer order."""
+    return [
+        intervention
+        for group in groups or []
+        if group.get("enabled", True)
+        for intervention in group["interventions"]
+    ]
+
+
+def enabled_intervention_group_count(groups: list) -> int:
+    """Count enabled Add-action rows rather than concrete layer edits."""
+    return sum(group.get("enabled", True) for group in groups or [])
+
+
+def format_layer_refs(layers: list[int]) -> str:
+    """Compact sorted layer numbers into inclusive ranges (``14-18, 33``)."""
+    ordered = sorted(set(layers))
+    ranges: list[str] = []
+    start = end = None
+    for layer in ordered:
+        if start is None:
+            start = end = layer
+        elif layer == end + 1:
+            end = layer
+        else:
+            ranges.append(str(start) if start == end else f"{start}-{end}")
+            start = end = layer
+    if start is not None:
+        ranges.append(str(start) if start == end else f"{start}-{end}")
+    return ", ".join(ranges)
+
+
+def intervention_description(iv: Intervention, tokenizer=None) -> str:
+    """Describe an edit without its layer, which has a dedicated table column."""
+    def token_name(token_id: int) -> str:
+        if tokenizer is None:
+            return str(token_id)
+        return repr(tokenizer.convert_ids_to_tokens([token_id])[0])
+
     if iv.kind == "steer":
-        return (iv.kind, iv.layer, iv.token_id, float(iv.strength), iv.basis)
-    if iv.kind == "swap":
-        return (iv.kind, iv.layer, iv.token_id, iv.token_id_to, iv.basis)
-    return (iv.kind, iv.layer, iv.token_id, iv.basis)
+        return f"steer {token_name(iv.token_id)} (α={iv.strength:+g})"
+    if iv.kind == "ablate":
+        return f"ablate {token_name(iv.token_id)}"
+    return f"swap {token_name(iv.token_id)}→{token_name(iv.token_id_to)}"
 
 
-def add_unique_intervention_rows(
-    rows: list, candidates: list
-) -> tuple[list, list, int]:
-    """Append candidates whose effective intervention parameters are new."""
-    updated = list(rows or [])
-    seen = {
-        intervention_signature(row if isinstance(row, Intervention) else row["intervention"])
-        for row in updated
-    }
-    added = []
-    skipped = 0
-    for row in candidates:
-        iv = row if isinstance(row, Intervention) else row["intervention"]
-        signature = intervention_signature(iv)
-        if signature in seen:
-            skipped += 1
-            continue
-        updated.append(row)
-        added.append(row)
-        seen.add(signature)
-    return updated, added, skipped
-
-
-def enabled_interventions(rows: list) -> list[Intervention]:
-    enabled: list[Intervention] = []
-    for row in rows or []:
-        if isinstance(row, Intervention):
-            enabled.append(row)
-        elif row.get("enabled", True):
-            enabled.append(row["intervention"])
-    return enabled
-
-
-def intervention_row_choices(rows: list, tokenizer=None) -> list[tuple[str, str]]:
-    choices = []
-    for i, row in enumerate(rows or []):
-        iv = row if isinstance(row, Intervention) else row["intervention"]
-        enabled = True if isinstance(row, Intervention) else row.get("enabled", True)
-        mark = "on" if enabled else "off"
-        choices.append((f"{i}: {mark} · {iv.describe(tokenizer)}", str(i)))
-    return choices
-
-
-def set_intervention_rows_enabled(rows: list, selected: list[str], enabled: bool) -> list:
-    selected_ids = {int(s) for s in (selected or [])}
-    updated = []
-    for i, row in enumerate(rows or []):
-        if isinstance(row, Intervention):
-            row = intervention_row(row)
-        updated.append({**row, "enabled": enabled} if i in selected_ids else row)
-    return updated
-
-
-def delete_intervention_rows(rows: list, selected: list[str]) -> list:
-    selected_ids = {int(s) for s in (selected or [])}
-    return [row for i, row in enumerate(rows or []) if i not in selected_ids]
-
-
-def apply_intervention_table_action(rows: list, payload: str | dict) -> tuple[list, str]:
+def apply_intervention_table_action(groups: list, payload: str | dict) -> tuple[list, str]:
     """Apply one action emitted by the custom Active Interventions table."""
     if isinstance(payload, dict):
         data = payload
@@ -258,17 +244,15 @@ def apply_intervention_table_action(rows: list, payload: str | dict) -> tuple[li
         try:
             data = json.loads(payload or "{}")
         except (TypeError, json.JSONDecodeError):
-            return list(rows or []), "Ignored invalid intervention action."
+            return list(groups or []), "Ignored invalid intervention action."
 
     action = data.get("action")
     try:
         index = int(data.get("index"))
     except (TypeError, ValueError):
-        return list(rows or []), "Ignored invalid intervention action."
+        return list(groups or []), "Ignored invalid intervention action."
 
-    updated = []
-    for row in rows or []:
-        updated.append(intervention_row(row) if isinstance(row, Intervention) else row)
+    updated = list(groups or [])
 
     if index < 0 or index >= len(updated):
         return updated, "Ignored invalid intervention action."
@@ -276,10 +260,10 @@ def apply_intervention_table_action(rows: list, payload: str | dict) -> tuple[li
     if action == "toggle":
         updated[index] = {**updated[index], "enabled": bool(data.get("enabled"))}
         state = "enabled" if updated[index]["enabled"] else "disabled"
-        return updated, f"Intervention {index} {state}."
+        return updated, f"Intervention group {index} {state}."
     if action == "delete":
-        return [row for i, row in enumerate(updated) if i != index], (
-            f"Deleted intervention {index}."
+        return [group for i, group in enumerate(updated) if i != index], (
+            f"Deleted intervention group {index}."
         )
     return updated, "Ignored invalid intervention action."
 
@@ -295,8 +279,8 @@ def sparkline(counts: list[int]) -> str:
     )
 
 
-def interventions_table_html(interventions: list, tokenizer=None) -> str:
-    if not interventions:
+def interventions_table_html(groups: list, tokenizer=None) -> str:
+    if not groups:
         return '<p style="margin-top:6px; opacity:0.72;">No active interventions.</p>'
 
     rows = [
@@ -304,7 +288,7 @@ def interventions_table_html(interventions: list, tokenizer=None) -> str:
         f'<table class="miru-iv-table" style="{_IV_TABLE_STYLE}">',
         "<thead><tr>",
         f'<th style="{_IV_TH_STYLE}; width:3.2rem; text-align:center;">On</th>'
-        f'<th style="{_IV_TH_STYLE}; width:3.6rem;">#</th>'
+        f'<th style="{_IV_TH_STYLE}; width:6.5rem;">Layers</th>'
         f'<th style="{_IV_TH_STYLE}; width:5.5rem;">Kind</th>'
         f'<th style="{_IV_TH_STYLE}">Intervention</th>'
         f'<th style="{_IV_TH_STYLE}; width:5.5rem;">Basis</th>'
@@ -312,9 +296,10 @@ def interventions_table_html(interventions: list, tokenizer=None) -> str:
         f'<th style="{_IV_TH_STYLE}; width:5.6rem; text-align:right;"></th>',
         "</tr></thead><tbody>",
     ]
-    for i, row in enumerate(interventions):
-        iv = row if isinstance(row, Intervention) else row["intervention"]
-        enabled = True if isinstance(row, Intervention) else row.get("enabled", True)
+    for i, group in enumerate(groups):
+        iv = group["interventions"][0]
+        enabled = group.get("enabled", True)
+        layers = format_layer_refs([item.layer for item in group["interventions"]])
         strength = f"{iv.strength:+g}" if iv.kind == "steer" else ""
         checked = " checked" if enabled else ""
         muted = "" if enabled else " miru-iv-row-disabled"
@@ -324,17 +309,19 @@ def interventions_table_html(interventions: list, tokenizer=None) -> str:
             f'<td class="miru-iv-on" style="{_IV_CELL_STYLE} text-align:center;">'
             f'<input type="checkbox" class="miru-iv-toggle" '
             f'data-miru-iv-action="toggle" data-index="{i}"{checked} '
-            f'aria-label="Enable intervention {i}">'
+            f'aria-label="Enable intervention group {i} for layers {html.escape(layers)}">'
             "</td>"
-            f'<td style="{_IV_CELL_STYLE}">{i}</td>'
+            f'<td style="{_IV_CELL_STYLE}">{html.escape(layers)}</td>'
             f'<td style="{_IV_CELL_STYLE}">{html.escape(iv.kind)}</td>'
-            f'<td style="{_IV_CELL_STYLE}">{html.escape(iv.describe(tokenizer))}</td>'
+            f'<td style="{_IV_CELL_STYLE}">'
+            f'{html.escape(intervention_description(iv, tokenizer))}</td>'
             f'<td style="{_IV_CELL_STYLE}">{html.escape(iv.basis)}</td>'
             f'<td style="{_IV_CELL_STYLE}">{html.escape(strength)}</td>'
             f'<td class="miru-iv-actions" style="{_IV_CELL_STYLE} text-align:right;">'
             f'<button type="button" class="miru-iv-delete" '
             f'data-miru-iv-action="delete" data-index="{i}" '
-            f'aria-label="Delete intervention {i}">Remove</button>'
+            f'aria-label="Remove intervention group {i} for layers '
+            f'{html.escape(layers)}">Remove</button>'
             "</td></tr>"
         )
     rows.append("</tbody></table></div>")

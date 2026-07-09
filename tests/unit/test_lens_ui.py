@@ -7,16 +7,14 @@ from miru_tracer.core.lens import LensSlice, ReadoutRow
 from miru_tracer.ui.lens_common import (
     INTERVENTIONS_TABLE_JS,
     add_pinned_token,
-    add_unique_intervention_rows,
     apply_intervention_table_action,
-    delete_intervention_rows,
+    enabled_intervention_group_count,
     enabled_interventions,
+    format_layer_refs,
     get_active_interventions,
     highlighted_tokens,
     intervened_layer_titles,
-    intervention_row,
-    intervention_row_choices,
-    intervention_signature,
+    intervention_group,
     intervention_visibility_warning,
     interventions_summary,
     interventions_table_html,
@@ -29,7 +27,6 @@ from miru_tracer.ui.lens_common import (
     remove_pinned_tokens,
     selection_summary,
     set_active_interventions,
-    set_intervention_rows_enabled,
     sparkline,
     toggle_position,
     token_mode_key,
@@ -226,13 +223,20 @@ class TestActiveInterventionsTable:
 
     def test_rows_rendered_and_escaped(self, tiny_tokenizer):
         token_id = tiny_tokenizer.encode("<b>", add_special_tokens=False)[0]
-        iv = Intervention(kind="steer", layer=0, token_id=token_id, basis="logit")
-        out = interventions_table_html([iv], tiny_tokenizer)
+        group = intervention_group(
+            [Intervention(kind="steer", layer=layer, token_id=token_id, basis="logit")
+             for layer in [14, 15, 16, 17, 18, 33]]
+        )
+        out = interventions_table_html([group], tiny_tokenizer)
         assert "<table" in out
-        assert ">0<" in out and ">logit<" in out
+        assert ">14-18, 33<" in out and ">logit<" in out
+        assert "@L14" not in out
         assert "steer" in out
+        assert "&lt;" in out and "<b>" not in out
         assert 'data-miru-iv-action="toggle"' in out
         assert 'data-miru-iv-action="delete"' in out
+        assert 'aria-label="Enable intervention group 0 for layers 14-18, 33"' in out
+        assert 'aria-label="Remove intervention group 0 for layers 14-18, 33"' in out
         assert 'style="width:100%; border:1px solid rgba(127,127,127,0.18) !important;' in out
         assert "border:1px solid rgba(127,127,127,0.18) !important" in out
 
@@ -240,84 +244,76 @@ class TestActiveInterventionsTable:
         assert "trigger('click'" in INTERVENTIONS_TABLE_JS
         assert "miru-iv-action-payload" not in INTERVENTIONS_TABLE_JS
 
-    def test_enabled_only_and_row_actions(self):
-        first = intervention_row(Intervention(kind="steer", layer=0, token_id=1))
-        second = intervention_row(
-            Intervention(kind="ablate", layer=1, token_id=2), enabled=False
-        )
-        assert enabled_interventions([first, second]) == [first["intervention"]]
+    def test_enabled_groups_flatten_in_group_and_layer_order(self):
+        first_edits = [
+            Intervention(kind="steer", layer=0, token_id=1),
+            Intervention(kind="steer", layer=1, token_id=1),
+        ]
+        second_edits = [
+            Intervention(kind="ablate", layer=1, token_id=2),
+            Intervention(kind="ablate", layer=2, token_id=2),
+        ]
+        first = intervention_group(first_edits)
+        second = intervention_group(second_edits, enabled=False)
+        assert enabled_interventions([first, second]) == first_edits
+        assert enabled_intervention_group_count([first, second]) == 1
 
-        disabled = set_intervention_rows_enabled([first, second], ["0"], False)
-        assert enabled_interventions(disabled) == []
-        enabled = set_intervention_rows_enabled(disabled, ["1"], True)
-        assert enabled_interventions(enabled) == [second["intervention"]]
-        assert delete_intervention_rows(enabled, ["0"]) == [enabled[1]]
+        enabled = {**second, "enabled": True}
+        assert enabled_interventions([first, enabled]) == first_edits + second_edits
+        assert enabled_intervention_group_count([first, enabled]) == 2
 
-    def test_row_choices(self):
-        rows = [intervention_row(Intervention(kind="steer", layer=0, token_id=1))]
-        choices = intervention_row_choices(rows)
-        assert choices[0][1] == "0"
-        assert "on" in choices[0][0]
+    def test_separate_identical_groups_are_preserved(self):
+        edit = Intervention(kind="steer", layer=0, token_id=1, strength=0.5)
+        groups = [intervention_group([edit]), intervention_group([edit])]
+        assert len(groups) == 2
+        assert enabled_interventions(groups) == [edit, edit]
 
-    def test_duplicate_guard_skips_exact_matches(self):
-        row = intervention_row(
-            Intervention(kind="steer", layer=0, token_id=1, strength=0.5)
-        )
-        duplicate = intervention_row(
-            Intervention(kind="steer", layer=0, token_id=1, strength=0.5)
-        )
-        different = intervention_row(
-            Intervention(kind="steer", layer=0, token_id=1, strength=0.6)
-        )
-        updated, added, skipped = add_unique_intervention_rows(
-            [row], [duplicate, different]
-        )
-        assert updated == [row, different]
-        assert added == [different]
-        assert skipped == 1
+    @pytest.mark.parametrize(
+        "layers, expected",
+        [
+            ([14, 15, 16, 17, 18, 33], "14-18, 33"),
+            ([3], "3"),
+            ([5, 2, 3, 2], "2-3, 5"),
+            ([], ""),
+        ],
+    )
+    def test_layer_labels_are_sorted_and_compacted(self, layers, expected):
+        assert format_layer_refs(layers) == expected
 
-    def test_duplicate_signature_ignores_ineffective_strength(self):
-        assert intervention_signature(
-            Intervention(kind="ablate", layer=0, token_id=1, strength=0.0)
-        ) == intervention_signature(
-            Intervention(kind="ablate", layer=0, token_id=1, strength=2.0)
-        )
-        assert intervention_signature(
-            Intervention(
-                kind="swap", layer=0, token_id=1, token_id_to=2, strength=-1.0
-            )
-        ) == intervention_signature(
-            Intervention(
-                kind="swap", layer=0, token_id=1, token_id_to=2, strength=1.0
-            )
-        )
-        assert intervention_signature(
-            Intervention(kind="steer", layer=0, token_id=1, strength=0.0)
-        ) != intervention_signature(
-            Intervention(kind="steer", layer=0, token_id=1, strength=1.0)
-        )
-
-    def test_table_action_toggle_and_delete(self):
+    def test_group_action_toggle_and_delete(self):
         rows = [
-            intervention_row(Intervention(kind="steer", layer=0, token_id=1)),
-            intervention_row(Intervention(kind="ablate", layer=1, token_id=2)),
+            intervention_group(
+                [
+                    Intervention(kind="steer", layer=0, token_id=1),
+                    Intervention(kind="steer", layer=1, token_id=1),
+                ]
+            ),
+            intervention_group(
+                [Intervention(kind="ablate", layer=1, token_id=2)]
+            ),
         ]
         updated, status = apply_intervention_table_action(
             rows, '{"action":"toggle","index":0,"enabled":false}'
         )
-        assert "disabled" in status
-        assert enabled_interventions(updated) == [rows[1]["intervention"]]
+        assert "group 0 disabled" in status
+        assert enabled_interventions(updated) == rows[1]["interventions"]
 
         updated, status = apply_intervention_table_action(
             updated, '{"action":"delete","index":1}'
         )
-        assert "Deleted intervention 1" in status
+        assert "Deleted intervention group 1" in status
         assert len(updated) == 1
-        assert updated[0]["intervention"] == rows[0]["intervention"]
+        assert updated[0]["interventions"] == rows[0]["interventions"]
 
     def test_table_action_rejects_bad_payload(self):
-        rows = [intervention_row(Intervention(kind="steer", layer=0, token_id=1))]
+        rows = [intervention_group([Intervention(kind="steer", layer=0, token_id=1)])]
         updated, status = apply_intervention_table_action(rows, "not-json")
+        assert updated == rows
+        assert "Ignored invalid" in status
+
+        updated, status = apply_intervention_table_action(
+            rows, {"action": "delete", "index": 99}
+        )
         assert updated == rows
         assert "Ignored invalid" in status
 
