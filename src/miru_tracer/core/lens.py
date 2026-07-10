@@ -136,10 +136,8 @@ class LensStore:
                 return path
         return None
 
-    def get(
-        self, model_name: str, *, model=None, tokenizer=None
-    ) -> JacobianLens | None:
-        """Load the fitted lens for a model, or None if absent/incompatible."""
+    def get(self, model_name: str) -> JacobianLens | None:
+        """Load the fitted lens for a model, or None if not fitted yet."""
         path = self.existing_lens_path(model_name)
         if path is None:
             return None
@@ -155,15 +153,6 @@ class LensStore:
                 return None
             self._cache[model_name] = (key, lens)
             logger.info(f"Loaded Jacobian lens for {model_name}: {lens}")
-        if model is not None and tokenizer is not None:
-            # Lazy import avoids a module cycle: lens_fit uses LensStore after
-            # fitting, while runtime validation is needed only by the app.
-            from miru_tracer.core.lens_fit import validate_lens_provenance
-
-            status, detail = validate_lens_provenance(lens, model, tokenizer)
-            if status == "mismatch":
-                logger.error(f"Rejected incompatible lens at {path}: {detail}")
-                return None
         return lens
 
 
@@ -301,6 +290,20 @@ def compute_lens_slice(
         raise ValueError(f"mode={mode!r} requires a fitted Jacobian lens")
 
     wrapper = wrap_model(model, tokenizer)
+    if mode == "jacobian" and jlens is not None:
+        if jlens.d_model != wrapper.d_model:
+            raise ValueError(
+                f"lens d_model={jlens.d_model} does not match model "
+                f"d_model={wrapper.d_model}"
+            )
+        invalid_source_layers = [
+            layer for layer in jlens.source_layers if layer >= wrapper.n_layers
+        ]
+        if invalid_source_layers:
+            raise ValueError(
+                f"lens source layers {invalid_source_layers} are out of range "
+                f"for a {wrapper.n_layers}-layer model"
+            )
     seq_len = int(input_ids.shape[1])
     if positions is None:
         positions = list(range(1 if token_aligned else 0, seq_len))

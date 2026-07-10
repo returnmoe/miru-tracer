@@ -220,10 +220,9 @@ class TestFitFileManagement:
         # Re-upload the existing fitted lens through the UI path
         source = get_lens_store().lens_path("tiny/test-model")
         result = lens_app.predict(
-            handle_file(str(source)), True, api_name="/install_fit_file"
+            handle_file(str(source)), api_name="/install_fit_file"
         )
         assert "Installed" in result
-        assert "without provenance verification" in result
 
         # A lens with the wrong d_model must be rejected
         import torch
@@ -234,6 +233,6 @@ class TestFitFileManagement:
         wrong_path = tmp_path / "wrong.pt"
         wrong.save(str(wrong_path))
         result = lens_app.predict(
-            handle_file(str(wrong_path)), True, api_name="/install_fit_file"
+            handle_file(str(wrong_path)), api_name="/install_fit_file"
         )
         assert "different model" in result

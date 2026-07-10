@@ -180,36 +180,6 @@ def _with_runtime_provenance(
     return provenance
 
 
-def validate_lens_provenance(lens, model, tokenizer) -> tuple[str, str]:
-    """Compare a fitted artifact with the loaded runtime.
-
-    Returns ``(status, detail)`` where status is ``verified``, ``legacy`` or
-    ``mismatch``. Legacy artifacts have no usable cryptographic provenance and
-    therefore require an explicit UI opt-in before installation.
-    """
-    metadata = lens.fit_metadata or {}
-    stored = metadata.get("provenance") or {}
-    current = _with_runtime_provenance(model, tokenizer, None)
-    strong_keys = (
-        "model_config_sha256",
-        "tokenizer_sha256",
-        "model_commit_hash",
-        "model_manifest_sha256",
-    )
-    compared = []
-    for key in strong_keys:
-        expected = stored.get(key)
-        actual = current.get(key)
-        if expected is None or actual is None:
-            continue
-        compared.append(key)
-        if expected != actual:
-            return "mismatch", f"{key} does not match the loaded model"
-    if compared:
-        return "verified", "verified by " + ", ".join(compared)
-    return "legacy", "artifact has no comparable model/tokenizer provenance"
-
-
 def prompts_from_file(path: str | Path) -> list[str]:
     """One prompt per non-empty line."""
     lines = Path(path).read_text().splitlines()

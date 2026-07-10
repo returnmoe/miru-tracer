@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from miru_tracer.core._jlens import fit, from_hf
+from miru_tracer.core._jlens import JacobianLens, fit, from_hf
 from miru_tracer.core.lens import (
     LensSlice,
     LensStore,
@@ -164,6 +164,41 @@ class TestComputeLensSlice:
         with pytest.raises(ValueError, match="requires a fitted"):
             compute_lens_slice(
                 tiny_model, tiny_tokenizer, input_ids, layers=[0], mode="jacobian"
+            )
+
+    def test_jacobian_lens_width_must_match_model(
+        self, tiny_model, tiny_tokenizer, input_ids
+    ):
+        incompatible = JacobianLens(
+            jacobians={0: torch.zeros(8, 8)}, n_prompts=1, d_model=8
+        )
+        with pytest.raises(ValueError, match="d_model=8 does not match"):
+            compute_lens_slice(
+                tiny_model,
+                tiny_tokenizer,
+                input_ids,
+                layers=[0],
+                mode="jacobian",
+                jlens=incompatible,
+            )
+
+    def test_jacobian_lens_source_layers_must_exist(
+        self, tiny_model, tiny_tokenizer, input_ids
+    ):
+        width = tiny_model.config.hidden_size
+        incompatible = JacobianLens(
+            jacobians={99: torch.zeros(width, width)},
+            n_prompts=1,
+            d_model=width,
+        )
+        with pytest.raises(ValueError, match="source layers.*out of range"):
+            compute_lens_slice(
+                tiny_model,
+                tiny_tokenizer,
+                input_ids,
+                layers=[0],
+                mode="jacobian",
+                jlens=incompatible,
             )
 
     def test_unfitted_layer_rejected(self, tiny_model, tiny_tokenizer, input_ids, tiny_lens):

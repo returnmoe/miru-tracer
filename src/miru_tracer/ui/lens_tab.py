@@ -34,7 +34,6 @@ from miru_tracer.core.lens import (
     get_lens_store,
     record_lens_activations,
 )
-from miru_tracer.core.lens_fit import validate_lens_provenance
 from miru_tracer.core.lens_io import load_lens, save_lens
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
@@ -287,11 +286,6 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                         file_types=[".safetensors", ".pt"],
                         type="filepath",
                     )
-                    allow_legacy_lens = gr.Checkbox(
-                        label="Allow unverified legacy lens",
-                        value=False,
-                        info="Required only for artifacts without model/tokenizer provenance.",
-                    )
                     lens_file_check_button = gr.Button("Check status", size="sm")
 
                 with gr.Group():
@@ -426,9 +420,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 )
 
             mode = lens_mode_key(mode_choice)
-            jlens = get_lens_store().get(
-                analysis["model_name"], model=model, tokenizer=tokenizer
-            )
+            jlens = get_lens_store().get(analysis["model_name"])
             if mode in ("jacobian", "compare") and jlens is None:
                 return None, (
                     "Error: no fitted Jacobian lens for "
@@ -692,9 +684,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             tracer = None
             try:
                 tracer = LLMTracer(model, tokenizer, device)
-                jlens = get_lens_store().get(
-                    model_manager.get_model_name(), model=model, tokenizer=tokenizer
-                )
+                jlens = get_lens_store().get(model_manager.get_model_name())
                 active_interventions = enabled_interventions(interventions)
                 try:
                     tracer.set_interventions(active_interventions or None, jlens=jlens)
@@ -911,11 +901,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             if model_name is None:
                 return "No model loaded."
             store = get_lens_store()
-            lens = store.get(
-                model_name,
-                model=model_manager.get_model(),
-                tokenizer=model_manager.get_tokenizer(),
-            )
+            lens = store.get(model_name)
             if lens is None:
                 return (
                     f"No fitted lens for {model_name}.\n"
@@ -930,7 +916,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 f"Path: {store.existing_lens_path(model_name)}"
             )
 
-        def install_fit_file(filepath, allow_legacy):
+        def install_fit_file(filepath):
             """Validate an uploaded fit file and install it for the loaded model."""
             if filepath is None:
                 return fit_file_status()
@@ -957,18 +943,6 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                     f"{model_name} only has {n_layers} layers."
                 )
 
-            tokenizer = model_manager.get_tokenizer()
-            provenance_status, provenance_detail = validate_lens_provenance(
-                lens, model, tokenizer
-            )
-            if provenance_status == "mismatch":
-                return f"Error: lens provenance mismatch: {provenance_detail}."
-            if provenance_status == "legacy" and not allow_legacy:
-                return (
-                    "Error: this legacy lens has no verifiable model/tokenizer "
-                    "provenance. Enable 'Allow unverified legacy lens' to install it."
-                )
-
             path = get_lens_store().lens_path(model_name)
             path.parent.mkdir(parents=True, exist_ok=True)
             save_lens(lens, path)
@@ -976,8 +950,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             # the unsafe copy around — drop it.
             path.with_name(LEGACY_LENS_FILENAME).unlink(missing_ok=True)
             logger.info(f"Installed fit file for {model_name} at {path}")
-            warning = "\nWarning: installed without provenance verification." if provenance_status == "legacy" else ""
-            return f"Installed ({provenance_detail}).{warning}\n{fit_file_status()}"
+            return f"Installed.\n{fit_file_status()}"
 
         # ------------------------------------------------------------ wiring
 
@@ -1097,7 +1070,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
 
         lens_file_upload.upload(
             fn=install_fit_file,
-            inputs=[lens_file_upload, allow_legacy_lens],
+            inputs=[lens_file_upload],
             outputs=[lens_file_status],
         )
         lens_file_check_button.click(

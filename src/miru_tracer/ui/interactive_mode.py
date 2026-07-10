@@ -289,9 +289,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                     return None, "Initialize a prompt first."
                 model_name = model_manager.get_model_name()
                 mode = lens_mode_key(mode_choice)
-                jlens = get_lens_store().get(
-                    model_name, model=tracer.model, tokenizer=tracer.tokenizer
-                )
+                jlens = get_lens_store().get(model_name)
                 if mode in ("jacobian", "compare") and jlens is None:
                     return None, (
                         f"No fitted Jacobian lens for {model_name}. Fit one in "
@@ -379,11 +377,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                 return error[0]
             interventions = get_active_interventions()
             with session.lock:
-                jlens = get_lens_store().get(
-                    model_manager.get_model_name(),
-                    model=session.tracer.model,
-                    tokenizer=session.tracer.tokenizer,
-                )
+                jlens = get_lens_store().get(model_manager.get_model_name())
                 try:
                     session.tracer.set_interventions(interventions or None, jlens=jlens)
                 except ValueError as e:
