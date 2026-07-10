@@ -10,15 +10,11 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from functools import wraps
-from typing import ParamSpec, TypeVar
-
-P = ParamSpec("P")
-R = TypeVar("R")
 
 MODEL_RUNTIME_LOCK = threading.RLock()
 
 
-def serialized_model_operation(fn: Callable[P, R]) -> Callable[P, R]:
+def serialized_model_operation[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     """Run ``fn`` exclusively with respect to every shared-model operation."""
 
     @wraps(fn)

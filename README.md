@@ -40,7 +40,7 @@ Useful for:
 
 ## Installation
 
-Requires Python 3.11+. Works on CPU; a CUDA GPU helps with larger models.
+Requires Python 3.12+. Works on CPU; a CUDA GPU helps with larger models.
 
 ```bash
 git clone <repository-url>
