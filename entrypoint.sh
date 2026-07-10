@@ -1,57 +1,27 @@
-#!/bin/bash
-set -e
+#!/bin/sh
+set -eu
 
-echo "=== Miru Tracer Container Starting ==="
-
-# Check if SSH should be enabled
-if [ "$MIRU_SSH_ENABLE" = "1" ]; then
-    echo "SSH server is ENABLED (MIRU_SSH_ENABLE=1)"
-
-    # Generate SSH host keys if they don't exist
-    echo "Generating SSH host keys ..."
+if [ "${MIRU_SSH_ENABLE:-0}" = "1" ]; then
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "MIRU_SSH_ENABLE=1 requires the container to start as root" >&2
+        exit 1
+    fi
     ssh-keygen -A
-
-    # Set up SSH key from environment variable
-    if [ ! -z "$MIRU_SSH_AUTHORIZED_KEYS" ]; then
-        echo "Setting up authorized keys ..."
-        echo "$MIRU_SSH_AUTHORIZED_KEYS" > /root/.ssh/authorized_keys
-    fi
-
-    # Set SSH port from environment variable
-    if [ ! -z "$MIRU_SSH_PORT" ]; then
-        echo "Setting SSH server port to $MIRU_SSH_PORT ..."
-        sed -i '/^#*Port /d' /etc/ssh/sshd_config
-        echo "Port $MIRU_SSH_PORT" >> /etc/ssh/sshd_config
-    fi
-
-    # Ensure authorized_keys exists and has proper permissions
-    if [ ! -f /root/.ssh/authorized_keys ]; then
-        echo "WARNING: /root/.ssh/authorized_keys not found!"
-        echo "Please mount your SSH public key with: -v ~/.ssh/authorized_keys:/root/.ssh/authorized_keys:ro"
-        echo "SSH server will start, but you won't be able to login without authorized keys."
-    else
+    if [ -n "${MIRU_SSH_AUTHORIZED_KEYS:-}" ]; then
+        printf '%s\n' "$MIRU_SSH_AUTHORIZED_KEYS" > /root/.ssh/authorized_keys
         chmod 600 /root/.ssh/authorized_keys
-        echo "Authorized keys loaded from /root/.ssh/authorized_keys"
     fi
-
-    # Start SSH daemon
-    echo "Starting SSH daemon ..."
+    if [ ! -s /root/.ssh/authorized_keys ]; then
+        echo "Refusing to start SSH without MIRU_SSH_AUTHORIZED_KEYS" >&2
+        exit 1
+    fi
+    port="${MIRU_SSH_PORT:-22}"
+    case "$port" in *[!0-9]*|'') echo "Invalid MIRU_SSH_PORT" >&2; exit 1;; esac
+    printf 'Port %s\n' "$port" > /etc/ssh/sshd_config.d/miru-port.conf
     /usr/sbin/sshd
-
-    # Print SSH key fingerprints for client verification
-    echo ""
-    echo "=== SSH Host Key Fingerprints ==="
-    for keyfile in /etc/ssh/ssh_host_*_key.pub; do
-        if [ -f "$keyfile" ]; then
-            ssh-keygen -lf "$keyfile"
-        fi
-    done
-    echo "================================="
-    echo ""
-else
-    echo "SSH server is DISABLED (set MIRU_SSH_ENABLE=1 to enable)"
 fi
 
-# Start the application (installed as a package; no working-directory dependency)
-echo "Starting Miru Tracer ..."
-exec python3 -m miru_tracer
+if [ "$(id -u)" -eq 0 ]; then
+    exec setpriv --reuid=miru --regid=miru --init-groups -- "$@"
+fi
+exec "$@"

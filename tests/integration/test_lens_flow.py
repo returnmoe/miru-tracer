@@ -6,6 +6,7 @@ server and drives it with gradio_client.
 """
 
 import re
+import socket
 
 import pytest
 from gradio_client import Client
@@ -15,11 +16,11 @@ from miru_tracer.core.lens_io import save_lens
 
 pytestmark = pytest.mark.integration
 
-PORT = 7871
-
-
 @pytest.fixture()
 def lens_app(tiny_model, tiny_tokenizer, tmp_path, monkeypatch):
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
     from miru_tracer.core import lens as lens_module
     from miru_tracer.core.lens import LensStore
     from miru_tracer.core.model_manager import ModelManager
@@ -50,10 +51,10 @@ def lens_app(tiny_model, tiny_tokenizer, tmp_path, monkeypatch):
     app = create_app()
     app.queue()
     app.launch(
-        server_name="127.0.0.1", server_port=PORT, prevent_thread_lock=True, quiet=True
+        server_name="127.0.0.1", server_port=port, prevent_thread_lock=True, quiet=True
     )
     try:
-        yield Client(f"http://127.0.0.1:{PORT}/", verbose=False)
+        yield Client(f"http://127.0.0.1:{port}/", verbose=False)
     finally:
         app.close()
         set_active_interventions([])
@@ -219,9 +220,10 @@ class TestFitFileManagement:
         # Re-upload the existing fitted lens through the UI path
         source = get_lens_store().lens_path("tiny/test-model")
         result = lens_app.predict(
-            handle_file(str(source)), api_name="/install_fit_file"
+            handle_file(str(source)), True, api_name="/install_fit_file"
         )
         assert "Installed" in result
+        assert "without provenance verification" in result
 
         # A lens with the wrong d_model must be rejected
         import torch
@@ -232,6 +234,6 @@ class TestFitFileManagement:
         wrong_path = tmp_path / "wrong.pt"
         wrong.save(str(wrong_path))
         result = lens_app.predict(
-            handle_file(str(wrong_path)), api_name="/install_fit_file"
+            handle_file(str(wrong_path)), True, api_name="/install_fit_file"
         )
         assert "different model" in result

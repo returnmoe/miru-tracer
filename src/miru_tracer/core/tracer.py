@@ -34,6 +34,7 @@ from miru_tracer.core.interventions import (
     apply_interventions,
 )
 from miru_tracer.core.logging_config import get_logger
+from miru_tracer.core.model_runtime import serialized_model_operation
 from miru_tracer.core.sampling import (
     SamplingParams,
     apply_temperature,
@@ -81,31 +82,30 @@ class NextTokenDistribution:
         self.raw_logits = raw_logits
         self.temperature = temperature
 
-        raw_probs = torch.softmax(raw_logits, dim=-1)
-        adjusted_probs = torch.softmax(apply_temperature(raw_logits, temperature), dim=-1)
+        self.raw_probs = torch.softmax(raw_logits, dim=-1)
+        self.adjusted_probs = torch.softmax(
+            apply_temperature(raw_logits, temperature), dim=-1
+        )
         k = min(top_k, raw_logits.shape[-1])
-        top_probs, top_indices = torch.topk(adjusted_probs, k)
+        top_probs, top_indices = torch.topk(self.adjusted_probs, k)
 
         self.top_k_tokens: list[int] = top_indices.cpu().tolist()
         self.top_k_probs: list[float] = top_probs.cpu().tolist()
-        self.top_k_raw_probs: list[float] = raw_probs[top_indices].cpu().tolist()
+        self.top_k_raw_probs: list[float] = self.raw_probs[top_indices].cpu().tolist()
         decoded = [safe_decode_token(tokenizer, t) for t in self.top_k_tokens]
         self.top_k_texts: list[str] = [d[0] if d[0] else d[1] for d in decoded]
         self.top_k_texts_raw: list[str] = [d[1] for d in decoded]
 
     def prob_of(self, token_id: int) -> tuple[float, float]:
         """Return (adjusted, raw) probability of a token — no model call."""
-        raw = torch.softmax(self.raw_logits, dim=-1)[token_id].item()
-        adjusted = torch.softmax(
-            apply_temperature(self.raw_logits, self.temperature), dim=-1
-        )[token_id].item()
+        raw = self.raw_probs[token_id].item()
+        adjusted = self.adjusted_probs[token_id].item()
         return float(adjusted), float(raw)
 
-    def full_probs(self) -> list[float]:
-        """Full-vocabulary adjusted probabilities (large: ~vocab_size floats)."""
-        return torch.softmax(
-            apply_temperature(self.raw_logits, self.temperature), dim=-1
-        ).cpu().tolist()
+    def full_probs(self, *, raw: bool = False) -> list[float]:
+        """Full-vocabulary probabilities (large: ~vocab_size floats)."""
+        probs = self.raw_probs if raw else self.adjusted_probs
+        return probs.cpu().tolist()
 
 
 class LLMTracer:
@@ -294,6 +294,7 @@ class LLMTracer:
         self._kv = None
         self._logits_slot = None
 
+    @serialized_model_operation
     def _next_raw_logits(self) -> torch.Tensor:
         """Raw (pre-temperature) logits for the next token.
 
@@ -373,6 +374,7 @@ class LLMTracer:
         token_id: int | None = None,
         log_top_k: int = 10,
         log_full_probs: bool = False,
+        selection_source: str | None = None,
     ) -> TokenStep:
         """Generate (or force) one token and record the step.
 
@@ -382,12 +384,26 @@ class LLMTracer:
             log_top_k: How many top candidates to record in the step.
             log_full_probs: Record the full-vocabulary distribution
                 (~4 bytes x vocab_size per step; large).
+            selection_source: Optional explicit provenance for a preselected
+                token. Library callers normally omit this; an explicit
+                ``token_id`` then records ``manual``.
         """
         params = params or SamplingParams()
         dist = self.peek(top_k=log_top_k, temperature=params.temperature)
 
         if token_id is None:
             token_id = select_token(dist.raw_logits, params, self._generator)
+            inferred_source = "greedy" if params.strategy == "greedy" else "sampled"
+        else:
+            inferred_source = "manual"
+        if not 0 <= int(token_id) < dist.raw_logits.shape[-1]:
+            raise ValueError(
+                f"token_id {token_id} out of range for vocabulary size "
+                f"{dist.raw_logits.shape[-1]}"
+            )
+        selection_source = selection_source or inferred_source
+        if selection_source not in {"greedy", "sampled", "manual"}:
+            raise ValueError(f"Unknown selection source: {selection_source!r}")
         adjusted_prob, raw_prob = dist.prob_of(token_id)
 
         decoded, raw_text, _ = safe_decode_token(self.tokenizer, token_id)
@@ -402,8 +418,11 @@ class LLMTracer:
             raw_probability=raw_prob,
             top_k_raw_probs=dist.top_k_raw_probs,
             full_probs=dist.full_probs() if log_full_probs else None,
+            full_raw_probs=dist.full_probs(raw=True) if log_full_probs else None,
             token_text_raw=raw_text,
             top_k_texts_raw=dist.top_k_texts_raw,
+            sampling_params=params.to_dict(),
+            selection_source=selection_source,
         )
 
         self.history.append(step_data)
@@ -518,6 +537,15 @@ class LLMTracer:
     def get_warnings(self) -> list[str]:
         return self.warnings.copy()
 
+    def close(self) -> None:
+        """Release tensor state and strong references to the model/tokenizer."""
+        self.reset()
+        self._intervention_set = None
+        self.model = None
+        self.tokenizer = None
+        self.device = "cpu"
+        self.eos_ids = frozenset()
+
     # ------------------------------------------------------------ diagnostics
 
     def validate_state(self) -> tuple[bool, str | None]:
@@ -549,7 +577,18 @@ class LLMTracer:
     # ----------------------------------------------------------------- export
 
     def export_to_dict(self, params: SamplingParams | None = None) -> dict:
-        """Export generation history (schema v2)."""
+        """Export generation history using the current schema.
+
+        ``params`` is retained for API compatibility and supplies metadata only
+        for an empty history. Per-step snapshots are authoritative otherwise.
+        """
+        snapshots = [step.sampling_params or {} for step in self.history]
+        if snapshots and all(snapshot == snapshots[0] for snapshot in snapshots):
+            sampling_params = dict(snapshots[0])
+        elif snapshots:
+            sampling_params = {"mixed": True}
+        else:
+            sampling_params = params.to_dict() if params is not None else {}
         return {
             "schema_version": SCHEMA_VERSION,
             "mode": self.mode,
@@ -559,16 +598,7 @@ class LLMTracer:
             "full_text": self.get_full_text(),
             "timestamp": datetime.now().isoformat(),
             "num_steps": len(self.history),
-            "sampling_params": (
-                {
-                    "strategy": params.strategy,
-                    "temperature": params.temperature,
-                    "top_k": params.top_k,
-                    "top_p": params.top_p,
-                }
-                if params is not None
-                else {}
-            ),
+            "sampling_params": sampling_params,
             "history": [step.to_dict() for step in self.history],
         }
 

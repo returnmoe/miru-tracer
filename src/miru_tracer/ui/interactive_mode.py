@@ -11,6 +11,7 @@ import traceback
 
 import gradio as gr
 
+from miru_tracer.config import Settings
 from miru_tracer.core.lens import (
     compute_lens_slice,
     get_lens_store,
@@ -54,7 +55,7 @@ from miru_tracer.visualization.plots import (
 logger = get_logger(__name__)
 
 
-def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
+def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
     """Create the interactive debugging tab interface."""
 
     exports = ExportManager("interactive")
@@ -133,6 +134,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             with gr.Accordion("Advanced (logging & stopping)", open=False), gr.Row():
                 log_top_k = gr.Number(
                     minimum=1,
+                    maximum=settings.max_log_top_k,
                     value=10,
                     precision=0,
                     label="Log Top-K Tokens",
@@ -166,11 +168,11 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         with gr.Row():
             continue_tokens = gr.Number(
                 minimum=1,
-                maximum=1000,
+                maximum=settings.max_new_tokens,
                 value=10,
                 precision=0,
                 label="Continue for N tokens",
-                info="Number of tokens to generate (1-1000)",
+                info=f"Number of tokens to generate (1-{settings.max_new_tokens})",
             )
 
         with gr.Row():
@@ -233,7 +235,11 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     minimum=1, value=1, precision=0, label="Layer stride"
                 )
                 lens_top_k = gr.Number(
-                    minimum=1, value=50, precision=0, label="Readouts per layer"
+                    minimum=1,
+                    maximum=settings.max_log_top_k,
+                    value=50,
+                    precision=0,
+                    label="Readouts per layer",
                 )
             with gr.Row():
                 lens_refresh_button = gr.Button("Refresh lens", variant="secondary")
@@ -268,6 +274,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         # Session state - only stores the session ID string
         session_state = gr.State(value=None)
+        preview_state = gr.State(value=None)
 
         # -------------------------------------------------------- lens panel
 
@@ -282,7 +289,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     return None, "Initialize a prompt first."
                 model_name = model_manager.get_model_name()
                 mode = lens_mode_key(mode_choice)
-                jlens = get_lens_store().get(model_name)
+                jlens = get_lens_store().get(
+                    model_name, model=tracer.model, tokenizer=tracer.tokenizer
+                )
                 if mode in ("jacobian", "compare") and jlens is None:
                     return None, (
                         f"No fitted Jacobian lens for {model_name}. Fit one in "
@@ -299,11 +308,22 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     if mode in ("jacobian", "compare") and jlens is not None:
                         fitted = set(jlens.source_layers) | {n_layers - 1}
                         layers = [layer for layer in layers if layer in fitted]
+                    if len(layers) > settings.max_lens_cells:
+                        return None, (
+                            "Error: requested lens grid exceeds the configured limit of "
+                            f"{settings.max_lens_cells} cells."
+                        )
+                    top_k = int(top_k)
+                    if not 1 <= top_k <= settings.max_log_top_k:
+                        return None, (
+                            f"Error: readouts per layer must be between 1 and "
+                            f"{settings.max_log_top_k}."
+                        )
                     common = {
                         "layers": layers,
                         "positions": [tracer.seq_len - 1],
                         "jlens": jlens,
-                        "top_k": int(top_k),
+                        "top_k": top_k,
                         "interventions": tracer._intervention_set,
                         "token_aligned": True,
                     }
@@ -359,7 +379,11 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 return error[0]
             interventions = get_active_interventions()
             with session.lock:
-                jlens = get_lens_store().get(model_manager.get_model_name())
+                jlens = get_lens_store().get(
+                    model_manager.get_model_name(),
+                    model=session.tracer.model,
+                    tokenizer=session.tracer.tokenizer,
+                )
                 try:
                     session.tracer.set_interventions(interventions or None, jlens=jlens)
                 except ValueError as e:
@@ -381,6 +405,10 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             # Preview exactly the token step() would commit; for sampling this
             # draws the sample now — clicking 'Next Step' locks it in.
             preview_id = select_token(dist.raw_logits, params)
+            preview = {
+                "token_id": int(preview_id),
+                "source": "greedy" if params.strategy == "greedy" else "sampled",
+            }
             current_text = tracer.get_full_text() if tracer.history else ""
             return (
                 status,
@@ -391,6 +419,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 exports.prepare(tracer.export_to_dict(params)),
                 gr.update(interactive=False),  # stop button idle
                 gr.update(value=str(len(tracer.history))),
+                preview,
             )
 
         def error_state(message, session_id, steps="0"):
@@ -403,6 +432,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 gr.update(),
                 gr.update(interactive=False),
                 gr.update(value=str(steps)),
+                None,
             )
 
         def resolve_session(session_id):
@@ -411,7 +441,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 return None, error_state(
                     "Error: Not initialized. Click 'Initialize' first.", None
                 )
-            session = get_session_manager().get_session(session_id)
+            session = get_session_manager().get_session(
+                session_id, expected_generation=model_manager.get_generation()
+            )
             if session is None:
                 return None, error_state(
                     "Error: Session not found. Please reinitialize.", None
@@ -424,12 +456,12 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             mode, prompt, chat_msgs, raw_text, think_choice, think_text,
             temp, topk, topp, strat, log_topk,
         ):
-            model = model_manager.get_model()
-            tokenizer = model_manager.get_tokenizer()
-            device = model_manager.get_device()
-            if model is None or tokenizer is None:
+            snapshot = model_manager.snapshot()
+            if snapshot is None:
                 return error_state("Error: No model loaded", None)
+            model, tokenizer, device, generation = snapshot
 
+            session_id = None
             try:
                 if mode == "Chat":
                     try:
@@ -440,8 +472,18 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     messages = None
 
                 session_manager = get_session_manager()
-                session_id = session_manager.create_session(model, tokenizer, device)
-                session = session_manager.get_session(session_id)
+                session_id = session_manager.create_session(
+                    model,
+                    tokenizer,
+                    device,
+                    kind="interactive",
+                    model_generation=generation,
+                )
+                session = session_manager.get_session(
+                    session_id, expected_generation=generation
+                )
+                if session is None:
+                    raise RuntimeError("Model changed while creating the session")
 
                 with session.lock:
                     if messages is not None:
@@ -469,8 +511,12 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     )
             except Exception as e:
                 logger.error(f"Initialize error: {e}", exc_info=True)
+                if session_id is not None:
+                    get_session_manager().delete_session(session_id)
                 return error_state(
-                    f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}", None
+                    f"Error: {e}"
+                    + (f"\n\nTraceback:\n{traceback.format_exc()}" if settings.debug else ""),
+                    None,
                 )
 
         def reset_tracer(session_id):
@@ -486,6 +532,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 exports.disabled(),
                 gr.update(interactive=False),
                 gr.update(value="0"),
+                None,
             )
 
         def step_generation(
@@ -495,6 +542,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             topk,
             topp,
             rank_selection,
+            preview,
             override_enabled,
             override_id,
             log_topk,
@@ -509,6 +557,19 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 tracer = session.tracer
                 try:
                     params = ui_sampling_params(strat, temp, topk, topp)
+                    log_topk = int(log_topk or 10)
+                    if not 1 <= log_topk <= settings.max_log_top_k:
+                        raise ValueError(
+                            f"Log Top-K must be between 1 and {settings.max_log_top_k}."
+                        )
+                    existing_full = sum(
+                        step.full_probs is not None for step in tracer.history
+                    )
+                    if log_full and existing_full >= settings.max_full_prob_steps:
+                        raise ValueError(
+                            "Full-probability logging limit reached "
+                            f"({settings.max_full_prob_steps} steps)."
+                        )
 
                     if override_enabled:
                         if override_id is None:
@@ -518,6 +579,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                                 len(tracer.history),
                             )
                         token_id = int(override_id)
+                        selection_source = "manual"
                         if not 0 <= token_id < len(tracer.tokenizer):
                             return error_state(
                                 f"Error: Token ID {token_id} is out of range "
@@ -530,12 +592,19 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                             token_id = int(rank_selection)
                         except (ValueError, TypeError):
                             token_id = None  # let the tracer pick per strategy
+                        selection_source = (
+                            preview.get("source")
+                            if preview
+                            and token_id == int(preview.get("token_id", -1))
+                            else "manual"
+                        )
 
                     step_data = tracer.step(
                         params,
                         token_id=token_id,
-                        log_top_k=max(int(log_topk or 10), 1),
+                        log_top_k=log_topk,
                         log_full_probs=bool(log_full),
+                        selection_source=selection_source if token_id is not None else None,
                     )
 
                     if stop_at_eos and tracer.is_eos(step_data.token_id):
@@ -552,6 +621,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                             exports.prepare(tracer.export_to_dict(params)),
                             gr.update(interactive=False),
                             gr.update(value=str(len(tracer.history))),
+                            None,
                         )
 
                     status = (
@@ -562,7 +632,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 except Exception as e:
                     logger.error(f"Step error: {e}", exc_info=True)
                     return error_state(
-                        f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}",
+                        f"Error: {e}"
+                        + (f"\n\nTraceback:\n{traceback.format_exc()}" if settings.debug else ""),
                         session_id,
                         len(tracer.history),
                     )
@@ -588,7 +659,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 except Exception as e:
                     logger.error(f"Undo error: {e}", exc_info=True)
                     return error_state(
-                        f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}",
+                        f"Error: {e}"
+                        + (f"\n\nTraceback:\n{traceback.format_exc()}" if settings.debug else ""),
                         session_id,
                         len(tracer.history),
                     )
@@ -629,7 +701,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 except Exception as e:
                     logger.error(f"Go-to-step error: {e}", exc_info=True)
                     return error_state(
-                        f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}",
+                        f"Error: {e}"
+                        + (f"\n\nTraceback:\n{traceback.format_exc()}" if settings.debug else ""),
                         session_id,
                         len(tracer.history),
                     )
@@ -649,15 +722,33 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             if error:
                 yield error
                 return
-            if n_tokens is None or n_tokens < 1:
+            if n_tokens is None or not 1 <= int(n_tokens) <= settings.max_new_tokens:
                 yield error_state(
-                    "Error: Number of tokens must be at least 1", session_id
+                    "Error: Number of tokens must be between 1 and "
+                    f"{settings.max_new_tokens}",
+                    session_id,
                 )
                 return
 
             with session.lock:
                 tracer = session.tracer
                 try:
+                    log_topk = int(log_topk or 10)
+                    if not 1 <= log_topk <= settings.max_log_top_k:
+                        raise ValueError(
+                            f"Log Top-K must be between 1 and {settings.max_log_top_k}."
+                        )
+                    existing_full = sum(
+                        step.full_probs is not None for step in tracer.history
+                    )
+                    if (
+                        log_full
+                        and existing_full + int(n_tokens) > settings.max_full_prob_steps
+                    ):
+                        raise ValueError(
+                            "Full-probability logging is limited to "
+                            f"{settings.max_full_prob_steps} total steps."
+                        )
                     params = ui_sampling_params(strat, temp, topk, topp)
                     tracer.clear_stop_flag()
                     logger.info(
@@ -672,7 +763,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
                         step_data = tracer.step(
                             params,
-                            log_top_k=max(int(log_topk or 10), 1),
+                            log_top_k=log_topk,
                             log_full_probs=bool(log_full),
                         )
 
@@ -693,6 +784,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                             gr.update(),
                             gr.update(interactive=True),
                             gr.update(value=str(len(tracer.history))),
+                            gr.update(),
                         )
 
                     status = stopped_reason or "Continue complete"
@@ -701,7 +793,8 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 except Exception as e:
                     logger.error(f"Continue error: {e}", exc_info=True)
                     yield error_state(
-                        f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}",
+                        f"Error: {e}"
+                        + (f"\n\nTraceback:\n{traceback.format_exc()}" if settings.debug else ""),
                         session_id,
                         len(tracer.history),
                     )
@@ -709,7 +802,9 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
         def stop_handler(session_id):
             """Request stop; the running generator finalizes the UI."""
             if session_id is not None:
-                session = get_session_manager().get_session(session_id)
+                session = get_session_manager().get_session(
+                    session_id, expected_generation=model_manager.get_generation()
+                )
                 if session is not None:
                     session.tracer.request_stop()
                     logger.info(f"Stop requested for session {session_id}")
@@ -729,6 +824,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
             download_button,
             stop_button,
             current_step_display,
+            preview_state,
         ]
 
         mode_selector.change(
@@ -777,6 +873,7 @@ def create_interactive_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 top_k,
                 top_p,
                 token_selector,
+                preview_state,
                 use_override,
                 token_override,
                 log_top_k,

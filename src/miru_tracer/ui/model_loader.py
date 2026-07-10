@@ -7,9 +7,9 @@ import json
 import gradio as gr
 import torch
 
+from miru_tracer.config import Settings
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
-from miru_tracer.core.session_manager import get_session_manager
 
 logger = get_logger(__name__)
 
@@ -37,7 +37,7 @@ def toggle_custom_model_field(quick_choice: str | None):
     return gr.update(visible=False, value=quick_choice or "")
 
 
-def create_model_loader_tab(model_manager: ModelManager):
+def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
     """
     Create the model loader tab interface.
 
@@ -103,7 +103,13 @@ def create_model_loader_tab(model_manager: ModelManager):
                 trust_remote_code = gr.Checkbox(
                     label="Trust remote code",
                     value=False,
-                    info="Security risk: allows model to execute arbitrary code",
+                    interactive=settings.allow_remote_code,
+                    info=(
+                        "Enabled by MIRU_ALLOW_REMOTE_CODE=1; repository code can "
+                        "execute inside the server."
+                        if settings.allow_remote_code
+                        else "Disabled by server policy (MIRU_ALLOW_REMOTE_CODE=0)."
+                    ),
                 )
                 minimize_ram = gr.Checkbox(
                     label="Minimize RAM usage",
@@ -160,6 +166,16 @@ def create_model_loader_tab(model_manager: ModelManager):
                 f"minimize_ram={minimize_ram_val})"
             )
             if trust_val:
+                if not settings.allow_remote_code:
+                    logger.warning("Blocked trust_remote_code request by server policy")
+                    yield (
+                        "Error: Remote repository code is disabled by server policy.",
+                        "",
+                        get_current_model_display(),
+                        get_memory_usage(),
+                        *buttons_enabled(),
+                    )
+                    return
                 logger.warning("trust_remote_code=True enabled (security risk)")
 
             # Immediate feedback while the (long) download/load runs.
@@ -184,6 +200,9 @@ def create_model_loader_tab(model_manager: ModelManager):
             )
 
             try:
+                from miru_tracer.ui.lens_common import set_active_interventions
+
+                set_active_interventions([])
                 model, tokenizer, device, info = model_manager.load_model(
                     model_name=model_name_val,
                     quantization=quant_val,
@@ -237,11 +256,12 @@ def create_model_loader_tab(model_manager: ModelManager):
 
         def unload_model_handler():
             try:
-                session_manager = get_session_manager()
-                cleared_count = session_manager.clear_all_sessions()
-
                 result = model_manager.unload_model()
+                from miru_tracer.ui.lens_common import set_active_interventions
+
+                set_active_interventions([])
                 status_msg = result["message"]
+                cleared_count = result.get("cleared_sessions", 0)
                 if cleared_count:
                     status_msg += (
                         f"\n\n{cleared_count} active Interactive Mode session(s) "

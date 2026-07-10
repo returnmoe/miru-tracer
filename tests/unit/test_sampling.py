@@ -21,6 +21,12 @@ class TestSamplingParams:
         params = SamplingParams()
         assert params.strategy == "greedy"
         assert params.temperature == 1.0
+        assert params.to_dict() == {
+            "strategy": "greedy",
+            "temperature": 1.0,
+            "top_k": 50,
+            "top_p": 1.0,
+        }
 
     def test_unknown_strategy_rejected(self):
         with pytest.raises(ValueError, match="strategy"):

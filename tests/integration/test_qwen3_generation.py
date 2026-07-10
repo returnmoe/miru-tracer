@@ -9,14 +9,14 @@ import json
 import pytest
 
 from miru_tracer.core.sampling import SamplingParams
-from miru_tracer.core.schema import parse_log
+from miru_tracer.core.schema import SCHEMA_VERSION, parse_log
 from miru_tracer.core.tracer import LLMTracer
 from miru_tracer.visualization.plots import (
     get_generation_stats,
     plot_probability_visualizations,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.external_model]
 
 
 @pytest.fixture(scope="module")
@@ -66,7 +66,7 @@ class TestQwen3EndToEnd:
         params = SamplingParams()
         exported = json.loads(json.dumps(tracer.export_to_dict(params)))
         log = parse_log(exported)
-        assert log.schema_version == 2
+        assert log.schema_version == SCHEMA_VERSION
         assert log.num_steps == len(tracer.history)
         assert "France" in log.full_text
 

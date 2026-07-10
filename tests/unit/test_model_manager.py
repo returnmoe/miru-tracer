@@ -31,6 +31,7 @@ def manager(monkeypatch, tiny_model, tiny_tokenizer):
     monkeypatch.setattr(mm.ModelManager, "_model", None)
     monkeypatch.setattr(mm.ModelManager, "_tokenizer", None)
     monkeypatch.setattr(mm.ModelManager, "_is_loading", False)
+    monkeypatch.setattr(mm.ModelManager, "_generation", 0)
 
     return mm.ModelManager(), recorded
 
@@ -68,6 +69,25 @@ class TestLoadModel:
         assert result["status"] == "success"
         assert instance.is_loaded() is False
         assert instance.unload_model()["status"] == "warning"
+
+    def test_failed_reload_leaves_atomic_unloaded_state(self, manager, monkeypatch):
+        instance, _ = manager
+        instance.load_model("fake/model")
+        generation = instance.get_generation()
+
+        class BrokenTokenizer:
+            @staticmethod
+            def from_pretrained(name, **kwargs):
+                raise OSError("broken checkpoint")
+
+        monkeypatch.setattr(mm, "AutoTokenizer", BrokenTokenizer)
+        with pytest.raises(OSError, match="broken checkpoint"):
+            instance.load_model("broken/model")
+
+        assert instance.snapshot() is None
+        assert instance.get_model() is None
+        assert instance.get_tokenizer() is None
+        assert instance.get_generation() > generation
 
 
 class TestModuleHygiene:

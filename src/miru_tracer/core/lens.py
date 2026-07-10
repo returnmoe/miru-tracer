@@ -33,6 +33,7 @@ from miru_tracer.core._jlens.hooks import ActivationRecorder
 from miru_tracer.core.interventions import InterventionSet, apply_interventions
 from miru_tracer.core.lens_io import load_lens
 from miru_tracer.core.logging_config import get_logger
+from miru_tracer.core.model_runtime import serialized_model_operation
 from miru_tracer.core.tokenizer_utils import format_token_label
 
 logger = get_logger(__name__)
@@ -135,22 +136,34 @@ class LensStore:
                 return path
         return None
 
-    def get(self, model_name: str) -> JacobianLens | None:
-        """Load the fitted lens for a model, or None if not fitted yet."""
+    def get(
+        self, model_name: str, *, model=None, tokenizer=None
+    ) -> JacobianLens | None:
+        """Load the fitted lens for a model, or None if absent/incompatible."""
         path = self.existing_lens_path(model_name)
         if path is None:
             return None
         key = (str(path), path.stat().st_mtime)
         cached = self._cache.get(model_name)
         if cached is not None and cached[0] == key:
-            return cached[1]
-        try:
-            lens = load_lens(path)
-        except Exception as e:
-            logger.error(f"Failed to load lens at {path}: {e}")
-            return None
-        self._cache[model_name] = (key, lens)
-        logger.info(f"Loaded Jacobian lens for {model_name}: {lens}")
+            lens = cached[1]
+        else:
+            try:
+                lens = load_lens(path)
+            except Exception as e:
+                logger.error(f"Failed to load lens at {path}: {e}")
+                return None
+            self._cache[model_name] = (key, lens)
+            logger.info(f"Loaded Jacobian lens for {model_name}: {lens}")
+        if model is not None and tokenizer is not None:
+            # Lazy import avoids a module cycle: lens_fit uses LensStore after
+            # fitting, while runtime validation is needed only by the app.
+            from miru_tracer.core.lens_fit import validate_lens_provenance
+
+            status, detail = validate_lens_provenance(lens, model, tokenizer)
+            if status == "mismatch":
+                logger.error(f"Rejected incompatible lens at {path}: {detail}")
+                return None
         return lens
 
 
@@ -165,6 +178,16 @@ def get_lens_store() -> LensStore:
 
 
 _wrapper_cache: dict[int, HFLensModel] = {}
+
+
+def clear_model_caches() -> None:
+    """Drop every cache tied to the currently loaded model/tokenizer."""
+    global _decode_cache, _word_mask_cache
+    _wrapper_cache.clear()
+    _decode_cache = None
+    _word_mask_cache = None
+    if _lens_store is not None:
+        _lens_store._cache.clear()
 
 
 def wrap_model(model, tokenizer) -> HFLensModel:
@@ -201,12 +224,14 @@ class LensSlice:
     pinned_ranks: dict[int, list[list[int]]] = field(default_factory=dict)
 
 
+@serialized_model_operation
 def record_lens_activations(
     model,
     tokenizer,
     input_ids: torch.Tensor,
     *,
     interventions: InterventionSet | None = None,
+    offload_to_cpu: bool = False,
 ) -> dict[int, torch.Tensor]:
     """One forward over the sequence, capturing EVERY block's output residual.
 
@@ -222,9 +247,15 @@ def record_lens_activations(
         ActivationRecorder(wrapper.layers, at=layers) as recorder,
     ):
         wrapper.forward(input_ids.to(wrapper.input_device))
-        return {i: recorder.activations[i].detach() for i in layers}
+        return {
+            i: recorder.activations[i].detach().to("cpu")
+            if offload_to_cpu
+            else recorder.activations[i].detach()
+            for i in layers
+        }
 
 
+@serialized_model_operation
 def compute_lens_slice(
     model,
     tokenizer,

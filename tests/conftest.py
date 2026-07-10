@@ -8,6 +8,8 @@ paths the real model does.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 import torch
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers
@@ -147,5 +149,7 @@ def qwen3():
         tokenizer = AutoTokenizer.from_pretrained(name)
         model = AutoModelForCausalLM.from_pretrained(name, dtype=torch.float32).eval()
     except OSError as e:  # pragma: no cover - network-dependent
+        if os.getenv("MIRU_REQUIRE_EXTERNAL_MODEL") == "1":
+            pytest.fail(f"{name} is required but unavailable: {e}")
         pytest.skip(f"{name} unavailable: {e}")
     return model, tokenizer

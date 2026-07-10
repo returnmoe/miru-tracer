@@ -4,13 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "miru-tracer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Interactive analysis of LLM text generation, token by token"
 readme = "README.md"
-license = "Unlicense"
+license = "Unlicense AND Apache-2.0"
+license-files = ["LICENSE", "src/miru_tracer/core/_jlens/LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-    "torch~=2.12",
+    "torch~=2.12.0",
     "transformers~=5.13",
     "accelerate~=1.14",
     "gradio~=6.20",
@@ -50,9 +51,10 @@ packages = ["src/miru_tracer"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: tests that download and run Qwen3-0.6B (opt in with -m integration)",
+    "integration: local end-to-end tests that remain offline",
+    "external_model: tests that download and run Qwen3-0.6B",
 ]
-addopts = "-m 'not integration'"
+addopts = "-m 'not external_model'"
 timeout = 600
 
 [tool.ruff]

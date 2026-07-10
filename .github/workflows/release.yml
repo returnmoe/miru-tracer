@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [master]
+    types: [completed]
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: release-master
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - name: Confirm this is the current master commit
+        run: |
+          git fetch origin master --depth=1
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/master)"
+      - id: version
+        name: Read and validate release version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
+          test -n "$version"
+          test "$version" = "0.2.0"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Reject a conflicting release tag before publishing
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="v${VERSION}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "$tag")" = "$(git rev-parse HEAD)"
+          fi
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=0.2
+            type=raw,value=latest
+            type=sha,format=long
+      - id: push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: actions/attest-build-provenance@a1948c3f048ba23858d222213b7c278aabede763
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: Create annotated tag if absent
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="v${VERSION}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "$tag")" = "$(git rev-parse HEAD)"
+          else
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git tag -a "$tag" -m "Miru Tracer $tag"
+            git push origin "$tag"
+          fi
+      - name: Create generated GitHub Release if absent
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="v${VERSION}"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --verify-tag --generate-notes --title "$tag"

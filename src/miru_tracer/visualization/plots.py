@@ -32,18 +32,24 @@ def _hover_text(text: str) -> str:
     return html.escape(visible_whitespace(text))
 
 
-def _step_entropy(step: TokenStep) -> tuple[float, bool]:
+def _step_entropy(step: TokenStep, use_raw: bool = False) -> tuple[float, bool]:
     """Entropy in nats for one step.
 
     Uses the full-vocabulary distribution when it was logged (exact); falls
     back to the renormalized top-k distribution (an underestimate, capped at
     log(k)). Returns (entropy, is_exact).
     """
-    if step.full_probs:
-        probs = np.asarray(step.full_probs)
+    full_probs = step.full_raw_probs if use_raw else step.full_probs
+    top_probs = (
+        (step.top_k_raw_probs or step.top_k_probs)
+        if use_raw
+        else step.top_k_probs
+    )
+    if full_probs:
+        probs = np.asarray(full_probs)
         exact = True
     else:
-        probs = np.asarray(step.top_k_probs)
+        probs = np.asarray(top_probs)
         probs = probs / probs.sum()
         exact = False
     positive = probs[probs > 0]
@@ -55,6 +61,14 @@ def _probs_for_mode(step: TokenStep, use_raw: bool) -> tuple[float, list[float]]
     if use_raw:
         return step.raw_probability, list(step.top_k_raw_probs or step.top_k_probs)
     return step.probability, list(step.top_k_probs)
+
+
+def _step_temperature(step: TokenStep, fallback: float) -> float:
+    params = step.sampling_params or {}
+    try:
+        return float(params.get("temperature", fallback))
+    except (TypeError, ValueError):
+        return float(fallback)
 
 
 def plot_probability_visualizations(
@@ -79,7 +93,17 @@ def plot_probability_visualizations(
         return []
 
     use_raw = probability_mode == "raw"
-    mode_label = "Raw (Pre-Temperature)" if use_raw else f"Adjusted (T={temperature})"
+    temperatures = [_step_temperature(step, temperature) for step in history]
+    one_temperature = all(value == temperatures[0] for value in temperatures)
+    mode_label = (
+        "Raw (Pre-Temperature)"
+        if use_raw
+        else (
+            f"Temperature-Adjusted (T={temperatures[0]:g})"
+            if one_temperature
+            else "Temperature-Adjusted (per-step T)"
+        )
+    )
     steps_axis = [f"Step {i}" for i in range(len(history))]
     hover = (
         "%{x}<br>%{y}<br>"
@@ -87,7 +111,8 @@ def plot_probability_visualizations(
         "Decoded: %{customdata[1]}<br>"
         "Token ID: %{customdata[0]}<br>"
         "Raw Probability: %{customdata[2]:.4f}<br>"
-        f"Adjusted (T={temperature}): %{{customdata[3]:.4f}}<extra></extra>"
+        "Temperature-Adjusted (T=%{customdata[4]:g}): "
+        "%{customdata[3]:.4f}<extra></extra>"
     )
 
     # ---- Visualization 1: rank heatmap with a separate "Selected" row
@@ -111,13 +136,20 @@ def plot_probability_visualizations(
                 step.top_k_texts[rank],
                 raw_list[rank],
                 step.top_k_probs[rank],
+                temperatures[step_index],
             ]
 
         display_prob, _ = _probs_for_mode(step, use_raw)
         selected_probs.append(display_prob)
         selected_texts.append(_display_text(step.token_text_raw or step.token_text))
         selected_custom.append(
-            [step.token_id, step.token_text, step.raw_probability, step.probability]
+            [
+                step.token_id,
+                step.token_text,
+                step.raw_probability,
+                step.probability,
+                temperatures[step_index],
+            ]
         )
 
     fig1 = make_subplots(
@@ -175,7 +207,7 @@ def plot_probability_visualizations(
 
     # ---- Visualization 2: top-1 probability and entropy over time
     top1_probs = [_probs_for_mode(step, use_raw)[1][0] for step in history]
-    entropy_pairs = [_step_entropy(step) for step in history]
+    entropy_pairs = [_step_entropy(step, use_raw) for step in history]
     entropies = [e for e, _ in entropy_pairs]
     all_exact = all(exact for _, exact in entropy_pairs)
     entropy_label = "Entropy (nats)" if all_exact else "Top-k entropy (nats, renormalized)"
@@ -257,7 +289,7 @@ def get_generation_stats(
         selected_probs.append(selected)
         top1_probs.append(top_probs[0])
 
-    entropy_pairs = [_step_entropy(step) for step in history]
+    entropy_pairs = [_step_entropy(step, use_raw) for step in history]
     entropies = [e for e, _ in entropy_pairs]
     entropy_key = (
         "avg_entropy" if all(exact for _, exact in entropy_pairs) else "avg_topk_entropy"

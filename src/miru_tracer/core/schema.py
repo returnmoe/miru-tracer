@@ -7,8 +7,11 @@ Export schema history:
   ``all_logits`` (the values were softmax probabilities, not logits). Early v1
   logs also lack the raw/adjusted dual-probability fields.
 - **v2** (``schema_version: 2``): ``all_logits`` renamed to ``full_probs``,
-  plus a top-level ``sampling_params`` object recording how the text was
-  generated.
+  plus a top-level ``sampling_params`` object.
+- **v3** (``schema_version: 3``): every step records the sampling parameters
+  actually used, how its token was selected, and (when requested) the raw
+  full-vocabulary distribution. Mixed-parameter histories are no longer
+  mislabeled with only the final settings.
 
 ``parse_log`` accepts both, so logs exported by any prior version of Miru
 Tracer remain loadable in the Log Analysis tab.
@@ -19,7 +22,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+SELECTION_SOURCES = frozenset({"greedy", "sampled", "manual", "unknown"})
 
 
 @dataclass
@@ -36,16 +41,30 @@ class TokenStep:
     raw_probability: float = 0.0  # Pre-temperature (raw model) probability
     top_k_raw_probs: list[float] | None = None  # Pre-temperature probabilities
     full_probs: list[float] | None = None  # Full-vocabulary probabilities (optional)
+    full_raw_probs: list[float] | None = None  # Raw full-vocabulary probabilities
     token_text_raw: str | None = None  # Raw token representation (visible \n, \t, ...)
     top_k_texts_raw: list[str] | None = None  # Raw representations for top-k tokens
+    sampling_params: dict[str, Any] | None = None
+    selection_source: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TokenStep:
-        """Build a TokenStep from a v1 or v2 log entry."""
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        default_sampling_params: dict[str, Any] | None = None,
+    ) -> TokenStep:
+        """Build a TokenStep from a v1, v2, or v3 log entry."""
+        selection_source = data.get("selection_source", "unknown")
+        if selection_source not in SELECTION_SOURCES:
+            raise ValueError(f"unknown selection_source {selection_source!r}")
+        raw_sampling_params = data.get("sampling_params")
+        if raw_sampling_params is None:
+            raw_sampling_params = default_sampling_params
         return cls(
             step=data["step"],
             token_id=data["token_id"],
@@ -59,8 +78,13 @@ class TokenStep:
             # v2 name first, then the misnamed v1 field (values were always
             # probabilities in both versions).
             full_probs=data.get("full_probs", data.get("all_logits")),
+            full_raw_probs=data.get("full_raw_probs"),
             token_text_raw=data.get("token_text_raw", data["token_text"]),
             top_k_texts_raw=data.get("top_k_texts_raw", data["top_k_texts"]),
+            sampling_params=(
+                dict(raw_sampling_params) if raw_sampling_params is not None else None
+            ),
+            selection_source=selection_source,
         )
 
 
@@ -84,11 +108,15 @@ class GenerationLog:
 
     @property
     def temperature(self) -> float:
-        return float(self.sampling_params.get("temperature", 1.0))
+        if "temperature" in self.sampling_params:
+            return float(self.sampling_params["temperature"])
+        if self.history and self.history[0].sampling_params:
+            return float(self.history[0].sampling_params.get("temperature", 1.0))
+        return 1.0
 
 
 def parse_log(data: dict[str, Any]) -> GenerationLog:
-    """Parse an exported generation log dict (v1 or v2) into a GenerationLog.
+    """Parse an exported generation log dict (v1, v2, or v3).
 
     Raises:
         ValueError: if the data is not a recognizable Miru Tracer log.
@@ -99,15 +127,28 @@ def parse_log(data: dict[str, Any]) -> GenerationLog:
     if not isinstance(history_raw, list):
         raise ValueError("Log file has no 'history' list — not a Miru Tracer log.")
 
-    try:
-        history = [TokenStep.from_dict(step) for step in history_raw]
-    except (KeyError, TypeError) as e:
-        raise ValueError(f"Malformed history entry in log file: {e}") from e
+    raw_schema_version = data.get("schema_version", 1)
+    if type(raw_schema_version) is not int or raw_schema_version < 1:
+        raise ValueError("schema_version must be a positive integer")
+    if raw_schema_version > SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported schema_version {raw_schema_version}; "
+            f"this Miru Tracer supports through v{SCHEMA_VERSION}."
+        )
 
-    sampling_params = data.get("sampling_params") or {}
+    sampling_params = dict(data.get("sampling_params") or {})
     # v1 logs may carry a bare top-level temperature.
     if "temperature" not in sampling_params and "temperature" in data:
         sampling_params["temperature"] = data["temperature"]
+
+    step_defaults = {} if sampling_params.get("mixed") else sampling_params
+    try:
+        history = [
+            TokenStep.from_dict(step, default_sampling_params=step_defaults)
+            for step in history_raw
+        ]
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"Malformed history entry in log file: {e}") from e
 
     return GenerationLog(
         mode=data.get("mode") or "unknown",
@@ -118,5 +159,5 @@ def parse_log(data: dict[str, Any]) -> GenerationLog:
         timestamp=data.get("timestamp") or "unknown",
         history=history,
         sampling_params=sampling_params,
-        schema_version=int(data.get("schema_version", 1)),
+        schema_version=raw_schema_version,
     )

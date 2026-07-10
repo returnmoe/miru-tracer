@@ -5,6 +5,8 @@ are in the integration folder only because they spin up a real Gradio server.
 """
 
 
+import socket
+
 import httpx
 import pytest
 
@@ -21,17 +23,20 @@ class TestAppSmoke:
         assert app is not None
 
     def test_app_serves_http(self):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
         app = create_app()
         app.queue()
         try:
             app.launch(
                 server_name="127.0.0.1",
-                server_port=7861,
+                server_port=port,
                 prevent_thread_lock=True,
                 quiet=True,
                 **launch_kwargs(__version__),
             )
-            response = httpx.get("http://127.0.0.1:7861/", timeout=10)
+            response = httpx.get(f"http://127.0.0.1:{port}/", timeout=10)
             assert response.status_code == 200
             assert "Miru Tracer" in response.text
         finally:

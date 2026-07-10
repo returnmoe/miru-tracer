@@ -25,6 +25,8 @@ class Session:
 
     session_id: str
     tracer: LLMTracer
+    kind: str = "interactive"
+    model_generation: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
     created: datetime = field(default_factory=datetime.now)
     last_access: datetime = field(default_factory=datetime.now)
@@ -49,12 +51,20 @@ class SessionManager:
         self._global_lock = threading.Lock()
         self._cleanup_timeout = timedelta(minutes=cleanup_timeout_minutes)
 
-    def create_session(self, model, tokenizer, device) -> str:
+    def create_session(
+        self,
+        model,
+        tokenizer,
+        device,
+        *,
+        kind: str = "interactive",
+        model_generation: int = 0,
+    ) -> str:
         """
         Create a new session with a fresh tracer instance.
 
-        The current UI is single-user, so any existing sessions are cleared
-        first — this is also what keeps memory bounded.
+        The UI is single-user, so a new session supersedes the previous session
+        of the same kind. Interactive and Logging sessions may coexist.
 
         Returns:
             session_id: Unique identifier for the new session.
@@ -64,13 +74,21 @@ class SessionManager:
 
         with self._global_lock:
             for old in list(self._sessions.values()):
-                self._dispose_locked(old, reason="superseded")
-            self._sessions[session_id] = Session(session_id=session_id, tracer=tracer)
+                if old.kind == kind:
+                    self._dispose_locked(old, reason="superseded")
+            self._sessions[session_id] = Session(
+                session_id=session_id,
+                tracer=tracer,
+                kind=kind,
+                model_generation=model_generation,
+            )
 
         logger.info(f"Session created: {session_id} (device={device})")
         return session_id
 
-    def get_session(self, session_id: str) -> Session | None:
+    def get_session(
+        self, session_id: str, *, expected_generation: int | None = None
+    ) -> Session | None:
         """
         Get a session (tracer + lock) in a single lock acquisition.
 
@@ -83,6 +101,15 @@ class SessionManager:
             session = self._sessions.get(session_id)
             if session is None:
                 logger.warning(f"Session not found: {session_id}")
+                return None
+            if (
+                expected_generation is not None
+                and session.model_generation != expected_generation
+            ):
+                logger.warning(
+                    f"Session generation mismatch: {session.model_generation} != "
+                    f"{expected_generation}"
+                )
                 return None
             session.last_access = datetime.now()
             return session
@@ -130,6 +157,11 @@ class SessionManager:
         """Clear all sessions (useful before unloading the model)."""
         with self._global_lock:
             sessions = list(self._sessions.values())
+            # Signal generators before waiting on their per-session locks.
+            # request_stop only flips a threading.Event and is safe without
+            # taking the session lock held by an active generation loop.
+            for session in sessions:
+                session.tracer.request_stop()
             for session in sessions:
                 self._dispose_locked(session, reason="cleared")
         if sessions:
@@ -149,6 +181,8 @@ class SessionManager:
             tracer = session.tracer
             return {
                 "session_id": session_id,
+                "kind": session.kind,
+                "model_generation": session.model_generation,
                 "created": session.created.isoformat(),
                 "last_access": session.last_access.isoformat(),
                 "steps": len(tracer.history),
@@ -169,7 +203,7 @@ class SessionManager:
         lock), so this cannot deadlock.
         """
         with session.lock:
-            session.tracer.reset()  # frees input_ids, KV cache, logits memo
+            session.tracer.close()
         del self._sessions[session.session_id]
         lifetime = (datetime.now() - session.created).total_seconds()
         logger.info(

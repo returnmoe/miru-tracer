@@ -1,61 +1,43 @@
-# Multi-stage Dockerfile for Miru Tracer
-#
-# Build args:
-#   TORCH_INDEX - PyTorch wheel index. Default is CUDA 13.0; pass
-#                 "https://download.pytorch.org/whl/cpu" for a CPU-only image.
+# syntax=docker/dockerfile:1.7
 
-# Stage 1: Builder
-FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04 AS builder
+ARG PYTHON_IMAGE=python:3.12.13-slim-bookworm@sha256:8a7e7cc04fd3e2bd787f7f24e22d5d119aa590d429b50c95dfe12b3abe52f48b
 
+FROM ${PYTHON_IMAGE} AS builder
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu130
-
-RUN apt-get update && apt-get install -y \
-    python3.12 \
-    python3-pip
-
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 WORKDIR /build
 
-# Install torch first (pinned wheel index), then the package itself
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md LICENSE constraints.txt ./
 COPY src/ src/
-RUN pip install torch --index-url "$TORCH_INDEX" --break-system-packages && \
-    pip install . --break-system-packages
+RUN python -m venv /opt/miru && \
+    /opt/miru/bin/pip install --upgrade pip && \
+    /opt/miru/bin/pip install torch==2.12.1 --index-url "${TORCH_INDEX}" && \
+    /opt/miru/bin/pip install '.[gpu]' -c constraints.txt
 
-# ---
-
-# Stage 2: Runtime
-FROM nvidia/cuda:13.0.2-cudnn-runtime-ubuntu24.04
-
-ENV PYTHONUNBUFFERED=1 \
+FROM ${PYTHON_IMAGE} AS runtime
+ENV PATH=/opt/miru/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     GRADIO_ANALYTICS_ENABLED=False \
-    MIRU_SERVER_NAME=0.0.0.0
+    MIRU_SERVER_NAME=0.0.0.0 \
+    MIRU_SERVER_PORT=7860 \
+    HOME=/home/miru
 
-RUN apt-get update && apt-get install -y \
-    python3.12 \
-    python3-pip \
-    openssh-server && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openssh-server tini util-linux curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --create-home --uid 10001 --shell /usr/sbin/nologin miru && \
+    mkdir -p /var/run/sshd /root/.ssh /home/miru/.cache/miru-tracer && \
+    chmod 700 /root/.ssh && \
+    chown -R miru:miru /home/miru
 
-# Configure SSH (optional; enabled at runtime with MIRU_SSH_ENABLE=1)
-RUN mkdir -p /var/run/sshd && \
-    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && \
-    sed -i 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so@g' /etc/pam.d/sshd && \
-    mkdir -p /root/.ssh && \
-    chmod 700 /root/.ssh
+COPY --from=builder /opt/miru /opt/miru
+COPY entrypoint.sh /usr/local/bin/miru-entrypoint
+RUN chmod 0755 /usr/local/bin/miru-entrypoint
 
-# Copy installed packages (miru_tracer is installed as a package)
-COPY --from=builder /usr/local/lib/python3.12/dist-packages /usr/local/lib/python3.12/dist-packages
-COPY --from=builder /usr/local/bin/miru-tracer /usr/local/bin/miru-tracer
-# Fit CLI ships in the image so GPU cloud platforms can fit lenses in-container
-COPY --from=builder /usr/local/bin/miru-tracer-fit-lens /usr/local/bin/miru-tracer-fit-lens
-
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# SSH (optional) and Gradio
-EXPOSE 22
-EXPOSE 7860
-
-ENTRYPOINT ["/entrypoint.sh"]
+EXPOSE 22 7860
+VOLUME ["/home/miru/.cache/miru-tracer"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl --fail --silent http://127.0.0.1:7860/ >/dev/null || exit 1
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/miru-entrypoint"]
+CMD ["python", "-m", "miru_tracer"]

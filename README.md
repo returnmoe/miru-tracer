@@ -142,9 +142,18 @@ Optional `.env` file (see `.env.example`):
 MIRU_DEBUG=0                 # 1/true/yes/on enables debug logging + Gradio debug
 MIRU_SERVER_NAME=127.0.0.1   # bind address (0.0.0.0 to expose to network)
 MIRU_SERVER_PORT=7860        # bind port
+MIRU_AUTH_USERNAME=          # optional; set together with MIRU_AUTH_PASSWORD
+MIRU_AUTH_PASSWORD=
+MIRU_ALLOW_REMOTE_CODE=0     # explicitly permit third-party model Python code
 MIRU_LENS_DIR=               # fitted-lens cache (default ~/.cache/miru-tracer/lenses)
 HF_TOKEN=your_token_here     # only needed for gated models
 ```
+
+The default loopback bind is intentionally private. If you bind to
+`0.0.0.0`, put Miru behind an authenticated TLS reverse proxy or configure
+both `MIRU_AUTH_USERNAME` and `MIRU_AUTH_PASSWORD`. Enabling remote model code
+executes Python supplied by the selected model repository; leave it disabled
+unless you have reviewed and pinned that repository.
 
 ### Generation parameters
 
@@ -159,8 +168,8 @@ HF_TOKEN=your_token_here     # only needed for gated models
 ```bash
 pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/cpu
 
-pytest                   # unit tests (fast, offline, tiny in-code model)
-pytest -m integration    # end-to-end tests with Qwen/Qwen3-0.6B (~1.4GB download)
+pytest                   # unit + offline app/lens integration tests
+pytest -m external_model # end-to-end Qwen/Qwen3-0.6B (~1.4GB download)
 ruff check src tests     # lint
 ```
 
@@ -170,12 +179,21 @@ built in-code — no network, suitable for CI.
 ## Docker
 
 ```bash
-docker build -t miru-tracer .                 # CUDA image (default)
-docker build -t miru-tracer:cpu \
-  --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cpu .
+docker pull ghcr.io/returnmoe/miru-tracer:0.2.0
+# or build the CUDA 13.0 / linux-amd64 image locally
+docker build -t miru-tracer .
 
-docker run --gpus all -p 7860:7860 miru-tracer
+# Keep the published port on loopback by default.
+docker run --gpus all -p 127.0.0.1:7860:7860 \
+  -v miru-cache:/home/miru/.cache/miru-tracer \
+  ghcr.io/returnmoe/miru-tracer:0.2.0
 ```
+
+The application runs as the unprivileged `miru` user. Optional SSH remains
+available by starting the container as root (the default) with
+`MIRU_SSH_ENABLE=1` and `MIRU_SSH_AUTHORIZED_KEYS`; only the SSH daemon keeps
+root privileges, while the app is dropped to `miru`. Do not expose either
+port publicly without network access controls.
 
 ## Performance tips
 

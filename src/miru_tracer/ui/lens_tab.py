@@ -24,6 +24,7 @@ import traceback
 
 import gradio as gr
 
+from miru_tracer.config import Settings
 from miru_tracer.core.interventions import Intervention
 from miru_tracer.core.lens import (
     LEGACY_LENS_FILENAME,
@@ -33,6 +34,7 @@ from miru_tracer.core.lens import (
     get_lens_store,
     record_lens_activations,
 )
+from miru_tracer.core.lens_fit import validate_lens_provenance
 from miru_tracer.core.lens_io import load_lens, save_lens
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
@@ -97,7 +99,7 @@ from miru_tracer.visualization.plots import (
 logger = get_logger(__name__)
 
 
-def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
+def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
     """Create the Lens analysis tab."""
 
     with gr.Tab("Lens") as tab:
@@ -120,7 +122,12 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                             scale=2,
                         )
                         max_tokens = gr.Number(
-                            minimum=0, value=12, precision=0, label="New tokens", scale=1
+                            minimum=0,
+                            maximum=settings.max_new_tokens,
+                            value=12,
+                            precision=0,
+                            label="New tokens",
+                            scale=1,
                         )
                     with gr.Group() as completion_inputs:
                         prompt_input = gr.Textbox(
@@ -280,6 +287,11 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         file_types=[".safetensors", ".pt"],
                         type="filepath",
                     )
+                    allow_legacy_lens = gr.Checkbox(
+                        label="Allow unverified legacy lens",
+                        value=False,
+                        info="Required only for artifacts without model/tokenizer provenance.",
+                    )
                     lens_file_check_button = gr.Button("Check status", size="sm")
 
                 with gr.Group():
@@ -400,16 +412,23 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             """One forward pass over the stored sequence -> (bundle, status)."""
             if analysis is None:
                 return None, "Generate first."
-            model = model_manager.get_model()
-            tokenizer = model_manager.get_tokenizer()
-            if model is None or analysis["model_name"] != model_manager.get_model_name():
+            snapshot = model_manager.snapshot()
+            if snapshot is None:
+                return None, "Error: no model is currently loaded."
+            model, tokenizer, _device, generation = snapshot
+            if (
+                analysis["model_name"] != model_manager.get_model_name()
+                or analysis.get("model_generation") != generation
+            ):
                 return None, (
                     "Error: the model changed since this sequence was generated. "
                     "Generate again."
                 )
 
             mode = lens_mode_key(mode_choice)
-            jlens = get_lens_store().get(analysis["model_name"])
+            jlens = get_lens_store().get(
+                analysis["model_name"], model=model, tokenizer=tokenizer
+            )
             if mode in ("jacobian", "compare") and jlens is None:
                 return None, (
                     "Error: no fitted Jacobian lens for "
@@ -440,6 +459,13 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         "Select a later token."
                     )
 
+                cell_positions = len(selected) if selected is not None else max(seq_len - 1, 0)
+                if len(layers) * cell_positions > settings.max_lens_cells:
+                    return None, (
+                        "Error: requested lens grid exceeds the configured limit of "
+                        f"{settings.max_lens_cells} layer-position cells."
+                    )
+
                 # The residuals only depend on (sequence, interventions), both
                 # frozen per analysis — record once, then every Update is
                 # unembed + top-k with no model forward.
@@ -450,6 +476,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                         tokenizer,
                         analysis["input_ids"],
                         interventions=analysis["iset"],
+                        offload_to_cpu=True,
                     )
                     analysis["activations"] = activations
 
@@ -541,7 +568,10 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 }, status
             except Exception as e:
                 logger.error(f"Lens readout error: {e}", exc_info=True)
-                return None, f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}"
+                return None, (
+                    f"Error: {e}"
+                    + (f"\n\nTraceback:\n{traceback.format_exc()}" if settings.debug else "")
+                )
 
         # ------------------------------------------------------ view renders
 
@@ -648,16 +678,23 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     gr.update(),
                 )
 
-            model = model_manager.get_model()
-            tokenizer = model_manager.get_tokenizer()
-            device = model_manager.get_device()
-            if model is None or tokenizer is None:
+            snapshot = model_manager.snapshot()
+            if snapshot is None:
                 yield failed("Error: No model loaded. Use the Model Loader tab.")
                 return
+            model, tokenizer, device, generation = snapshot
+            if n_tokens is None or not 0 <= int(n_tokens) <= settings.max_new_tokens:
+                yield failed(
+                    f"Error: New tokens must be between 0 and {settings.max_new_tokens}."
+                )
+                return
 
+            tracer = None
             try:
                 tracer = LLMTracer(model, tokenizer, device)
-                jlens = get_lens_store().get(model_manager.get_model_name())
+                jlens = get_lens_store().get(
+                    model_manager.get_model_name(), model=model, tokenizer=tokenizer
+                )
                 active_interventions = enabled_interventions(interventions)
                 try:
                     tracer.set_interventions(active_interventions or None, jlens=jlens)
@@ -695,8 +732,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     decode_token(tokenizer, int(t)) for t in tracer.input_ids[0]
                 ]
                 analysis = {
-                    "input_ids": tracer.input_ids.clone(),
+                    "input_ids": tracer.input_ids.detach().cpu().clone(),
                     "model_name": model_manager.get_model_name(),
+                    "model_generation": generation,
                     "iset": tracer._intervention_set,
                     "n_layers": model.config.get_text_config().num_hidden_layers,
                     "prompt_len": tracer._prompt_len,
@@ -721,7 +759,13 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 yield failed(f"Error: {e}")
             except Exception as e:
                 logger.error(f"Lens generate error: {e}", exc_info=True)
-                yield failed(f"Error: {e}\n\nTraceback:\n{traceback.format_exc()}")
+                yield failed(
+                    f"Error: {e}"
+                    + (f"\n\nTraceback:\n{traceback.format_exc()}" if settings.debug else "")
+                )
+            finally:
+                if tracer is not None:
+                    tracer.close()
 
         def on_token_select(positions, analysis, evt: gr.SelectData):
             if analysis is None:
@@ -867,7 +911,11 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             if model_name is None:
                 return "No model loaded."
             store = get_lens_store()
-            lens = store.get(model_name)
+            lens = store.get(
+                model_name,
+                model=model_manager.get_model(),
+                tokenizer=model_manager.get_tokenizer(),
+            )
             if lens is None:
                 return (
                     f"No fitted lens for {model_name}.\n"
@@ -882,7 +930,7 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                 f"Path: {store.existing_lens_path(model_name)}"
             )
 
-        def install_fit_file(filepath):
+        def install_fit_file(filepath, allow_legacy):
             """Validate an uploaded fit file and install it for the loaded model."""
             if filepath is None:
                 return fit_file_status()
@@ -909,6 +957,18 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
                     f"{model_name} only has {n_layers} layers."
                 )
 
+            tokenizer = model_manager.get_tokenizer()
+            provenance_status, provenance_detail = validate_lens_provenance(
+                lens, model, tokenizer
+            )
+            if provenance_status == "mismatch":
+                return f"Error: lens provenance mismatch: {provenance_detail}."
+            if provenance_status == "legacy" and not allow_legacy:
+                return (
+                    "Error: this legacy lens has no verifiable model/tokenizer "
+                    "provenance. Enable 'Allow unverified legacy lens' to install it."
+                )
+
             path = get_lens_store().lens_path(model_name)
             path.parent.mkdir(parents=True, exist_ok=True)
             save_lens(lens, path)
@@ -916,7 +976,8 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
             # the unsafe copy around — drop it.
             path.with_name(LEGACY_LENS_FILENAME).unlink(missing_ok=True)
             logger.info(f"Installed fit file for {model_name} at {path}")
-            return f"Installed.\n{fit_file_status()}"
+            warning = "\nWarning: installed without provenance verification." if provenance_status == "legacy" else ""
+            return f"Installed ({provenance_detail}).{warning}\n{fit_file_status()}"
 
         # ------------------------------------------------------------ wiring
 
@@ -1035,7 +1096,9 @@ def create_lens_tab(model_manager: ModelManager) -> gr.Tab:
         )
 
         lens_file_upload.upload(
-            fn=install_fit_file, inputs=[lens_file_upload], outputs=[lens_file_status]
+            fn=install_fit_file,
+            inputs=[lens_file_upload, allow_legacy_lens],
+            outputs=[lens_file_status],
         )
         lens_file_check_button.click(
             fn=fit_file_status, inputs=[], outputs=[lens_file_status]

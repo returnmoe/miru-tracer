@@ -8,6 +8,7 @@ import traceback
 import gradio as gr
 import numpy as np
 
+from miru_tracer.config import Settings
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.schema import parse_log
 from miru_tracer.ui.helpers import prob_mode_key
@@ -16,12 +17,12 @@ from miru_tracer.visualization.plots import plot_probability_visualizations
 logger = get_logger(__name__)
 
 
-def create_analysis_tab() -> gr.Tab:
+def create_analysis_tab(settings: Settings) -> gr.Tab:
     """Create the JSON log analysis tab interface."""
     with gr.Tab("Log Analysis") as tab, gr.Column(elem_classes="miru-narrow"):
         gr.Markdown(
             "Load and analyze previously exported generation logs. "
-            "Both current (v2) and older log formats are supported."
+            "Current schema-v3 and older logs are supported."
         )
 
         json_file_input = gr.File(
@@ -56,7 +57,7 @@ def create_analysis_tab() -> gr.Tab:
         viz_plot_confidence = gr.Plot(label="Confidence analysis")
 
         def analyze_json_log(filepath, heatmap_r, prob_mode):
-            """Analyze an uploaded JSON log file (schema v1 or v2)."""
+            """Analyze an uploaded JSON log file (schema v1 through v3)."""
             if filepath is None:
                 return None, "No file uploaded", None, None
 
@@ -86,8 +87,14 @@ def create_analysis_tab() -> gr.Tab:
                         None,
                     )
 
-                probs = [step.probability for step in log.history]
+                use_raw = prob_mode_key(prob_mode) == "raw"
+                probs = [
+                    step.raw_probability if use_raw else step.probability
+                    for step in log.history
+                ]
+                family = "Raw" if use_raw else "Temperature-adjusted"
                 stats_text = (
+                    f"Probability family: {family}\n"
                     f"Mean: {np.mean(probs):.4f}\n"
                     f"Std Dev: {np.std(probs):.4f}\n"
                     f"Min: {np.min(probs):.4f}\n"
@@ -121,7 +128,8 @@ def create_analysis_tab() -> gr.Tab:
                 logger.error(f"Log analysis error: {e}", exc_info=True)
                 return (
                     "",
-                    f"Error analyzing log:\n\n{e}\n\nTraceback:\n{traceback.format_exc()}",
+                    f"Error analyzing log:\n\n{e}"
+                    + (f"\n\nTraceback:\n{traceback.format_exc()}" if settings.debug else ""),
                     None,
                     None,
                 )

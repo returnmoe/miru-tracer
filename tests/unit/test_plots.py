@@ -21,7 +21,7 @@ class TestDisplayText:
         assert _display_text("x" * 30) == "x" * 12 + "..."
 
 
-def make_step(step, full_probs=None):
+def make_step(step, full_probs=None, full_raw_probs=None):
     return TokenStep(
         step=step,
         token_id=1,
@@ -33,8 +33,16 @@ def make_step(step, full_probs=None):
         raw_probability=0.5,
         top_k_raw_probs=[0.5, 0.35, 0.15],
         full_probs=full_probs,
+        full_raw_probs=full_raw_probs,
         token_text_raw="a",
         top_k_texts_raw=["a", "b", "c"],
+        sampling_params={
+            "strategy": "sampling",
+            "temperature": 0.7,
+            "top_k": 3,
+            "top_p": 1.0,
+        },
+        selection_source="sampled",
     )
 
 
@@ -79,6 +87,19 @@ class TestVisualizations:
         figures = plot_probability_visualizations(HISTORY, top_k=3, probability_mode="raw")
         heatmap = figures[0]
         assert heatmap.data[0].z[0][0] == pytest.approx(0.5)  # raw_probability
+
+    def test_raw_mode_uses_raw_entropy(self):
+        history = [
+            make_step(
+                0,
+                full_probs=[0.5, 0.5],
+                full_raw_probs=[0.25, 0.25, 0.25, 0.25],
+            )
+        ]
+        confidence = plot_probability_visualizations(
+            history, probability_mode="raw"
+        )[1]
+        assert confidence.data[1].y[0] == pytest.approx(math.log(4))
 
     def test_top_k_capped_at_logged(self):
         figures = plot_probability_visualizations(HISTORY, top_k=99)

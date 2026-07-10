@@ -41,12 +41,25 @@ class TestSettings:
             "MIRU_SERVER_PORT",
             "GRADIO_SERVER_NAME",
             "GRADIO_SERVER_PORT",
+            "MIRU_ALLOW_REMOTE_CODE",
+            "MIRU_AUTH_USERNAME",
+            "MIRU_AUTH_PASSWORD",
+            "MIRU_MAX_NEW_TOKENS",
+            "MIRU_MAX_LOG_TOP_K",
+            "MIRU_MAX_FULL_PROB_STEPS",
+            "MIRU_MAX_LENS_CELLS",
         ):
             monkeypatch.delenv(var, raising=False)
         settings = Settings.from_env()
         assert settings.debug is False
         assert settings.server_name == "127.0.0.1"
         assert settings.server_port == 7860
+        assert settings.allow_remote_code is False
+        assert settings.auth is None
+        assert settings.max_new_tokens == 1000
+        assert settings.max_log_top_k == 256
+        assert settings.max_full_prob_steps == 128
+        assert settings.max_lens_cells == 8192
 
     def test_miru_debug_true_string(self, monkeypatch):
         """The exact case the old code got wrong."""
@@ -70,6 +83,24 @@ class TestSettings:
         settings = Settings.from_env()
         assert settings.server_name == "0.0.0.0"
         assert settings.server_port == 9000
+
+    def test_paired_auth(self, monkeypatch):
+        monkeypatch.setenv("MIRU_AUTH_USERNAME", "miru")
+        monkeypatch.setenv("MIRU_AUTH_PASSWORD", "secret")
+        assert Settings.from_env().auth == ("miru", "secret")
+
+    def test_partial_auth_rejected(self, monkeypatch):
+        monkeypatch.setenv("MIRU_AUTH_USERNAME", "miru")
+        monkeypatch.delenv("MIRU_AUTH_PASSWORD", raising=False)
+        with pytest.raises(ValueError, match="must be set together"):
+            Settings.from_env()
+
+    def test_limits_are_configurable_and_positive(self, monkeypatch):
+        monkeypatch.setenv("MIRU_MAX_NEW_TOKENS", "12")
+        monkeypatch.setenv("MIRU_MAX_LOG_TOP_K", "0")
+        settings = Settings.from_env()
+        assert settings.max_new_tokens == 12
+        assert settings.max_log_top_k == 1
 
 
 class TestEnvStr:

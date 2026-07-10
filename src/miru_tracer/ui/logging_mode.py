@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import time
-import traceback
 
 import gradio as gr
 
+from miru_tracer.config import Settings
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
-from miru_tracer.core.tracer import LLMTracer
+from miru_tracer.core.session_manager import get_session_manager
 from miru_tracer.ui.helpers import (
     CHAT_MODE_HELP,
     DEFAULT_CHAT_JSON,
@@ -38,7 +38,7 @@ from miru_tracer.visualization.plots import (
 logger = get_logger(__name__)
 
 
-def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
+def create_logging_mode_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
     """Create the logging mode tab interface."""
 
     exports = ExportManager("log")
@@ -97,7 +97,11 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         with gr.Group():
             with gr.Row():
                 max_tokens = gr.Number(
-                    minimum=1, value=20, label="Maximum new tokens", precision=0
+                    minimum=1,
+                    maximum=settings.max_new_tokens,
+                    value=20,
+                    label="Maximum new tokens",
+                    precision=0,
                 )
                 strategy = gr.Radio(
                     choices=["greedy", "sampling"], value="greedy", label="Strategy"
@@ -118,6 +122,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 with gr.Row():
                     log_top_k = gr.Number(
                         minimum=1,
+                        maximum=settings.max_log_top_k,
                         value=10,
                         precision=0,
                         label="Log Top-K tokens",
@@ -181,9 +186,8 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             size="lg",
         )
 
-        # State: the live tracer plus the inputs it was started from
-        # (used to invalidate Continue when the user edits the prompt).
-        tracer_state = gr.State(value=None)
+        # State carries only an opaque server-side session id.
+        session_state = gr.State(value=None)
         # (mode, prompt, messages, raw, thinking choice, thought text)
         original_inputs_state = gr.State(value=None)
 
@@ -191,14 +195,17 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         def finalize(tracer, params, heatmap_r, prob_mode):
             """Stats, plots, and download for a finished (or stopped) run."""
-            stats_json = json.dumps(get_generation_stats(tracer.history), indent=2)
+            probability_mode = prob_mode_key(prob_mode)
+            stats_json = json.dumps(
+                get_generation_stats(tracer.history, probability_mode), indent=2
+            )
             ranks = int(heatmap_r) if heatmap_r else 10
             if tracer.history:
                 ranks = min(ranks, len(tracer.history[0].top_k_tokens))
             figures = plot_probability_visualizations(
                 tracer.history,
                 top_k=ranks,
-                probability_mode=prob_mode_key(prob_mode),
+                probability_mode=probability_mode,
                 temperature=params.temperature,
             )
             heatmap = figures[0] if figures else None
@@ -223,18 +230,44 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 }
                 yield tracer.get_generated_text(), json.dumps(progress, indent=2)
 
-        def error_yield(message, keep_tracer=None, keep_originals=None):
+        def error_yield(message, keep_session=None, keep_originals=None):
             return (
                 message,
                 None,
                 None,
                 None,
-                keep_tracer,
-                gr.update() if keep_tracer else gr.update(interactive=False),
-                gr.update(interactive=keep_tracer is not None),
+                keep_session,
+                gr.update() if keep_session else gr.update(interactive=False),
+                gr.update(interactive=keep_session is not None),
                 gr.update(interactive=False),
                 keep_originals,
             )
+
+        def resolve_session(session_id):
+            if session_id is None:
+                return None
+            return get_session_manager().get_session(
+                session_id, expected_generation=model_manager.get_generation()
+            )
+
+        def validate_request(new_tokens, log_topk, log_full, existing_full=0):
+            new_tokens = int(new_tokens) if new_tokens is not None else 0
+            log_topk = int(log_topk) if log_topk is not None else 10
+            if not 1 <= new_tokens <= settings.max_new_tokens:
+                raise ValueError(
+                    f"Maximum new tokens must be between 1 and "
+                    f"{settings.max_new_tokens}."
+                )
+            if not 1 <= log_topk <= settings.max_log_top_k:
+                raise ValueError(
+                    f"Log Top-K must be between 1 and {settings.max_log_top_k}."
+                )
+            if log_full and existing_full + new_tokens > settings.max_full_prob_steps:
+                raise ValueError(
+                    "Full-probability logging is limited to "
+                    f"{settings.max_full_prob_steps} total steps."
+                )
+            return new_tokens, log_topk
 
         # ----------------------------------------------------------- handlers
 
@@ -256,41 +289,56 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             log_full,
             prob_mode,
         ):
-            model = model_manager.get_model()
-            tokenizer = model_manager.get_tokenizer()
-            device = model_manager.get_device()
-
-            if model is None or tokenizer is None:
+            snapshot = model_manager.snapshot()
+            if snapshot is None:
                 yield error_yield(
                     "Error: No model loaded. Please load a model in the "
                     "Model Loader tab first."
                 )
                 return
-            if max_new_tokens is None or max_new_tokens < 1:
-                yield error_yield("Error: Maximum new tokens must be at least 1")
+            model, tokenizer, device, generation = snapshot
+            try:
+                max_new_tokens, log_topk = validate_request(
+                    max_new_tokens, log_topk, log_full
+                )
+            except ValueError as e:
+                yield error_yield(f"Error: {e}")
                 return
 
             start_time = time.time()
+            session_id = None
             try:
                 params = ui_sampling_params(strat, temp, topk, topp)
-                tracer = LLMTracer(model, tokenizer, device)
+                session_id = get_session_manager().create_session(
+                    model,
+                    tokenizer,
+                    device,
+                    kind="logging",
+                    model_generation=generation,
+                )
+                session = resolve_session(session_id)
+                if session is None:
+                    raise RuntimeError("Model changed while creating the logging session")
+                tracer = session.tracer
 
-                if mode == "Chat":
-                    try:
-                        messages = parse_chat_messages(chat_msgs)
-                    except ChatValidationError as e:
-                        yield error_yield(f"Error: {e}")
-                        return
-                    tracer.reset(
-                        messages=messages,
-                        mode="chat",
-                        thinking=thinking_key(think_choice),
-                        think_prefill=think_text or "",
-                    )
-                elif mode == "Raw":
-                    tracer.reset(prompt=raw_text, mode="raw")
-                else:
-                    tracer.reset(prompt=prompt, mode="completion")
+                with session.lock:
+                    if mode == "Chat":
+                        try:
+                            messages = parse_chat_messages(chat_msgs)
+                        except ChatValidationError as e:
+                            get_session_manager().delete_session(session_id)
+                            yield error_yield(f"Error: {e}")
+                            return
+                        tracer.reset(
+                            messages=messages,
+                            mode="chat",
+                            thinking=thinking_key(think_choice),
+                            think_prefill=think_text or "",
+                        )
+                    elif mode == "Raw":
+                        tracer.reset(prompt=raw_text, mode="raw")
+                    else:
+                        tracer.reset(prompt=prompt, mode="completion")
 
                 logger.info(
                     f"Logging mode generation started: mode={mode}, "
@@ -298,24 +346,25 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 )
                 originals = (mode, prompt, chat_msgs, raw_text, think_choice, think_text)
 
-                for text, progress in run_generation(
-                    tracer, params, max_new_tokens, log_topk, log_full, stop_at_eos
-                ):
-                    yield (
-                        text,
-                        progress,
-                        gr.update(),
-                        gr.update(),
-                        tracer,  # available to the Stop handler mid-run
-                        gr.update(),
-                        gr.update(),
-                        gr.update(interactive=True),  # stop enabled while running
-                        originals,
-                    )
+                with session.lock:
+                    for text, progress in run_generation(
+                        tracer, params, max_new_tokens, log_topk, log_full, stop_at_eos
+                    ):
+                        yield (
+                            text,
+                            progress,
+                            gr.update(),
+                            gr.update(),
+                            session_id,
+                            gr.update(),
+                            gr.update(),
+                            gr.update(interactive=True),
+                            originals,
+                        )
 
-                stats_json, heatmap, confidence, download = finalize(
-                    tracer, params, heatmap_r, prob_mode
-                )
+                    stats_json, heatmap, confidence, download = finalize(
+                        tracer, params, heatmap_r, prob_mode
+                    )
                 logger.info(
                     f"Generation complete: {len(tracer.history)} tokens in "
                     f"{time.time() - start_time:.2f}s"
@@ -325,7 +374,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     stats_json,
                     heatmap,
                     confidence,
-                    tracer,
+                    session_id,
                     download,
                     gr.update(interactive=True),  # continue available
                     gr.update(interactive=False),
@@ -333,13 +382,14 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 )
             except Exception as e:
                 logger.error(f"Generation error: {e}", exc_info=True)
+                if session_id is not None:
+                    get_session_manager().delete_session(session_id)
                 yield error_yield(
-                    f"Error during generation:\n\n{e}\n\n"
-                    f"Traceback:\n{traceback.format_exc()}"
+                    f"Error during generation: {e}"
                 )
 
         def continue_handler(
-            tracer,
+            session_id,
             originals,
             max_new_tokens,
             strat,
@@ -352,18 +402,19 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             log_full,
             prob_mode,
         ):
-            if tracer is None:
+            session = resolve_session(session_id)
+            if session is None:
                 yield error_yield("Error: No previous generation to continue from.")
                 return
-            if max_new_tokens is None or max_new_tokens < 1:
-                yield error_yield(
-                    "Error: Maximum new tokens must be at least 1", tracer, originals
+            tracer = session.tracer
+            existing_full = sum(step.full_probs is not None for step in tracer.history)
+            try:
+                max_new_tokens, log_topk = validate_request(
+                    max_new_tokens, log_topk, log_full, existing_full
                 )
-                return
-            if model_manager.get_model() is None or tracer.model is not model_manager.get_model():
+            except ValueError as e:
                 yield error_yield(
-                    "Error: Model has been unloaded or changed.\n\n"
-                    "Please start a new generation."
+                    f"Error: {e}", session_id, originals
                 )
                 return
 
@@ -372,24 +423,25 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                 params = ui_sampling_params(strat, temp, topk, topp)
                 logger.info(f"Continuing generation: max_tokens={max_new_tokens}")
 
-                for text, progress in run_generation(
-                    tracer, params, max_new_tokens, log_topk, log_full, stop_at_eos
-                ):
-                    yield (
-                        text,
-                        progress,
-                        gr.update(),
-                        gr.update(),
-                        tracer,
-                        gr.update(),
-                        gr.update(),
-                        gr.update(interactive=True),
-                        originals,
-                    )
+                with session.lock:
+                    for text, progress in run_generation(
+                        tracer, params, max_new_tokens, log_topk, log_full, stop_at_eos
+                    ):
+                        yield (
+                            text,
+                            progress,
+                            gr.update(),
+                            gr.update(),
+                            session_id,
+                            gr.update(),
+                            gr.update(),
+                            gr.update(interactive=True),
+                            originals,
+                        )
 
-                stats_json, heatmap, confidence, download = finalize(
-                    tracer, params, heatmap_r, prob_mode
-                )
+                    stats_json, heatmap, confidence, download = finalize(
+                        tracer, params, heatmap_r, prob_mode
+                    )
                 logger.info(
                     f"Continuation complete: {len(tracer.history)} total tokens "
                     f"in {time.time() - start_time:.2f}s"
@@ -399,7 +451,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     stats_json,
                     heatmap,
                     confidence,
-                    tracer,
+                    session_id,
                     download,
                     gr.update(interactive=True),
                     gr.update(interactive=False),
@@ -408,15 +460,15 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             except Exception as e:
                 logger.error(f"Continuation error: {e}", exc_info=True)
                 yield error_yield(
-                    f"Error during continuation:\n\n{e}\n\n"
-                    f"Traceback:\n{traceback.format_exc()}",
-                    tracer,
+                    f"Error during continuation: {e}",
+                    session_id,
                     originals,
                 )
 
-        def stop_handler(tracer, originals, temp, heatmap_r, prob_mode, strat, topk, topp):
+        def stop_handler(session_id, originals, temp, heatmap_r, prob_mode, strat, topk, topp):
             """Finalize UI state after cancelling a running generation."""
-            if tracer is None:
+            session = resolve_session(session_id)
+            if session is None:
                 logger.warning("Stop clicked but no tracer in state")
                 return (
                     gr.update(),
@@ -430,6 +482,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     originals,
                 )
 
+            tracer = session.tracer
             tracer.request_stop()
             logger.info(f"Stop requested - finalizing after {len(tracer.history)} tokens")
             try:
@@ -450,7 +503,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     stats_json,
                     heatmap,
                     confidence,
-                    tracer,  # keep it so Continue works
+                    session_id,
                     download,
                     gr.update(interactive=True),
                     gr.update(interactive=False),
@@ -463,17 +516,19 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     gr.update(),
                     gr.update(),
                     gr.update(),
-                    tracer,
+                    session_id,
                     gr.update(),
                     gr.update(interactive=False),
                     gr.update(interactive=False),
                     originals,
                 )
 
-        def refresh_visualizations(tracer, heatmap_r, prob_mode, temp):
+        def refresh_visualizations(session_id, heatmap_r, prob_mode, temp):
             """Re-render plots with new display settings, no regeneration."""
-            if tracer is None or not tracer.history:
+            session = resolve_session(session_id)
+            if session is None or not session.tracer.history:
                 return None, None
+            tracer = session.tracer
             try:
                 ranks = min(
                     int(heatmap_r) if heatmap_r else 10,
@@ -495,10 +550,10 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
 
         def check_continue_availability(
             mode, prompt, chat_msgs, raw_text, think_choice, think_text,
-            originals, tracer,
+            originals, session_id,
         ):
             """Disable Continue when the inputs no longer match the run."""
-            if tracer is None or originals is None:
+            if resolve_session(session_id) is None or originals is None:
                 return gr.update(interactive=False)
             (
                 original_mode, original_prompt, original_messages,
@@ -523,7 +578,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
             generation_stats,
             viz_plot_heatmap,
             viz_plot_confidence,
-            tracer_state,
+            session_state,
             download_button,
             continue_button,
             stop_button,
@@ -547,7 +602,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         for viz_input in (probability_mode, heatmap_ranks):
             viz_input.change(
                 fn=refresh_visualizations,
-                inputs=[tracer_state, heatmap_ranks, probability_mode, temperature],
+                inputs=[session_state, heatmap_ranks, probability_mode, temperature],
                 outputs=[viz_plot_heatmap, viz_plot_confidence],
             )
 
@@ -576,7 +631,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         continue_event = continue_button.click(
             fn=continue_handler,
             inputs=[
-                tracer_state,
+                session_state,
                 original_inputs_state,
                 max_tokens,
                 strategy,
@@ -594,7 +649,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
         stop_button.click(
             fn=stop_handler,
             inputs=[
-                tracer_state,
+                session_state,
                 original_inputs_state,
                 temperature,
                 heatmap_ranks,
@@ -621,7 +676,7 @@ def create_logging_mode_tab(model_manager: ModelManager) -> gr.Tab:
                     thinking_selector,
                     think_prefill_box,
                     original_inputs_state,
-                    tracer_state,
+                    session_state,
                 ],
                 outputs=[continue_button],
             )

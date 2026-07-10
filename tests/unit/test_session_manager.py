@@ -68,6 +68,25 @@ class TestSessions:
         assert info["prompt"] == "Hello"
         assert manager.get_session_info("nope") is None
 
+    def test_logging_and_interactive_sessions_coexist(self, tiny_model, tiny_tokenizer):
+        manager = SessionManager()
+        interactive = manager.create_session(
+            tiny_model, tiny_tokenizer, "cpu", kind="interactive"
+        )
+        logging = manager.create_session(
+            tiny_model, tiny_tokenizer, "cpu", kind="logging"
+        )
+        assert manager.get_session(interactive) is not None
+        assert manager.get_session(logging) is not None
+
+    def test_model_generation_invalidates_lookup(self, tiny_model, tiny_tokenizer):
+        manager = SessionManager()
+        session_id = manager.create_session(
+            tiny_model, tiny_tokenizer, "cpu", model_generation=3
+        )
+        assert manager.get_session(session_id, expected_generation=3) is not None
+        assert manager.get_session(session_id, expected_generation=4) is None
+
 
 class TestConcurrency:
     def test_concurrent_create_get_delete(self, tiny_model, tiny_tokenizer):

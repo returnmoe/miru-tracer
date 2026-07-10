@@ -10,6 +10,7 @@ of them never requires another forward pass.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 
@@ -41,6 +42,15 @@ class SamplingParams:
             raise ValueError(f"top_k must be >= 0, got {self.top_k}")
         if not 0.0 < self.top_p <= 1.0:
             raise ValueError(f"top_p must be in (0, 1], got {self.top_p}")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the stable JSON representation stored in generation logs."""
+        return {
+            "strategy": self.strategy,
+            "temperature": self.temperature,
+            "top_k": self.top_k,
+            "top_p": self.top_p,
+        }
 
 
 def apply_temperature(logits: torch.Tensor, temperature: float) -> torch.Tensor:
