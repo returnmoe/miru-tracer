@@ -207,6 +207,10 @@ public-key authentication is accepted; password and keyboard-interactive
 login are disabled. Set `MIRU_SSH_ENABLE=0` to force SSH off, or `1` to make a
 missing/invalid key fatal.
 
+At every SSH startup, the container logs the SHA-256 fingerprints of all SSH
+host keys. Before accepting a first connection, compare the fingerprint shown
+by your SSH client with the one in the trusted RunPod/container console logs.
+
 For an SSH-only RunPod-style instance, expose container port `22/tcp` in the
 platform template and disable automatic UI startup:
 

@@ -37,6 +37,19 @@ install_authorized_keys() {
         die "root authorized_keys contains no valid public key"
 }
 
+log_ssh_host_key_fingerprints() {
+    found=0
+    for public_key in /etc/ssh/ssh_host_*_key.pub; do
+        [ -f "$public_key" ] || continue
+        fingerprint="$(ssh-keygen -l -E sha256 -f "$public_key")" || \
+            die "could not read SSH host key fingerprint: $public_key"
+        printf 'miru-entrypoint: SSH host key %s: %s\n' \
+            "$(basename "$public_key")" "$fingerprint"
+        found=1
+    done
+    [ "$found" -eq 1 ] || die "SSH host key generation produced no public keys"
+}
+
 configure_ssh() {
     [ "$(id -u)" -eq 0 ] || die "SSH requires the container to start as root"
     install_authorized_keys
@@ -49,6 +62,7 @@ configure_ssh() {
     fi
     printf 'Port %s\n' "$port" > /etc/ssh/sshd_config.d/99-miru-port.conf
     ssh-keygen -A
+    log_ssh_host_key_fingerprints
     /usr/sbin/sshd -t
 }
 

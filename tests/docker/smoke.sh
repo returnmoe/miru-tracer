@@ -49,6 +49,11 @@ until docker exec "$ssh_container" /usr/local/bin/miru-healthcheck; do
     sleep 1
 done
 
+host_fingerprint="$(docker exec "$ssh_container" ssh-keygen -l -E sha256 \
+    -f /etc/ssh/ssh_host_ed25519_key.pub)"
+docker logs "$ssh_container" 2>&1 | grep -Fqx \
+    "miru-entrypoint: SSH host key ssh_host_ed25519_key.pub: $host_fingerprint"
+
 mapping="$(docker port "$ssh_container" 22/tcp)"
 ssh_port="${mapping##*:}"
 ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes"
