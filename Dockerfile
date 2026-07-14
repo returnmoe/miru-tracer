@@ -6,7 +6,9 @@ ARG CUDA_IMAGE=nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04@sha256:8aef630a54bc5
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu126
 ARG EXPECTED_CUDA=12.6
 
-FROM ${CUDA_IMAGE} AS builder
+# Keep the CUDA/PyTorch environment in one stage. Copying /opt/miru out of a
+# builder duplicates several gigabytes in BuildKit and exhausts hosted runners.
+FROM ${CUDA_IMAGE} AS runtime
 ARG TORCH_INDEX
 ARG EXPECTED_CUDA
 ARG DEBIAN_FRONTEND=noninteractive
@@ -15,8 +17,14 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 WORKDIR /build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates python3.12 python3.12-venv && \
-    rm -rf /var/lib/apt/lists/*
+        ca-certificates curl openssh-server python3.12 python3.12-venv \
+        tini util-linux && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --create-home --uid 10001 --shell /usr/sbin/nologin miru && \
+    passwd -l root && \
+    mkdir -p /run/miru /run/sshd /root/.ssh /home/miru/.cache/miru-tracer && \
+    chmod 0700 /root/.ssh && \
+    chown -R miru:miru /home/miru
 
 COPY pyproject.toml README.md LICENSE constraints.txt ./
 COPY src/ src/
@@ -28,9 +36,6 @@ RUN python3.12 -m venv /opt/miru && \
     /opt/miru/bin/python -c \
       "import torch; assert torch.version.cuda == '${EXPECTED_CUDA}', torch.version.cuda"
 
-FROM ${CUDA_IMAGE} AS runtime
-ARG EXPECTED_CUDA
-ARG DEBIAN_FRONTEND=noninteractive
 ENV PATH=/opt/miru/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -41,16 +46,6 @@ ENV PATH=/opt/miru/bin:$PATH \
     MIRU_SSH_ENABLE=auto \
     HOME=/home/miru
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl openssh-server python3.12 tini util-linux && \
-    rm -rf /var/lib/apt/lists/* && \
-    useradd --create-home --uid 10001 --shell /usr/sbin/nologin miru && \
-    passwd -l root && \
-    mkdir -p /run/miru /run/sshd /root/.ssh /home/miru/.cache/miru-tracer && \
-    chmod 0700 /root/.ssh && \
-    chown -R miru:miru /home/miru
-
-COPY --from=builder /opt/miru /opt/miru
 COPY docker/sshd-miru.conf /etc/ssh/sshd_config.d/90-miru-hardening.conf
 COPY docker/healthcheck.sh /usr/local/bin/miru-healthcheck
 COPY entrypoint.sh /usr/local/bin/miru-entrypoint
