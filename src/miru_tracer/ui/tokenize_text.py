@@ -11,6 +11,16 @@ from miru_tracer.core.tokenizer_utils import (
 TOKENIZE_HEADERS = ["Position", "Type", "ID", "Representation"]
 
 
+def _hide_dataframe():
+    """Unmount the virtualized table before replacing rows."""
+    return gr.update(visible=False)
+
+
+def _show_dataframe():
+    """Remount the table after its value has been replaced."""
+    return gr.update(visible=True)
+
+
 def tokenize_rows(tokenizer, text: str) -> list[list]:
     """Build rows for the Tokenize Text results table."""
     token_ids = tokenizer.encode(text, add_special_tokens=False)
@@ -85,10 +95,37 @@ def create_tokenize_text_tab(model_manager: ModelManager) -> gr.Tab:
             except Exception as e:
                 return [], f"Error: {str(e)}"
 
-        tokenize_button.click(
+        # Gradio 6.20's virtualized Dataframe retains its previous rendered
+        # row count when an output changes shape. Updating it while unmounted
+        # resets the virtualizer without replacing the Dataframe component.
+        hidden = tokenize_button.click(
+            fn=_hide_dataframe,
+            inputs=[],
+            outputs=[tokens_output],
+            queue=False,
+            show_progress="hidden",
+            api_visibility="private",
+        )
+        tokenized = hidden.then(
             fn=tokenize_handler,
             inputs=[text_input],
             outputs=[tokens_output, additional_info],
+        )
+        tokenized.success(
+            fn=_show_dataframe,
+            inputs=[],
+            outputs=[tokens_output],
+            queue=False,
+            show_progress="hidden",
+            api_visibility="private",
+        )
+        tokenized.failure(
+            fn=_show_dataframe,
+            inputs=[],
+            outputs=[tokens_output],
+            queue=False,
+            show_progress="hidden",
+            api_visibility="private",
         )
 
     return tab
