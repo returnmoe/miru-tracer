@@ -96,7 +96,20 @@ jobs:
             EXPECTED_CUDA=${{ matrix.expected_cuda }}
           cache-from: type=gha,scope=docker-${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.variant }}
-      - uses: actions/attest-build-provenance@a1948c3f048ba23858d222213b7c278aabede763
+      - name: Verify published version tag
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAG: ${{ steps.version.outputs.version }}${{ matrix.suffix }}
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:${TAG}"
+          {
+            echo "### Published ${{ matrix.variant }} image"
+            echo
+            echo "\`${IMAGE}:${TAG}\`"
+            echo
+            echo "Digest: \`${{ steps.push.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.push.outputs.digest }}
