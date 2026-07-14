@@ -162,25 +162,50 @@ miru-tracer-fit-lens zai-org/GLM-5.2 --device-map auto --dim-batch 16
 ### Fitting inside Docker (GPU cloud platforms)
 
 Some GPU platforms only run Docker images. The Miru image ships the fit CLI,
-so you can run a fitting job with the same image you deploy the app with —
-just override the entrypoint and mount somewhere persistent for the output
-and checkpoint:
+so you can run a fitting job with the same image you deploy the app with.
+Mount only the artifact directory on persistent/network storage; keep the
+Hugging Face cache on fast instance-local storage with the separate
+`--hf-home` option:
 
 ```bash
 docker run --gpus all \
   -v /path/on/host/lenses:/lenses \
-  -v /path/on/host/hf-cache:/root/.cache/huggingface \
-  --entrypoint miru-tracer-fit-lens \
   miru-tracer \
-  Qwen/Qwen3-0.6B --dim-batch 32 --out /lenses/Qwen--Qwen3-0.6B/lens.safetensors
+  miru-tracer-fit-lens Qwen/Qwen3-0.6B \
+  --dim-batch 32 \
+  --out /lenses/Qwen--Qwen3-0.6B/lens.safetensors \
+  --hf-home /tmp/huggingface
 
 # resume after an interruption/preemption: identical command, it picks up
 # from the checkpoint next to the --out path
 ```
 
-If the platform doesn't let you override the entrypoint, `docker run ...
-miru-tracer bash -c "miru-tracer-fit-lens ..."` via `--entrypoint bash`
-equivalents, or set `MIRU_LENS_DIR=/lenses` and omit `--out`.
+The bind-mounted output directory must be writable by UID 10001 (`miru`) for
+direct `docker run` commands. `--out` controls only the final artifact and
+its sibling `.checkpoint.pt`; Hugging Face Hub, Xet, assets, and module caches
+are controlled by `--hf-home` (or the standard Hugging Face environment when
+that option is omitted). Short-lived atomic-write files may appear next to
+the artifact while a chunk is being saved.
+
+On RunPod, expose `22/tcp`, set `MIRU_AUTO_START_UI=0`, and let the supplied
+`PUBLIC_KEY` enable hardened root SSH automatically. The SSH-only container
+stays alive with `sshd` in the foreground; after logging in, run the same fit
+command with the network volume as `--out` and `/tmp/huggingface` as
+`--hf-home`. To start Miru manually without exposing it through the platform's
+HTTP proxy:
+
+```bash
+# inside the Pod
+MIRU_SERVER_NAME=127.0.0.1 miru-tracer
+
+# workstation (replace host/port with RunPod's Direct TCP mapping)
+ssh -L 7860:127.0.0.1:7860 -p <external-ssh-port> root@<pod-ip>
+```
+
+The default `miru-tracer` image is CUDA 12.6. Use `miru-tracer:latest-cu130`
+(or a versioned `-cu130` tag) for Blackwell/R580.65.06+ hosts. Both images contain
+the matching CUDA userspace libraries; the host kernel driver still comes
+from the cloud platform/NVIDIA container runtime.
 
 ## 3. Loading a fit file into Miru Tracer
 

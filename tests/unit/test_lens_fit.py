@@ -1,5 +1,7 @@
 """Chunked lens fitting: progress, resume, cancellation, artifact validity."""
 
+import os
+
 import pytest
 import torch
 
@@ -11,8 +13,10 @@ from miru_tracer.core.lens_fit import (
     DEFAULT_STOP_AT_DELTA,
     DEFAULT_STOP_WINDOW,
     _chunk_text_records,
+    _configure_hf_home,
     iter_fit_lens,
     prompts_from_file,
+    wikitext_prompts,
 )
 from miru_tracer.core.lens_io import load_lens
 
@@ -481,6 +485,54 @@ class TestPromptSources:
         records = ["abc", "defgh", "ijklmnop"]
         assert _chunk_text_records(iter(records), 1, max_chars=10) == ["abc defgh"]
 
+    def test_wikitext_downloads_use_explicit_cache_dir(self, tmp_path, monkeypatch):
+        import huggingface_hub
+        import pandas as pd
+
+        downloads = []
+
+        def fake_download(repo_id, filename, **kwargs):
+            downloads.append((repo_id, filename, kwargs))
+            return tmp_path / filename.replace("/", "-")
+
+        monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+        monkeypatch.setattr(
+            pd,
+            "read_parquet",
+            lambda _path, columns: pd.DataFrame({"text": ["abcdefghij"]}),
+        )
+        cache_dir = tmp_path / "hf-home" / "hub"
+
+        prompts = wikitext_prompts(2, max_chars=5, min_chars=1, cache_dir=cache_dir)
+
+        assert prompts == ["abcd", "efghi"]
+        assert len(downloads) == 1
+        assert downloads[0][0] == "Salesforce/wikitext"
+        assert downloads[0][2] == {"repo_type": "dataset", "cache_dir": cache_dir}
+
+    def test_hf_home_configures_all_cache_families(self, tmp_path, monkeypatch):
+        names = [
+            "HF_HOME",
+            "HF_HUB_CACHE",
+            "HUGGINGFACE_HUB_CACHE",
+            "TRANSFORMERS_CACHE",
+            "HF_XET_CACHE",
+            "HF_ASSETS_CACHE",
+            "HF_MODULES_CACHE",
+        ]
+        for name in names:
+            monkeypatch.setenv(name, "before-test")
+
+        root, hub = _configure_hf_home(tmp_path / "hf-home")
+
+        assert root == (tmp_path / "hf-home").resolve()
+        assert hub == root / "hub"
+        assert os.environ["HF_HOME"] == str(root)
+        assert os.environ["HF_HUB_CACHE"] == str(hub)
+        assert os.environ["HF_XET_CACHE"] == str(root / "xet")
+        assert os.environ["HF_ASSETS_CACHE"] == str(root / "assets")
+        assert os.environ["HF_MODULES_CACHE"] == str(root / "modules")
+
 
 class TestCliMain:
     # lens.pt pins the explicit legacy-format escape hatch (--out foo.pt)
@@ -546,3 +598,77 @@ class TestCliMain:
         lens = loader(out)
         assert lens.n_prompts == 3
         assert lens.fit_metadata["convergence"]["enabled"] is False
+
+    def test_out_and_hf_home_are_independent(
+        self, tiny_model, tiny_tokenizer, tmp_path, monkeypatch
+    ):
+        import transformers
+
+        recorded = {}
+
+        class FakeModel:
+            @staticmethod
+            def from_pretrained(_name, **kwargs):
+                recorded["model"] = kwargs
+                return tiny_model
+
+        class FakeTokenizer:
+            @staticmethod
+            def from_pretrained(_name, **kwargs):
+                recorded["tokenizer"] = kwargs
+                return tiny_tokenizer
+
+        monkeypatch.setattr(transformers, "AutoModelForCausalLM", FakeModel)
+        monkeypatch.setattr(transformers, "AutoTokenizer", FakeTokenizer)
+        for name in (
+            "HF_HOME",
+            "HF_HUB_CACHE",
+            "HUGGINGFACE_HUB_CACHE",
+            "TRANSFORMERS_CACHE",
+            "HF_XET_CACHE",
+            "HF_ASSETS_CACHE",
+            "HF_MODULES_CACHE",
+        ):
+            monkeypatch.setenv(name, "before-test")
+
+        prompts_file = tmp_path / "prompts.txt"
+        prompts_file.write_text("\n".join(PROMPTS))
+        output_dir = tmp_path / "network-output"
+        out = output_dir / "lens.safetensors"
+        hf_home = tmp_path / "local-hf"
+
+        from miru_tracer.core.lens_fit import main
+
+        code = main(
+            [
+                "tiny/test-model",
+                "--prompts-file",
+                str(prompts_file),
+                "--out",
+                str(out),
+                "--hf-home",
+                str(hf_home),
+                "--device-map",
+                "auto",
+                "--dim-batch",
+                "8",
+                "--num-prompts",
+                "2",
+                "--min-prompts",
+                "2",
+                "--stop-window",
+                "1",
+                "--stop-at-delta",
+                "0",
+            ]
+        )
+
+        expected_hub = hf_home.resolve() / "hub"
+        assert code == 0
+        assert recorded["tokenizer"]["cache_dir"] == expected_hub
+        assert recorded["model"]["cache_dir"] == expected_hub
+        assert set(output_dir.iterdir()) == {
+            out,
+            output_dir / "lens.checkpoint.pt",
+        }
+        assert hf_home.is_dir()

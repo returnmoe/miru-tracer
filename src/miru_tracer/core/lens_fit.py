@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import math
+import os
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -48,6 +49,15 @@ WIKITEXT_TRAIN_SHARDS = (
     "wikitext-103-raw-v1/train-00000-of-00002.parquet",
     "wikitext-103-raw-v1/train-00001-of-00002.parquet",
 )
+
+_HF_HOME_SUBDIRS = {
+    "HF_HUB_CACHE": "hub",
+    "HUGGINGFACE_HUB_CACHE": "hub",
+    "TRANSFORMERS_CACHE": "hub",
+    "HF_XET_CACHE": "xet",
+    "HF_ASSETS_CACHE": "assets",
+    "HF_MODULES_CACHE": "modules",
+}
 
 
 @dataclass
@@ -221,6 +231,7 @@ def wikitext_prompts(
     *,
     max_chars: int = MAX_PROMPT_CHARS,
     min_chars: int = MIN_PROMPT_CHARS,
+    cache_dir: str | Path | None = None,
 ) -> list[str]:
     """Pull ``n`` rechunked prompts from the WikiText-103 training split.
 
@@ -238,6 +249,7 @@ def wikitext_prompts(
                 "Salesforce/wikitext",
                 filename,
                 repo_type="dataset",
+                cache_dir=cache_dir,
             )
             frame = pd.read_parquet(shard, columns=["text"])
             yield from frame["text"]
@@ -346,6 +358,23 @@ def _nonnegative_finite_float(value: str) -> float:
     return parsed
 
 
+def _configure_hf_home(path: str | Path) -> tuple[Path, Path]:
+    """Set one explicit, process-wide Hugging Face cache root.
+
+    The fit command is a short-lived process, so configuring the standard
+    environment before importing Transformers/Hugging Face also covers side
+    caches (Xet, assets, and remote modules). Callers still pass the returned
+    Hub directory explicitly to downloads, which keeps this reliable if a
+    Hugging Face module was imported earlier by an embedding process.
+    """
+    root = Path(path).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(root)
+    for name, subdir in _HF_HOME_SUBDIRS.items():
+        os.environ[name] = str(root / subdir)
+    return root, root / "hub"
+
+
 def main(argv: list[str] | None = None) -> int:
     """Console entry point: miru-tracer-fit-lens."""
     parser = argparse.ArgumentParser(
@@ -423,6 +452,11 @@ def main(argv: list[str] | None = None) -> int:
         "a .pt extension writes the legacy torch.save format",
     )
     parser.add_argument(
+        "--hf-home",
+        help="Hugging Face cache root (Hub, Xet, assets, and modules); "
+        "independent of --out and standard HF environment defaults",
+    )
+    parser.add_argument(
         "--fresh",
         action="store_true",
         help="discard any existing checkpoint instead of resuming",
@@ -442,6 +476,11 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging()  # surface the fitter's per-prompt INFO lines
 
+    hf_hub_cache: Path | None = None
+    if args.hf_home:
+        hf_home, hf_hub_cache = _configure_hf_home(args.hf_home)
+        echo(f"Hugging Face cache: {hf_home}")
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -459,15 +498,20 @@ def main(argv: list[str] | None = None) -> int:
         dtype_name = "bfloat16" if cuda else "float32"
     dtype = getattr(torch, dtype_name)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    cache_kwargs = {} if hf_hub_cache is None else {"cache_dir": hf_hub_cache}
+    tokenizer = AutoTokenizer.from_pretrained(args.model, **cache_kwargs)
     if args.device_map:
         echo(f"Loading {args.model} ({dtype_name}, device_map={args.device_map})...")
         model = AutoModelForCausalLM.from_pretrained(
-            args.model, dtype=dtype, device_map=args.device_map
+            args.model, dtype=dtype, device_map=args.device_map, **cache_kwargs
         ).eval()
     else:
         echo(f"Loading {args.model} ({dtype_name} on {device})...")
-        model = AutoModelForCausalLM.from_pretrained(args.model, dtype=dtype).to(device).eval()
+        model = (
+            AutoModelForCausalLM.from_pretrained(args.model, dtype=dtype, **cache_kwargs)
+            .to(device)
+            .eval()
+        )
     if not args.device_map and device == "cpu" and dtype_name == "float32":
         echo(
             "Note: fitting on CPU is slow (minutes per prompt). "
@@ -483,7 +527,7 @@ def main(argv: list[str] | None = None) -> int:
         }
     else:
         echo("Loading wikitext prompts...")
-        prompts = wikitext_prompts(args.num_prompts)
+        prompts = wikitext_prompts(args.num_prompts, cache_dir=hf_hub_cache)
         corpus = {
             "kind": "huggingface_dataset",
             "dataset_id": "Salesforce/wikitext",

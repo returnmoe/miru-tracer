@@ -180,7 +180,11 @@ built in-code — no network, suitable for CI.
 
 ```bash
 docker pull ghcr.io/returnmoe/miru-tracer:0.2.0
-# or build the CUDA 13.0 / linux-amd64 image locally
+# CUDA 12.6 is the compatibility-first default. Use the cu130 tag on
+# Blackwell GPUs or other hosts with an NVIDIA R580.65.06+ driver:
+docker pull ghcr.io/returnmoe/miru-tracer:0.2.0-cu130
+
+# Build the default CUDA 12.6 / linux-amd64 image locally.
 docker build -t miru-tracer .
 
 # Keep the published port on loopback by default.
@@ -189,11 +193,56 @@ docker run --gpus all -p 127.0.0.1:7860:7860 \
   ghcr.io/returnmoe/miru-tracer:0.2.0
 ```
 
-The application runs as the unprivileged `miru` user. Optional SSH remains
-available by starting the container as root (the default) with
-`MIRU_SSH_ENABLE=1` and `MIRU_SSH_AUTHORIZED_KEYS`; only the SSH daemon keeps
-root privileges, while the app is dropped to `miru`. Do not expose either
-port publicly without network access controls.
+Both variants bundle the matching CUDA userspace runtime, cuDNN, CUDA
+compatibility libraries, PyTorch, Triton, bitsandbytes, and Miru's complete
+Python dependency set. The host NVIDIA kernel driver is still supplied by
+the container runtime and cannot be replaced from inside an image. CUDA 12.6
+supports the broadest range of existing cloud hosts; CUDA 13.0 requires an
+R580.65.06+ driver and is the appropriate variant for Blackwell.
+
+The UI runs as the unprivileged `miru` user. Hardened root SSH starts
+automatically when `MIRU_SSH_AUTHORIZED_KEYS`, a mounted
+`/root/.ssh/authorized_keys`, or RunPod's `PUBLIC_KEY` is available. Only
+public-key authentication is accepted; password and keyboard-interactive
+login are disabled. Set `MIRU_SSH_ENABLE=0` to force SSH off, or `1` to make a
+missing/invalid key fatal.
+
+For an SSH-only RunPod-style instance, expose container port `22/tcp` in the
+platform template and disable automatic UI startup:
+
+```bash
+docker run --gpus all -p 2222:22 \
+  -e MIRU_AUTO_START_UI=0 \
+  -e PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
+  ghcr.io/returnmoe/miru-tracer:0.2.0
+
+ssh -p 2222 root@127.0.0.1
+```
+
+From the root SSH session, fitting can keep only its artifact and checkpoint
+on network storage while using local scratch space for Hugging Face caches:
+
+```bash
+miru-tracer-fit-lens Qwen/Qwen3-0.6B \
+  --out /workspace/lenses/Qwen--Qwen3-0.6B/lens.safetensors \
+  --hf-home /tmp/huggingface --dim-batch 32
+```
+
+To start the UI manually and reach it only through SSH, bind it to loopback
+inside the container and create a local forwarding tunnel:
+
+```bash
+# On the Pod:
+MIRU_SERVER_NAME=127.0.0.1 miru-tracer
+
+# On your workstation:
+ssh -L 7860:127.0.0.1:7860 -p 2222 root@127.0.0.1
+```
+
+Do not expose either service publicly without platform/network access
+controls. Local SSH forwarding remains enabled specifically for this private
+UI workflow; remote forwarding, agent forwarding, X11, passwords, and empty
+passwords are disabled.
 
 ## Performance tips
 

@@ -18,9 +18,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  publish-images:
     if: github.event.workflow_run.conclusion == 'success'
+    name: Publish ${{ matrix.variant }} image
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cu126
+            suffix: -cu126
+            publish_unqualified: true
+            cuda_image: nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04@sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356
+            torch_index: https://download.pytorch.org/whl/cu126
+            expected_cuda: "12.6"
+          - variant: cu130
+            suffix: -cu130
+            publish_unqualified: false
+            cuda_image: nvidia/cuda:13.0.3-cudnn-runtime-ubuntu24.04@sha256:14f6d08d1cd4a96effbfe3101d0b56326f552c199d05e4979ee0bd616df5811b
+            torch_index: https://download.pytorch.org/whl/cu130
+            expected_cuda: "13.0"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
@@ -38,7 +55,7 @@ jobs:
           test -n "$version"
           test "$version" = "0.2.0"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Reject a conflicting release tag before publishing
+      - name: Reject a conflicting release tag
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -57,10 +74,14 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=0.2
-            type=raw,value=latest
-            type=sha,format=long
+            type=raw,value=${{ steps.version.outputs.version }}${{ matrix.suffix }}
+            type=raw,value=0.2${{ matrix.suffix }}
+            type=raw,value=latest${{ matrix.suffix }}
+            type=sha,format=long,suffix=${{ matrix.suffix }}
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ matrix.publish_unqualified }}
+            type=raw,value=0.2,enable=${{ matrix.publish_unqualified }}
+            type=raw,value=latest,enable=${{ matrix.publish_unqualified }}
+            type=sha,format=long,enable=${{ matrix.publish_unqualified }}
       - id: push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
@@ -69,13 +90,34 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: |
+            CUDA_IMAGE=${{ matrix.cuda_image }}
+            TORCH_INDEX=${{ matrix.torch_index }}
+            EXPECTED_CUDA=${{ matrix.expected_cuda }}
+          cache-from: type=gha,scope=docker-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.variant }}
       - uses: actions/attest-build-provenance@a1948c3f048ba23858d222213b7c278aabede763
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+  release-metadata:
+    needs: publish-images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - id: version
+        name: Read and validate release version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
+          test -n "$version"
+          test "$version" = "0.2.0"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Create annotated tag if absent
         env:
           VERSION: ${{ steps.version.outputs.version }}

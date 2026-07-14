@@ -8,7 +8,7 @@ Miru Tracer is an experimental Gradio-based web application for interactive anal
 
 **Target users**: Researchers, educators, and developers debugging LLM prompts and generation behavior.
 
-**Tech stack**: Python 3.11+, PyTorch 2.x, Transformers 5.x, Gradio 6.x, Plotly. Installable package (`pip install -e .`), src layout.
+**Tech stack**: Python 3.12+, PyTorch 2.x, Transformers 5.x, Gradio 6.x, Plotly. Installable package (`pip install -e .`), src layout.
 
 ## Development Commands
 
@@ -139,8 +139,10 @@ as such ("Top-k entropy") — keep that labeling honest.
 Environment parsing lives ONLY in `config.py` (`env_bool`/`env_int`/
 `env_str` + `Settings.from_env`). `MIRU_DEBUG` accepts 1/true/yes/on;
 `MIRU_SERVER_NAME`/`MIRU_SERVER_PORT` bind the server (GRADIO_SERVER_* work
-as fallbacks). Docker: `MIRU_SSH_ENABLE=1` (+ `MIRU_SSH_AUTHORIZED_KEYS`,
-`MIRU_SSH_PORT`) enables the optional SSH server in the container.
+as fallbacks). Docker: `MIRU_AUTO_START_UI=0` suppresses automatic UI startup;
+`MIRU_SSH_ENABLE=auto` starts hardened root SSH when a Miru key, mounted
+authorized-keys file, or RunPod `PUBLIC_KEY` is available (`1` requires SSH,
+`0` disables it). Password and keyboard-interactive SSH are always disabled.
 
 ## Gotchas
 
