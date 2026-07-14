@@ -141,6 +141,4 @@ Thumbs.db
 # Project specific
 generation_log.json
 *.log
-
-# Temporarily ignore the Dockerfile
-Dockerfile
+model_offload/

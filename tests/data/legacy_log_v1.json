@@ -1,0 +1,32 @@
+{
+  "mode": "completion",
+  "prompt": "Hello",
+  "messages": null,
+  "generated_text": " world!",
+  "full_text": "Hello world!",
+  "timestamp": "2025-11-02T14:30:00.000000",
+  "num_steps": 2,
+  "temperature": 0.8,
+  "history": [
+    {
+      "step": 0,
+      "token_id": 995,
+      "token_text": " world",
+      "probability": 0.82,
+      "top_k_tokens": [995, 11, 30],
+      "top_k_probs": [0.82, 0.09, 0.03],
+      "top_k_texts": [" world", ",", "?"],
+      "all_logits": [0.1, 0.2, 0.7]
+    },
+    {
+      "step": 1,
+      "token_id": 0,
+      "token_text": "!",
+      "probability": 0.55,
+      "top_k_tokens": [0, 13],
+      "top_k_probs": [0.55, 0.31],
+      "top_k_texts": ["!", "."],
+      "all_logits": null
+    }
+  ]
+}

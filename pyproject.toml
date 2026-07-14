@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "miru-tracer"
+version = "0.2.0"
+description = "Interactive analysis of LLM text generation, token by token"
+readme = "README.md"
+license = "Unlicense AND Apache-2.0"
+license-files = ["LICENSE", "src/miru_tracer/core/_jlens/LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "torch~=2.12.0",
+    "transformers~=5.13",
+    "accelerate~=1.14",
+    "gradio~=6.20",
+    "plotly~=6.8",
+    "numpy~=2.5",
+    "pandas~=2.3",
+    "python-dotenv~=1.2",
+    "safetensors~=0.8",
+    "sentencepiece~=0.2",
+    "protobuf~=6.33",
+    # wikitext corpus for miru-tracer-fit-lens (pandas.read_parquet)
+    "pyarrow~=24.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "bitsandbytes",
+    "triton",
+]
+dev = [
+    "pytest~=8.0",
+    "pytest-timeout~=2.3",
+    "ruff",
+]
+
+[project.scripts]
+miru-tracer = "miru_tracer.app:main"
+miru-tracer-fit-lens = "miru_tracer.core.lens_fit:main"
+miru-tracer-convert-lens = "miru_tracer.core.lens_io:convert_main"
+
+[project.urls]
+Homepage = "https://github.com/returnmoe/miru-tracer"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/miru_tracer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: local end-to-end tests that remain offline",
+    "external_model: tests that download and run Qwen3-0.6B",
+]
+addopts = "-m 'not external_model'"
+timeout = 600
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Vendored jlens code (Apache-2.0) is kept as close to upstream as possible.
+"src/miru_tracer/core/_jlens/*" = ["E741"]
