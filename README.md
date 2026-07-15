@@ -185,13 +185,13 @@ templates and other NVIDIA Container Toolkit hosts.
 ### Published image tags
 
 The unqualified image is always the compatibility-first CUDA 12.6 build.
-Examples below use release `0.2.0`:
+Examples below use release `0.2.1`:
 
 | Tags | CUDA | Intended use |
 | --- | --- | --- |
-| `0.2.0`, `0.2`, `latest` | 12.6 | Default; widest compatibility with existing cloud GPU hosts |
-| `0.2.0-cu126`, `0.2-cu126`, `latest-cu126` | 12.6 | Explicit aliases for the default build |
-| `0.2.0-cu130`, `0.2-cu130`, `latest-cu130` | 13.0 | Blackwell or another host with an NVIDIA R580.65.06+ driver |
+| `0.2.1`, `0.2`, `latest` | 12.6 | Default; widest compatibility with existing cloud GPU hosts |
+| `0.2.1-cu126`, `0.2-cu126`, `latest-cu126` | 12.6 | Explicit aliases for the default build |
+| `0.2.1-cu130`, `0.2-cu130`, `latest-cu130` | 13.0 | Blackwell or another host with an NVIDIA R580.65.06+ driver |
 | `sha-<full-commit>` and `sha-<full-commit>-cu126` | 12.6 | Immutable commit build |
 | `sha-<full-commit>-cu130` | 13.0 | Immutable CUDA 13 commit build |
 
@@ -202,8 +202,8 @@ Dockerfile; only the pinned NVIDIA base, PyTorch wheel index, and exact CUDA
 version assertion differ.
 
 ```bash
-docker pull ghcr.io/returnmoe/miru-tracer:0.2.0-cu126
-docker pull ghcr.io/returnmoe/miru-tracer:0.2.0-cu130
+docker pull ghcr.io/returnmoe/miru-tracer:0.2.1-cu126
+docker pull ghcr.io/returnmoe/miru-tracer:0.2.1-cu130
 ```
 
 Images are published only after CI succeeds on `master`; pull-request builds
@@ -220,7 +220,7 @@ with the following values:
 
 | Template setting | Recommended value |
 | --- | --- |
-| Container image | `ghcr.io/returnmoe/miru-tracer:0.2.0-cu126` (or the `-cu130` variant described above) |
+| Container image | `ghcr.io/returnmoe/miru-tracer:0.2.1-cu126` (or the `-cu130` variant described above) |
 | Container disk | At least 20 GB; add enough local space for the model and Hugging Face cache |
 | TCP ports | `22/tcp` |
 | HTTP ports | None when using an SSH tunnel |
@@ -322,7 +322,7 @@ docker build -t miru-tracer .
 # Keep the published port on loopback by default.
 docker run --gpus all -p 127.0.0.1:7860:7860 \
   -v miru-cache:/home/miru/.cache/miru-tracer \
-  ghcr.io/returnmoe/miru-tracer:0.2.0
+  ghcr.io/returnmoe/miru-tracer:0.2.1
 ```
 
 ## Performance tips

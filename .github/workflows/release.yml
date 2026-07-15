@@ -29,15 +29,27 @@ jobs:
           - variant: cu126
             suffix: -cu126
             publish_unqualified: true
-            cuda_image: nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04@sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356
+            cuda_image: nvidia/cuda:12.6.3-base-ubuntu24.04@sha256:c87e78933f4c16e3272123bf2f75537306596d0fbaa395a29696a22786e5ee0e
             torch_index: https://download.pytorch.org/whl/cu126
             expected_cuda: "12.6"
+            cuda_toolkit_version: 12.6.3
+            cuda_bindings_spec: cuda-bindings==12.9.4
+            cuda_dnn_spec: nvidia-cudnn-cu12==9.10.2.21
+            cuda_sparselt_spec: nvidia-cusparselt-cu12==0.7.1
+            cuda_nccl_spec: nvidia-nccl-cu12==2.29.3
+            cuda_nvshmem_spec: nvidia-nvshmem-cu12==3.4.5
           - variant: cu130
             suffix: -cu130
             publish_unqualified: false
-            cuda_image: nvidia/cuda:13.0.3-cudnn-runtime-ubuntu24.04@sha256:14f6d08d1cd4a96effbfe3101d0b56326f552c199d05e4979ee0bd616df5811b
+            cuda_image: nvidia/cuda:13.0.3-base-ubuntu24.04@sha256:7c7413a56200486f71f181cad9310f6fd31b6bb21816ade15fc9c1e1e927a5c1
             torch_index: https://download.pytorch.org/whl/cu130
             expected_cuda: "13.0"
+            cuda_toolkit_version: 13.0.2
+            cuda_bindings_spec: cuda-bindings==13.0.3
+            cuda_dnn_spec: nvidia-cudnn-cu13==9.20.0.48
+            cuda_sparselt_spec: nvidia-cusparselt-cu13==0.8.1
+            cuda_nccl_spec: nvidia-nccl-cu13==2.29.7
+            cuda_nvshmem_spec: nvidia-nvshmem-cu13==3.4.5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
@@ -53,7 +65,7 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
           test -n "$version"
-          test "$version" = "0.2.0"
+          test "$version" = "0.2.1"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Reject a conflicting release tag
         env:
@@ -94,20 +106,42 @@ jobs:
             CUDA_IMAGE=${{ matrix.cuda_image }}
             TORCH_INDEX=${{ matrix.torch_index }}
             EXPECTED_CUDA=${{ matrix.expected_cuda }}
+            CUDA_TOOLKIT_VERSION=${{ matrix.cuda_toolkit_version }}
+            CUDA_BINDINGS_SPEC=${{ matrix.cuda_bindings_spec }}
+            CUDA_DNN_SPEC=${{ matrix.cuda_dnn_spec }}
+            CUDA_SPARSELT_SPEC=${{ matrix.cuda_sparselt_spec }}
+            CUDA_NCCL_SPEC=${{ matrix.cuda_nccl_spec }}
+            CUDA_NVSHMEM_SPEC=${{ matrix.cuda_nvshmem_spec }}
           cache-from: type=gha,scope=docker-${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.variant }}
-      - name: Verify published version tag
+      - name: Verify published version tag and pull size
         env:
           IMAGE: ghcr.io/${{ github.repository }}
           TAG: ${{ steps.version.outputs.version }}${{ matrix.suffix }}
+          MAX_IMAGE_BYTES: "4500000000"
+          MAX_LAYER_BYTES: "1500000000"
         run: |
           docker buildx imagetools inspect "${IMAGE}:${TAG}"
+          raw=$(docker buildx imagetools inspect --raw "${IMAGE}:${TAG}")
+          if digest=$(echo "$raw" | jq -er \
+            '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest'); then
+            manifest=$(docker buildx imagetools inspect --raw "${IMAGE}@${digest}")
+          else
+            manifest=$raw
+          fi
+          total_bytes=$(echo "$manifest" | jq -er '[.layers[].size] | add')
+          largest_layer_bytes=$(echo "$manifest" | jq -er '[.layers[].size] | max')
+          test "$total_bytes" -le "$MAX_IMAGE_BYTES"
+          test "$largest_layer_bytes" -le "$MAX_LAYER_BYTES"
           {
             echo "### Published ${{ matrix.variant }} image"
             echo
             echo "\`${IMAGE}:${TAG}\`"
             echo
             echo "Digest: \`${{ steps.push.outputs.digest }}\`"
+            echo
+            echo "Compressed layers: $(numfmt --to=iec-i --suffix=B "$total_bytes") total; " \
+              "$(numfmt --to=iec-i --suffix=B "$largest_layer_bytes") largest"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
         with:
@@ -129,7 +163,7 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
           test -n "$version"
-          test "$version" = "0.2.0"
+          test "$version" = "0.2.1"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Create annotated tag if absent
         env:

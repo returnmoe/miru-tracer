@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "miru-tracer"
-version = "0.2.0"
+version = "0.2.1"
 description = "Interactive analysis of LLM text generation, token by token"
 readme = "README.md"
 license = "Unlicense AND Apache-2.0"

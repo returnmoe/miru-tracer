@@ -1,16 +1,28 @@
 # syntax=docker/dockerfile:1.7
 
 # CUDA 12.6 is the compatibility-first default. Release/CI builds override
-# these three arguments together for the CUDA 13.0 variant.
-ARG CUDA_IMAGE=nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04@sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356
+# the CUDA-specific arguments together for the CUDA 13.0 variant.
+ARG CUDA_IMAGE=nvidia/cuda:12.6.3-base-ubuntu24.04@sha256:c87e78933f4c16e3272123bf2f75537306596d0fbaa395a29696a22786e5ee0e
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu126
 ARG EXPECTED_CUDA=12.6
+ARG CUDA_TOOLKIT_VERSION=12.6.3
+ARG CUDA_BINDINGS_SPEC=cuda-bindings==12.9.4
+ARG CUDA_DNN_SPEC=nvidia-cudnn-cu12==9.10.2.21
+ARG CUDA_SPARSELT_SPEC=nvidia-cusparselt-cu12==0.7.1
+ARG CUDA_NCCL_SPEC=nvidia-nccl-cu12==2.29.3
+ARG CUDA_NVSHMEM_SPEC=nvidia-nvshmem-cu12==3.4.5
 
 # Keep the CUDA/PyTorch environment in one stage. Copying /opt/miru out of a
 # builder duplicates several gigabytes in BuildKit and exhausts hosted runners.
 FROM ${CUDA_IMAGE} AS runtime
 ARG TORCH_INDEX
 ARG EXPECTED_CUDA
+ARG CUDA_TOOLKIT_VERSION
+ARG CUDA_BINDINGS_SPEC
+ARG CUDA_DNN_SPEC
+ARG CUDA_SPARSELT_SPEC
+ARG CUDA_NCCL_SPEC
+ARG CUDA_NVSHMEM_SPEC
 ARG DEBIAN_FRONTEND=noninteractive
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
@@ -27,11 +39,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chown -R miru:miru /home/miru
 
 COPY pyproject.toml README.md LICENSE constraints.txt ./
-COPY src/ src/
 RUN python3.12 -m venv /opt/miru && \
-    /opt/miru/bin/pip install --upgrade pip && \
-    /opt/miru/bin/pip install torch==2.12.1 --index-url "${TORCH_INDEX}" && \
-    /opt/miru/bin/pip install '.[gpu]' -c constraints.txt && \
+    /opt/miru/bin/pip install --upgrade pip
+
+# PyTorch's CUDA wheels provide the user-space libraries. Install their large
+# requirements in bounded layers so registries and cloud runtimes never need
+# to transfer the entire GPU environment as one multi-gigabyte blob.
+RUN /opt/miru/bin/pip install \
+      "cuda-toolkit[cublas,cudart,cupti,nvtx]==${CUDA_TOOLKIT_VERSION}" \
+      --index-url "${TORCH_INDEX}"
+RUN /opt/miru/bin/pip install \
+      "cuda-toolkit[cufft,cufile,curand]==${CUDA_TOOLKIT_VERSION}" \
+      --index-url "${TORCH_INDEX}"
+RUN /opt/miru/bin/pip install \
+      "cuda-toolkit[cusolver,cusparse,nvjitlink,nvrtc]==${CUDA_TOOLKIT_VERSION}" \
+      --index-url "${TORCH_INDEX}"
+RUN /opt/miru/bin/pip install "${CUDA_DNN_SPEC}" --index-url "${TORCH_INDEX}"
+RUN /opt/miru/bin/pip install \
+      "${CUDA_BINDINGS_SPEC}" \
+      "${CUDA_SPARSELT_SPEC}" \
+      "${CUDA_NCCL_SPEC}" \
+      "${CUDA_NVSHMEM_SPEC}" \
+      --index-url "${TORCH_INDEX}"
+RUN /opt/miru/bin/pip install triton==3.7.1 \
+      --index-url "${TORCH_INDEX}"
+RUN /opt/miru/bin/pip install torch==2.12.1 --no-deps \
+      --index-url "${TORCH_INDEX}"
+
+COPY src/ src/
+RUN /opt/miru/bin/pip install '.[gpu]' -c constraints.txt && \
     /opt/miru/bin/pip check && \
     /opt/miru/bin/python -c \
       "import torch; assert torch.version.cuda == '${EXPECTED_CUDA}', torch.version.cuda"
