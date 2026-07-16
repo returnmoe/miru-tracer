@@ -219,6 +219,9 @@ replaced from inside an image.
 
 ### Recommended RunPod template: SSH first
 
+**[Deploy Miru Tracer on RunPod](https://console.runpod.io/deploy?template=excmb18ueh&ref=iollc4uf)**
+(template ID: `excmb18ueh`)
+
 Create a [custom Pod template](https://docs.runpod.io/pods/templates/create-custom-template)
 with the following values:
 
@@ -254,14 +257,14 @@ web/template control path, request SSH injection on every GPU Pod launch:
 
 ```bash
 runpodctl pod create \
-  --template-id TEMPLATE_ID \
+  --template-id excmb18ueh \
   --gpu-id "GPU_ID_FROM_RUNPODCTL_GPU_LIST" \
   --ports 22/tcp \
   --ssh=true \
   --min-cuda-version 13.0
 ```
 
-For a direct-image deployment, replace `--template-id TEMPLATE_ID` with
+For a direct-image deployment, replace `--template-id excmb18ueh` with
 `--image ghcr.io/returnmoe/miru-tracer:0.2.4` and supply the desired `--env`
 JSON. For a custom GraphQL client, set `startSsh: true` explicitly. Merely
 adding `22/tcp` does not set it. The verified CLI version is available from
