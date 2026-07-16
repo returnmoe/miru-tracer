@@ -65,7 +65,7 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
           test -n "$version"
-          test "$version" = "0.2.2"
+          test "$version" = "0.2.3"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Reject a conflicting release tag
         env:
@@ -173,7 +173,7 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
           test -n "$version"
-          test "$version" = "0.2.2"
+          test "$version" = "0.2.3"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Create annotated tag if absent
         env:

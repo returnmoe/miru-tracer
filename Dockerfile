@@ -32,7 +32,7 @@ WORKDIR /build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl openssh-server python3.12 python3.12-venv \
-        tini util-linux && \
+        tini tmux util-linux && \
     rm -rf /var/lib/apt/lists/* && \
     useradd --create-home --uid 10001 --shell /usr/sbin/nologin miru && \
     passwd -l root && \
@@ -81,7 +81,7 @@ ENV PATH=/opt/miru/bin:$PATH \
     MIRU_SERVER_PORT=7860 \
     MIRU_AUTO_START_UI=1 \
     MIRU_SSH_ENABLE=auto \
-    HOME=/home/miru
+    HOME=/root
 
 COPY docker/sshd-miru.conf /etc/ssh/sshd_config.d/90-miru-hardening.conf
 COPY docker/healthcheck.sh /usr/local/bin/miru-healthcheck
@@ -102,6 +102,7 @@ LABEL org.opencontainers.image.title="Miru Tracer" \
 
 EXPOSE 22 7860
 VOLUME ["/home/miru/.cache/miru-tracer"]
+USER root
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD ["/usr/local/bin/miru-healthcheck"]
 ENTRYPOINT ["/usr/bin/tini", "-s", "--", "/usr/local/bin/miru-entrypoint"]

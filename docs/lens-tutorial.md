@@ -187,9 +187,11 @@ are controlled by `--hf-home` (or the standard Hugging Face environment when
 that option is omitted). Short-lived atomic-write files may appear next to
 the artifact while a chunk is being saved.
 
-On RunPod, expose `22/tcp`, set `MIRU_AUTO_START_UI=0`, and let the supplied
-`PUBLIC_KEY` enable hardened root SSH automatically. The SSH-only container
-stays alive with `sshd` in the foreground; after logging in, run the same fit
+On RunPod, enable **SSH Terminal Access** under **Instance Pricing**, expose
+`22/tcp`, and set `MIRU_AUTO_START_UI=0`. The terminal-access setting makes
+RunPod supply the account key through `PUBLIC_KEY`; exposing the port alone
+does not. The SSH-only container stays alive with `sshd` in the foreground;
+after logging in, use `tmux` for a persistent session and run the same fit
 command with the network volume as `--out` and `/tmp/huggingface` as
 `--hf-home`. To start Miru manually without exposing it through the platform's
 HTTP proxy:
@@ -203,8 +205,8 @@ ssh -L 7860:127.0.0.1:7860 -p <external-ssh-port> root@<pod-ip>
 ```
 
 The default `miru-tracer` image is CUDA 13.0 and supports Blackwell on an
-R580.65.06+ host. Use `miru-tracer:latest-cu126` (preferably a versioned
-`-cu126` tag) only for an older driver or a Maxwell CC 5.x (except 5.3),
+R580.65.06+ host. Use `miru-tracer:0.2.3-cu126` only for an older driver or a
+Maxwell CC 5.x (except 5.3),
 Pascal, or Volta GPU. Both images contain the matching CUDA userspace libraries;
 the host kernel driver still comes from the cloud platform/NVIDIA container runtime.
 

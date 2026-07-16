@@ -34,6 +34,13 @@ image_entrypoint="$(docker image inspect --format '{{json .Config.Entrypoint}}' 
     echo "unexpected image entrypoint: $image_entrypoint" >&2
     exit 1
 }
+image_user="$(docker image inspect --format '{{.Config.User}}' "$image")"
+[ "$image_user" = root ] || {
+    echo "unexpected image bootstrap user: $image_user" >&2
+    exit 1
+}
+docker run --rm --entrypoint sh "$image" -c \
+    'test "$(id -u)" = 0 && test "$HOME" = /root && tmux -V >/dev/null'
 docker run --rm --entrypoint sh "$image" -c \
     '/usr/bin/tini -s -- true; status=$?; :; exit "$status"' \
     > "$tmp/nested-tini-log" 2>&1
@@ -45,7 +52,7 @@ fi
 docker run --rm -e MIRU_SSH_ENABLE=0 "$image" python -c \
     'from miru_tracer.config import Settings; assert Settings.from_env().server_name == "127.0.0.1"'
 docker run --rm "$image" sh -c \
-    'test "$(id -u)" = 10001 && command -v miru-tracer && command -v miru-tracer-fit-lens && command -v miru-tracer-convert-lens'
+    'test "$(id -u)" = 10001 && test "$HOME" = /home/miru && tmux -V >/dev/null && command -v miru-tracer && command -v miru-tracer-fit-lens && command -v miru-tracer-convert-lens'
 docker run --rm "$image" miru-tracer-fit-lens --help >/dev/null
 
 docker run --rm "$image" true > "$tmp/no-key-log" 2>&1
@@ -58,13 +65,21 @@ if docker run --rm -e RUNPOD_TCP_PORT_22=32022 "$image" \
     exit 1
 fi
 grep -Fqx \
-    'miru-entrypoint: RunPod exposed TCP port 22 but supplied no SSH public key; configure an account key before deployment, set SSH_PUBLIC_KEY, or set MIRU_SSH_ENABLE=0' \
+    'miru-entrypoint: RunPod exposed TCP port 22 but supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup), or set MIRU_SSH_ENABLE=0' \
     "$tmp/runpod-no-key-log"
 docker run --rm -e RUNPOD_TCP_PORT_22=32022 "$image" true \
     > "$tmp/runpod-explicit-command-log" 2>&1
 grep -Fqx \
-    'miru-entrypoint: SSH disabled: auto mode found no public key; configure a key or set MIRU_SSH_ENABLE=1 to make this fatal' \
+    'miru-entrypoint: SSH disabled: RunPod supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup), or set MIRU_SSH_ENABLE=0 if SSH is intentionally disabled' \
     "$tmp/runpod-explicit-command-log"
+if docker run --rm -e RUNPOD_POD_ID=test -e MIRU_SSH_ENABLE=1 "$image" true \
+    > "$tmp/runpod-required-key-log" 2>&1; then
+    echo "container accepted required RunPod SSH without an account key" >&2
+    exit 1
+fi
+grep -Fqx \
+    'miru-entrypoint: RunPod supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup)' \
+    "$tmp/runpod-required-key-log"
 
 docker run --rm --entrypoint sh "$image" -c \
     'ssh-keygen -A >/dev/null && exec /usr/sbin/sshd -T' > "$tmp/sshd-effective"
@@ -78,6 +93,12 @@ grep -qx 'x11forwarding no' "$tmp/sshd-effective"
 grep -qx 'allowusers root' "$tmp/sshd-effective"
 
 ssh-keygen -q -t ed25519 -N '' -f "$tmp/id_ed25519"
+docker run --rm \
+    --mount "type=bind,source=$tmp/id_ed25519.pub,target=/root/.ssh/authorized_keys,readonly" \
+    "$image" true > "$tmp/account-key-file-log" 2>&1
+grep -Fqx 'miru-entrypoint: SSH enabled (key source: /root/.ssh/authorized_keys)' \
+    "$tmp/account-key-file-log"
+
 ssh_container="$(docker run -d \
     -e MIRU_AUTO_START_UI=0 \
     -e PUBLIC_KEY="$(cat "$tmp/id_ed25519.pub")" \
@@ -105,7 +126,7 @@ ssh_port="${mapping##*:}"
 ssh_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes"
 # shellcheck disable=SC2086
 ssh $ssh_opts -i "$tmp/id_ed25519" -p "$ssh_port" root@127.0.0.1 \
-    'test "$HOME" = /root && command -v miru-tracer-fit-lens'
+    'test "$HOME" = /root && tmux -V >/dev/null && command -v miru-tracer-fit-lens'
 if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
     -o BatchMode=yes -o PubkeyAuthentication=no \
     -o PreferredAuthentications=password \

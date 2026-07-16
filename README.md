@@ -189,13 +189,13 @@ current default and supports Turing, Ampere, Hopper, and Blackwell GPUs.
 CUDA 12.6 remains available as an explicit legacy build for older host drivers
 and Maxwell CC 5.x (except 5.3), Pascal, or Volta GPUs. No single PyTorch wheel
 covers both sets.
-Examples below use release `0.2.2`:
+Examples below use release `0.2.3`:
 
 | Tags | CUDA | Intended use |
 | --- | --- | --- |
-| `0.2.2`, `0.2`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
-| `0.2.2-cu130`, `0.2-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
-| `0.2.2-cu126`, `0.2-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
+| `0.2.3`, `0.2`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
+| `0.2.3-cu130`, `0.2-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
+| `0.2.3-cu126`, `0.2-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
 | `sha-<full-commit>` and `sha-<full-commit>-cu130` | 13.0 | Immutable commit build |
 | `sha-<full-commit>-cu126` | 12.6 | Immutable legacy CUDA 12.6 build |
 
@@ -206,8 +206,8 @@ Dockerfile; only the pinned NVIDIA base, PyTorch wheel index, and exact CUDA
 version assertion differ.
 
 ```bash
-docker pull ghcr.io/returnmoe/miru-tracer:0.2.2
-docker pull ghcr.io/returnmoe/miru-tracer:0.2.2-cu126
+docker pull ghcr.io/returnmoe/miru-tracer:0.2.3
+docker pull ghcr.io/returnmoe/miru-tracer:0.2.3-cu126
 ```
 
 Images are published only after CI succeeds on `master`; pull-request builds
@@ -224,12 +224,17 @@ with the following values:
 
 | Template setting | Recommended value |
 | --- | --- |
-| Container image | `ghcr.io/returnmoe/miru-tracer:0.2.2` (`-cu126` only for a legacy GPU/driver) |
+| Container image | `ghcr.io/returnmoe/miru-tracer:0.2.3` (`-cu126` only for a legacy GPU/driver) |
 | Container disk | At least 20 GB; add enough local space for the model and Hugging Face cache |
+| SSH Terminal Access | Enabled under Instance Pricing so RunPod sets `startSsh` and injects the account key |
 | TCP ports | `22/tcp` |
 | HTTP ports | None when using an SSH tunnel |
 | Volume mount path | `/workspace` when attaching a RunPod network volume |
 | Docker entrypoint / start command | Leave empty so the image entrypoint remains active |
+
+When deploying from the console, select the template and check **SSH Terminal
+Access** under **Instance Pricing**. For GraphQL deployment, set
+`startSsh: true`; `runpodctl pod create` exposes the same setting as `--ssh`.
 
 When deploying the template, open **Additional filters** and set **CUDA
 Versions** to `13.0`; through the API, use
@@ -247,11 +252,14 @@ MIRU_LENS_DIR=/workspace/lenses
 HF_HOME=/tmp/huggingface
 ```
 
-Configure an SSH public key in the RunPod account before deploying the Pod.
-RunPod then supplies the authorized keys through `PUBLIC_KEY`; the image
-detects that variable and starts hardened root SSH. The complete public key
-must include its type, such as `ssh-ed25519`. For a per-Pod override, use
-RunPod's documented `SSH_PUBLIC_KEY`; you can also use
+Configure an SSH public key in the RunPod account before deploying the Pod and
+enable **SSH Terminal Access** under **Instance Pricing**. Exposing `22/tcp`
+alone does not enable RunPod's SSH startup integration. With that setting,
+RunPod supplies the authorized keys through `PUBLIC_KEY`; the image detects
+that variable and starts hardened root SSH. Key injection happens only at Pod
+startup, so redeploy after adding or changing an account key. The complete
+public key must include its type, such as `ssh-ed25519`. For a per-Pod override,
+use RunPod's documented `SSH_PUBLIC_KEY`; you can also use
 `MIRU_SSH_AUTHORIZED_KEYS` or mount `/root/.ssh/authorized_keys`.
 `MIRU_SSH_ENABLE=1` makes missing or invalid key injection fatal instead of
 silently starting without SSH, while `0` disables SSH. Startup logs state the
@@ -266,7 +274,8 @@ Password, keyboard-interactive, empty-password, remote-forwarding,
 agent-forwarding, X11, tunnel-device, and Unix-socket forwarding are disabled.
 Local TCP forwarding remains enabled for the private Miru UI tunnel. The
 SSH-only container keeps `sshd` in the foreground, and its health check tests
-SSH rather than expecting the UI.
+SSH rather than expecting the UI. `tmux` is installed for persistent terminal
+sessions.
 
 RunPod maps internal port 22 to a different public port. Docker's `EXPOSE 22`
 metadata does not create that mapping, so keep `22/tcp` in the template. Use

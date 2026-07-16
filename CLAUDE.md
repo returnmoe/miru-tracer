@@ -143,8 +143,9 @@ as fallbacks). Docker: `MIRU_AUTO_START_UI=0` suppresses automatic UI startup;
 `MIRU_SSH_ENABLE=auto` starts hardened root SSH when a Miru key, mounted
 authorized-keys file, or RunPod `SSH_PUBLIC_KEY`/`PUBLIC_KEY` is available
 (`1` requires SSH, `0` disables it). The container does not override Miru's
-private loopback server default. Password and keyboard-interactive SSH are
-always disabled.
+private loopback server default. RunPod account-key injection also requires
+SSH Terminal Access (`startSsh`) on the Pod/template; exposing port 22 alone
+does not enable it. Password and keyboard-interactive SSH are always disabled.
 
 ## Gotchas
 

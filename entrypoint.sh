@@ -108,6 +108,8 @@ start_ssh_background() {
 }
 
 exec_as_miru() {
+    HOME=/home/miru
+    export HOME
     if [ "$(id -u)" -eq 0 ]; then
         exec setpriv --reuid=miru --regid=miru --init-groups -- "$@"
     fi
@@ -122,14 +124,23 @@ fi
 ssh_enabled=0
 ssh_mode="${MIRU_SSH_ENABLE:-auto}"
 ssh_key_source="$(detect_ssh_key_source)"
+runpod=0
+if [ -n "${RUNPOD_POD_ID:-}" ] || [ -n "${RUNPOD_TCP_PORT_22:-}" ]; then
+    runpod=1
+fi
 case "$ssh_mode" in
-    1) ssh_enabled=1 ;;
+    1)
+        if [ "$ssh_key_source" = none ] && [ "$runpod" -eq 1 ]; then
+            die "RunPod supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup)"
+        fi
+        ssh_enabled=1
+        ;;
     0) ssh_enabled=0 ;;
     auto)
         if [ "$ssh_key_source" != none ]; then
             ssh_enabled=1
         elif [ -n "${RUNPOD_TCP_PORT_22:-}" ] && [ "$automatic" -eq 1 ]; then
-            die "RunPod exposed TCP port 22 but supplied no SSH public key; configure an account key before deployment, set SSH_PUBLIC_KEY, or set MIRU_SSH_ENABLE=0"
+            die "RunPod exposed TCP port 22 but supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup), or set MIRU_SSH_ENABLE=0"
         fi
         ;;
     *) die "MIRU_SSH_ENABLE must be auto, 1, or 0" ;;
@@ -138,6 +149,9 @@ esac
 if [ "$ssh_enabled" -eq 1 ]; then
     printf 'miru-entrypoint: SSH enabled (key source: %s)\n' "$ssh_key_source"
     configure_ssh
+elif [ "$ssh_mode" = auto ] && [ "$runpod" -eq 1 ]; then
+    printf '%s\n' \
+        'miru-entrypoint: SSH disabled: RunPod supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup), or set MIRU_SSH_ENABLE=0 if SSH is intentionally disabled' >&2
 elif [ "$ssh_mode" = auto ]; then
     printf '%s\n' \
         'miru-entrypoint: SSH disabled: auto mode found no public key; configure a key or set MIRU_SSH_ENABLE=1 to make this fatal' >&2
