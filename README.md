@@ -189,13 +189,13 @@ current default and supports Turing, Ampere, Hopper, and Blackwell GPUs.
 CUDA 12.6 remains available as an explicit legacy build for older host drivers
 and Maxwell CC 5.x (except 5.3), Pascal, or Volta GPUs. No single PyTorch wheel
 covers both sets.
-Examples below use release `0.2.3`:
+Examples below use release `0.2.4`:
 
 | Tags | CUDA | Intended use |
 | --- | --- | --- |
-| `0.2.3`, `0.2`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
-| `0.2.3-cu130`, `0.2-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
-| `0.2.3-cu126`, `0.2-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
+| `0.2.4`, `0.2`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
+| `0.2.4-cu130`, `0.2-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
+| `0.2.4-cu126`, `0.2-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
 | `sha-<full-commit>` and `sha-<full-commit>-cu130` | 13.0 | Immutable commit build |
 | `sha-<full-commit>-cu126` | 12.6 | Immutable legacy CUDA 12.6 build |
 
@@ -206,8 +206,8 @@ Dockerfile; only the pinned NVIDIA base, PyTorch wheel index, and exact CUDA
 version assertion differ.
 
 ```bash
-docker pull ghcr.io/returnmoe/miru-tracer:0.2.3
-docker pull ghcr.io/returnmoe/miru-tracer:0.2.3-cu126
+docker pull ghcr.io/returnmoe/miru-tracer:0.2.4
+docker pull ghcr.io/returnmoe/miru-tracer:0.2.4-cu126
 ```
 
 Images are published only after CI succeeds on `master`; pull-request builds
@@ -224,17 +224,34 @@ with the following values:
 
 | Template setting | Recommended value |
 | --- | --- |
-| Container image | `ghcr.io/returnmoe/miru-tracer:0.2.3` (`-cu126` only for a legacy GPU/driver) |
+| Container image | `ghcr.io/returnmoe/miru-tracer:0.2.4` (`-cu126` only for a legacy GPU/driver) |
 | Container disk | At least 20 GB; add enough local space for the model and Hugging Face cache |
-| SSH Terminal Access | Enabled under Instance Pricing so RunPod sets `startSsh` and injects the account key |
+| SSH key injection | Required: deploy with `startSsh: true` (GraphQL) or `runpodctl ... --ssh=true` |
 | TCP ports | `22/tcp` |
 | HTTP ports | None when using an SSH tunnel |
 | Volume mount path | `/workspace` when attaching a RunPod network volume |
 | Docker entrypoint / start command | Leave empty so the image entrypoint remains active |
 
-When deploying from the console, select the template and check **SSH Terminal
-Access** under **Instance Pricing**. For GraphQL deployment, set
-`startSsh: true`; `runpodctl pod create` exposes the same setting as `--ssh`.
+RunPod treats the TCP port mapping and account-key injection as independent
+settings. A Pod can have `RUNPOD_TCP_PORT_22` while `startSsh` is false, in
+which case RunPod supplies no key and nothing can accept a secure login. The
+console may not show **SSH Terminal Access** for a custom image. When the
+control is absent, deploy the template with the current `runpodctl`, which
+uses RunPod's GPU GraphQL API and sends `startSsh: true`:
+
+```bash
+runpodctl pod create \
+  --template-id TEMPLATE_ID \
+  --gpu-id "GPU_ID_FROM_RUNPODCTL_GPU_LIST" \
+  --ports 22/tcp \
+  --ssh=true \
+  --min-cuda-version 13.0
+```
+
+For a direct-image deployment, replace `--template-id TEMPLATE_ID` with
+`--image ghcr.io/returnmoe/miru-tracer:0.2.4` and supply the desired `--env`
+JSON. For a custom GraphQL client, set `startSsh: true` explicitly. Merely
+adding `22/tcp` does not set it.
 
 When deploying the template, open **Additional filters** and set **CUDA
 Versions** to `13.0`; through the API, use
@@ -252,20 +269,21 @@ MIRU_LENS_DIR=/workspace/lenses
 HF_HOME=/tmp/huggingface
 ```
 
-Configure an SSH public key in the RunPod account before deploying the Pod and
-enable **SSH Terminal Access** under **Instance Pricing**. Exposing `22/tcp`
-alone does not enable RunPod's SSH startup integration. With that setting,
-RunPod supplies the authorized keys through `PUBLIC_KEY`; the image detects
-that variable and starts hardened root SSH. Key injection happens only at Pod
-startup, so redeploy after adding or changing an account key. The complete
-public key must include its type, such as `ssh-ed25519`. For a per-Pod override,
-use RunPod's documented `SSH_PUBLIC_KEY`; you can also use
+Configure an SSH public key in the active RunPod account or team before
+deploying the Pod, and make sure that deployment sends `startSsh: true`. With
+that setting, RunPod documents the injected account key as `PUBLIC_KEY`; the
+image detects it and starts hardened root SSH. Key injection happens only at
+Pod startup, so redeploy after adding or changing a key. The complete public
+key must include its type, such as `ssh-ed25519`. For a per-Pod override, use
+RunPod's documented `SSH_PUBLIC_KEY`; you can also use
 `MIRU_SSH_AUTHORIZED_KEYS` or mount `/root/.ssh/authorized_keys`.
-`MIRU_SSH_ENABLE=1` makes missing or invalid key injection fatal instead of
-silently starting without SSH, while `0` disables SSH. Startup logs state the
-decision and key source without printing the key. In `auto` mode, the image
-also refuses to boot when RunPod advertises a TCP port 22 mapping but supplies
-no key, since that mapping could never accept a secure login.
+RunPod's reference image consumes `PUBLIC_KEY` during bootstrap and excludes
+it from the environment exported to later login shells, so a successful SSH
+session is not expected to show that variable.
+`MIRU_SSH_ENABLE=1` makes missing or invalid key injection fatal, while `0`
+disables SSH. Startup logs state the decision and key source without printing
+the key. In `auto` mode, a missing key produces one warning and automatic UI
+mode continues; a mapped port is never treated as proof that a key exists.
 
 For gated Hugging Face models, add `HF_TOKEN` through a RunPod secret rather
 than placing the token directly in a public or shared template.

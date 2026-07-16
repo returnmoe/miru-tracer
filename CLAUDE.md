@@ -145,7 +145,9 @@ authorized-keys file, or RunPod `SSH_PUBLIC_KEY`/`PUBLIC_KEY` is available
 (`1` requires SSH, `0` disables it). The container does not override Miru's
 private loopback server default. RunPod account-key injection also requires
 SSH Terminal Access (`startSsh`) on the Pod/template; exposing port 22 alone
-does not enable it. Password and keyboard-interactive SSH are always disabled.
+does not enable it. In auto mode, a missing RunPod key warns and continues;
+only explicit `MIRU_SSH_ENABLE=1` makes it fatal. Password and
+keyboard-interactive SSH are always disabled.
 
 ## Gotchas
 

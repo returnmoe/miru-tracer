@@ -131,7 +131,7 @@ fi
 case "$ssh_mode" in
     1)
         if [ "$ssh_key_source" = none ] && [ "$runpod" -eq 1 ]; then
-            die "RunPod supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup)"
+            die "RunPod supplied no SSH public key; MIRU_SSH_ENABLE=1 requires startSsh=true or an explicit key source (MIRU_SSH_AUTHORIZED_KEYS, SSH_PUBLIC_KEY, PUBLIC_KEY, or /root/.ssh/authorized_keys); mapping 22/tcp alone is insufficient"
         fi
         ssh_enabled=1
         ;;
@@ -139,8 +139,6 @@ case "$ssh_mode" in
     auto)
         if [ "$ssh_key_source" != none ]; then
             ssh_enabled=1
-        elif [ -n "${RUNPOD_TCP_PORT_22:-}" ] && [ "$automatic" -eq 1 ]; then
-            die "RunPod exposed TCP port 22 but supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup), or set MIRU_SSH_ENABLE=0"
         fi
         ;;
     *) die "MIRU_SSH_ENABLE must be auto, 1, or 0" ;;
@@ -151,7 +149,7 @@ if [ "$ssh_enabled" -eq 1 ]; then
     configure_ssh
 elif [ "$ssh_mode" = auto ] && [ "$runpod" -eq 1 ]; then
     printf '%s\n' \
-        'miru-entrypoint: SSH disabled: RunPod supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup), or set MIRU_SSH_ENABLE=0 if SSH is intentionally disabled' >&2
+        'miru-entrypoint: SSH disabled: RunPod supplied no SSH public key; mapping 22/tcp alone does not enable key injection (deployment requires startSsh=true)' >&2
 elif [ "$ssh_mode" = auto ]; then
     printf '%s\n' \
         'miru-entrypoint: SSH disabled: auto mode found no public key; configure a key or set MIRU_SSH_ENABLE=1 to make this fatal' >&2

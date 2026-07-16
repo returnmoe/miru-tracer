@@ -59,26 +59,18 @@ docker run --rm "$image" true > "$tmp/no-key-log" 2>&1
 grep -Fqx \
     'miru-entrypoint: SSH disabled: auto mode found no public key; configure a key or set MIRU_SSH_ENABLE=1 to make this fatal' \
     "$tmp/no-key-log"
-if docker run --rm -e RUNPOD_TCP_PORT_22=32022 "$image" \
-    > "$tmp/runpod-no-key-log" 2>&1; then
-    echo "container accepted a RunPod SSH mapping without a public key" >&2
-    exit 1
-fi
-grep -Fqx \
-    'miru-entrypoint: RunPod exposed TCP port 22 but supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup), or set MIRU_SSH_ENABLE=0' \
-    "$tmp/runpod-no-key-log"
 docker run --rm -e RUNPOD_TCP_PORT_22=32022 "$image" true \
-    > "$tmp/runpod-explicit-command-log" 2>&1
+    > "$tmp/runpod-no-key-log" 2>&1
 grep -Fqx \
-    'miru-entrypoint: SSH disabled: RunPod supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup), or set MIRU_SSH_ENABLE=0 if SSH is intentionally disabled' \
-    "$tmp/runpod-explicit-command-log"
+    'miru-entrypoint: SSH disabled: RunPod supplied no SSH public key; mapping 22/tcp alone does not enable key injection (deployment requires startSsh=true)' \
+    "$tmp/runpod-no-key-log"
 if docker run --rm -e RUNPOD_POD_ID=test -e MIRU_SSH_ENABLE=1 "$image" true \
     > "$tmp/runpod-required-key-log" 2>&1; then
     echo "container accepted required RunPod SSH without an account key" >&2
     exit 1
 fi
 grep -Fqx \
-    'miru-entrypoint: RunPod supplied no account SSH key; enable SSH Terminal Access when deploying and redeploy the Pod (the account key must exist before startup)' \
+    'miru-entrypoint: RunPod supplied no SSH public key; MIRU_SSH_ENABLE=1 requires startSsh=true or an explicit key source (MIRU_SSH_AUTHORIZED_KEYS, SSH_PUBLIC_KEY, PUBLIC_KEY, or /root/.ssh/authorized_keys); mapping 22/tcp alone is insufficient' \
     "$tmp/runpod-required-key-log"
 
 docker run --rm --entrypoint sh "$image" -c \
@@ -98,6 +90,29 @@ docker run --rm \
     "$image" true > "$tmp/account-key-file-log" 2>&1
 grep -Fqx 'miru-entrypoint: SSH enabled (key source: /root/.ssh/authorized_keys)' \
     "$tmp/account-key-file-log"
+
+# RunPod exposes TCP ports independently from its startSsh key-injection flag.
+# A mapped port without a key must leave automatic UI mode healthy, not turn a
+# platform/template mismatch into a restart loop.
+runpod_ui_container="$(docker run -d \
+    -e RUNPOD_POD_ID=test \
+    -e RUNPOD_TCP_PORT_22=32022 \
+    "$image")"
+containers="$containers $runpod_ui_container"
+i=0
+until docker exec "$runpod_ui_container" /usr/local/bin/miru-healthcheck; do
+    i=$((i + 1))
+    [ "$i" -lt 60 ] || {
+        docker logs "$runpod_ui_container"
+        exit 1
+    }
+    sleep 1
+done
+test "$(docker exec "$runpod_ui_container" cat /run/miru/mode)" = ui
+docker logs "$runpod_ui_container" > "$tmp/runpod-ui-log" 2>&1
+grep -Fqx \
+    'miru-entrypoint: SSH disabled: RunPod supplied no SSH public key; mapping 22/tcp alone does not enable key injection (deployment requires startSsh=true)' \
+    "$tmp/runpod-ui-log"
 
 ssh_container="$(docker run -d \
     -e MIRU_AUTO_START_UI=0 \
