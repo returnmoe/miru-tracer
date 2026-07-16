@@ -232,12 +232,25 @@ with the following values:
 | Volume mount path | `/workspace` when attaching a RunPod network volume |
 | Docker entrypoint / start command | Leave empty so the image entrypoint remains active |
 
-RunPod treats the TCP port mapping and account-key injection as independent
-settings. A Pod can have `RUNPOD_TCP_PORT_22` while `startSsh` is false, in
-which case RunPod supplies no key and nothing can accept a secure login. The
-console may not show **SSH Terminal Access** for a custom image. When the
-control is absent, deploy the template with the current `runpodctl`, which
-uses RunPod's GPU GraphQL API and sends `startSsh: true`:
+> [!WARNING]
+> **Known RunPod web-launch limitation (verified July 16, 2026):** In our
+> testing, the RunPod web interface launched this custom/community image with
+> `22/tcp` exposed but `startSsh: false`. The Pod had
+> `RUNPOD_TCP_PORT_22`, yet RunPod supplied neither `PUBLIC_KEY` nor an
+> `authorized_keys` file. An image cannot recover an account key that the
+> platform never passes to it.
+
+RunPod treats TCP port mapping and account-key injection as independent
+settings. Port 22, `RUNPOD_TCP_PORT_22`, and an `ssh` port label prove only
+that a port was mapped; none enables account-key injection. In the same
+reproduction, launching through `runpodctl` with `--ssh=true` supplied the
+account key and SSH worked.
+
+As of [`runpodctl` v2.7.1](https://github.com/runpod/runpodctl/releases/tag/v2.7.1),
+`runpodctl template update` has no `--ssh` or `startSsh` option. Consequently,
+the CLI cannot persist this setting on an existing template, and changing the
+template's ports or port labels is not a workaround. Until RunPod corrects the
+web/template control path, request SSH injection on every GPU Pod launch:
 
 ```bash
 runpodctl pod create \
@@ -251,7 +264,12 @@ runpodctl pod create \
 For a direct-image deployment, replace `--template-id TEMPLATE_ID` with
 `--image ghcr.io/returnmoe/miru-tracer:0.2.4` and supply the desired `--env`
 JSON. For a custom GraphQL client, set `startSsh: true` explicitly. Merely
-adding `22/tcp` does not set it.
+adding `22/tcp` does not set it. The verified CLI version is available from
+the [official GitHub releases](https://github.com/runpod/runpodctl/releases);
+at the time of verification, the installer hostname `cli.runpod.io` shown by
+some RunPod instructions returned `NXDOMAIN`, while the maintained
+[`runpodctl` repository](https://github.com/runpod/runpodctl) used
+`cli.runpod.net`.
 
 When deploying the template, open **Additional filters** and set **CUDA
 Versions** to `13.0`; through the API, use
@@ -280,10 +298,11 @@ RunPod's documented `SSH_PUBLIC_KEY`; you can also use
 RunPod's reference image consumes `PUBLIC_KEY` during bootstrap and excludes
 it from the environment exported to later login shells, so a successful SSH
 session is not expected to show that variable.
-`MIRU_SSH_ENABLE=1` makes missing or invalid key injection fatal, while `0`
-disables SSH. Startup logs state the decision and key source without printing
-the key. In `auto` mode, a missing key produces one warning and automatic UI
-mode continues; a mapped port is never treated as proof that a key exists.
+`MIRU_SSH_ENABLE=1` makes missing or invalid key injection fatal; it does not
+make RunPod inject a key. Set `0` to disable SSH. Startup logs state the
+decision and key source without printing the key. In `auto` mode, a missing
+key produces one warning and automatic UI mode continues; a mapped port is
+never treated as proof that a key exists.
 
 For gated Hugging Face models, add `HF_TOKEN` through a RunPod secret rather
 than placing the token directly in a public or shared template.
