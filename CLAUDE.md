@@ -141,8 +141,10 @@ Environment parsing lives ONLY in `config.py` (`env_bool`/`env_int`/
 `MIRU_SERVER_NAME`/`MIRU_SERVER_PORT` bind the server (GRADIO_SERVER_* work
 as fallbacks). Docker: `MIRU_AUTO_START_UI=0` suppresses automatic UI startup;
 `MIRU_SSH_ENABLE=auto` starts hardened root SSH when a Miru key, mounted
-authorized-keys file, or RunPod `PUBLIC_KEY` is available (`1` requires SSH,
-`0` disables it). Password and keyboard-interactive SSH are always disabled.
+authorized-keys file, or RunPod `SSH_PUBLIC_KEY`/`PUBLIC_KEY` is available
+(`1` requires SSH, `0` disables it). The container does not override Miru's
+private loopback server default. Password and keyboard-interactive SSH are
+always disabled.
 
 ## Gotchas
 

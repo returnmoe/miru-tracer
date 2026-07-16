@@ -184,16 +184,20 @@ templates and other NVIDIA Container Toolkit hosts.
 
 ### Published image tags
 
-The unqualified image is always the compatibility-first CUDA 12.6 build.
-Examples below use release `0.2.1`:
+The unqualified image is the stable CUDA 13.0 build. It follows PyTorch's
+current default and supports Turing, Ampere, Hopper, and Blackwell GPUs.
+CUDA 12.6 remains available as an explicit legacy build for older host drivers
+and Maxwell CC 5.x (except 5.3), Pascal, or Volta GPUs. No single PyTorch wheel
+covers both sets.
+Examples below use release `0.2.2`:
 
 | Tags | CUDA | Intended use |
 | --- | --- | --- |
-| `0.2.1`, `0.2`, `latest` | 12.6 | Default; widest compatibility with existing cloud GPU hosts |
-| `0.2.1-cu126`, `0.2-cu126`, `latest-cu126` | 12.6 | Explicit aliases for the default build |
-| `0.2.1-cu130`, `0.2-cu130`, `latest-cu130` | 13.0 | Blackwell or another host with an NVIDIA R580.65.06+ driver |
-| `sha-<full-commit>` and `sha-<full-commit>-cu126` | 12.6 | Immutable commit build |
-| `sha-<full-commit>-cu130` | 13.0 | Immutable CUDA 13 commit build |
+| `0.2.2`, `0.2`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
+| `0.2.2-cu130`, `0.2-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
+| `0.2.2-cu126`, `0.2-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
+| `sha-<full-commit>` and `sha-<full-commit>-cu130` | 13.0 | Immutable commit build |
+| `sha-<full-commit>-cu126` | 12.6 | Immutable legacy CUDA 12.6 build |
 
 Use a full version or commit tag in a RunPod template so a Pod redeployment
 does not silently pick up a different image. `latest` is convenient for manual
@@ -202,8 +206,8 @@ Dockerfile; only the pinned NVIDIA base, PyTorch wheel index, and exact CUDA
 version assertion differ.
 
 ```bash
-docker pull ghcr.io/returnmoe/miru-tracer:0.2.1-cu126
-docker pull ghcr.io/returnmoe/miru-tracer:0.2.1-cu130
+docker pull ghcr.io/returnmoe/miru-tracer:0.2.2
+docker pull ghcr.io/returnmoe/miru-tracer:0.2.2-cu126
 ```
 
 Images are published only after CI succeeds on `master`; pull-request builds
@@ -220,29 +224,40 @@ with the following values:
 
 | Template setting | Recommended value |
 | --- | --- |
-| Container image | `ghcr.io/returnmoe/miru-tracer:0.2.1-cu126` (or the `-cu130` variant described above) |
+| Container image | `ghcr.io/returnmoe/miru-tracer:0.2.2` (`-cu126` only for a legacy GPU/driver) |
 | Container disk | At least 20 GB; add enough local space for the model and Hugging Face cache |
 | TCP ports | `22/tcp` |
 | HTTP ports | None when using an SSH tunnel |
 | Volume mount path | `/workspace` when attaching a RunPod network volume |
 | Docker entrypoint / start command | Leave empty so the image entrypoint remains active |
 
+When deploying the template, open **Additional filters** and set **CUDA
+Versions** to `13.0`; through the API, use
+[`allowedCudaVersions: ["13.0"]`](https://docs.runpod.io/api-reference/pods/POST/pods).
+This prevents the CUDA 13 image from landing on an older-driver host. If you
+deliberately select the legacy `-cu126` image, select CUDA `12.6` instead.
+
 Set these template environment variables:
 
 ```dotenv
 MIRU_AUTO_START_UI=0
-MIRU_SSH_ENABLE=auto
+MIRU_SSH_ENABLE=1
 MIRU_SERVER_NAME=127.0.0.1
 MIRU_LENS_DIR=/workspace/lenses
 HF_HOME=/tmp/huggingface
 ```
 
-RunPod automatically supplies the account's authorized SSH keys through
-`PUBLIC_KEY`; the image detects that variable and starts hardened root SSH.
-The complete public key must include its type, such as `ssh-ed25519`. You can
-also explicitly use `MIRU_SSH_AUTHORIZED_KEYS`, or mount
-`/root/.ssh/authorized_keys`. `MIRU_SSH_ENABLE=1` makes absent or invalid key
-material fatal, while `0` disables SSH.
+Configure an SSH public key in the RunPod account before deploying the Pod.
+RunPod then supplies the authorized keys through `PUBLIC_KEY`; the image
+detects that variable and starts hardened root SSH. The complete public key
+must include its type, such as `ssh-ed25519`. For a per-Pod override, use
+RunPod's documented `SSH_PUBLIC_KEY`; you can also use
+`MIRU_SSH_AUTHORIZED_KEYS` or mount `/root/.ssh/authorized_keys`.
+`MIRU_SSH_ENABLE=1` makes missing or invalid key injection fatal instead of
+silently starting without SSH, while `0` disables SSH. Startup logs state the
+decision and key source without printing the key. In `auto` mode, the image
+also refuses to boot when RunPod advertises a TCP port 22 mapping but supplies
+no key, since that mapping could never accept a secure login.
 
 For gated Hugging Face models, add `HF_TOKEN` through a RunPod secret rather
 than placing the token directly in a public or shared template.
@@ -253,8 +268,9 @@ Local TCP forwarding remains enabled for the private Miru UI tunnel. The
 SSH-only container keeps `sshd` in the foreground, and its health check tests
 SSH rather than expecting the UI.
 
-RunPod maps internal port 22 to a different public port. Use the command from
-the Pod's Connect panel, which normally resembles:
+RunPod maps internal port 22 to a different public port. Docker's `EXPOSE 22`
+metadata does not create that mapping, so keep `22/tcp` in the template. Use
+the command from the Pod's Connect panel, which normally resembles:
 
 ```bash
 ssh root@<pod-public-ip> -p <mapped-port> -i ~/.ssh/id_ed25519
@@ -314,16 +330,22 @@ SSH still starts automatically when RunPod provides `PUBLIC_KEY`.
 
 ### Local Docker
 
-Build the same default CUDA 12.6 image locally:
+Build the same default CUDA 13.0 image locally:
 
 ```bash
 docker build -t miru-tracer .
 
 # Keep the published port on loopback by default.
 docker run --gpus all -p 127.0.0.1:7860:7860 \
+  -e MIRU_SERVER_NAME=0.0.0.0 \
   -v miru-cache:/home/miru/.cache/miru-tracer \
-  ghcr.io/returnmoe/miru-tracer:0.2.1
+  miru-tracer
 ```
+
+The image inherits Miru's private `127.0.0.1` bind default. The local example
+opts into a container-wide bind, while Docker publishes it only on the host's
+loopback interface. RunPod HTTP-proxy deployments must likewise set
+`MIRU_SERVER_NAME=0.0.0.0` explicitly.
 
 ## Performance tips
 

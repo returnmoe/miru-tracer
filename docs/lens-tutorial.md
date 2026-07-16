@@ -202,10 +202,11 @@ MIRU_SERVER_NAME=127.0.0.1 miru-tracer
 ssh -L 7860:127.0.0.1:7860 -p <external-ssh-port> root@<pod-ip>
 ```
 
-The default `miru-tracer` image is CUDA 12.6. Use `miru-tracer:latest-cu130`
-(or a versioned `-cu130` tag) for Blackwell/R580.65.06+ hosts. Both images contain
-the matching CUDA userspace libraries; the host kernel driver still comes
-from the cloud platform/NVIDIA container runtime.
+The default `miru-tracer` image is CUDA 13.0 and supports Blackwell on an
+R580.65.06+ host. Use `miru-tracer:latest-cu126` (preferably a versioned
+`-cu126` tag) only for an older driver or a Maxwell CC 5.x (except 5.3),
+Pascal, or Volta GPU. Both images contain the matching CUDA userspace libraries;
+the host kernel driver still comes from the cloud platform/NVIDIA container runtime.
 
 ## 3. Loading a fit file into Miru Tracer
 

@@ -3,6 +3,15 @@ set -eu
 
 image="${1:?usage: smoke.sh IMAGE EXPECTED_CUDA}"
 expected_cuda="${2:?usage: smoke.sh IMAGE EXPECTED_CUDA}"
+expected_torch="2.12.1+cu$(printf '%s' "$expected_cuda" | tr -d '.')"
+case "$expected_cuda" in
+    12.6) required_arches='sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90' ;;
+    13.0) required_arches='sm_75 sm_80 sm_86 sm_90 sm_100 sm_120' ;;
+    *)
+        echo "unsupported smoke-test CUDA version: $expected_cuda" >&2
+        exit 1
+        ;;
+esac
 tmp="$(mktemp -d)"
 containers=""
 
@@ -14,11 +23,48 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# torch.cuda.get_arch_list() is empty on the CPU-only CI runner, while this
+# compile-time API still exposes the targets embedded in the wheel.
 docker run --rm --entrypoint /opt/miru/bin/python "$image" -c \
-    "import accelerate, bitsandbytes, pyarrow, torch, transformers, triton; assert torch.version.cuda == '$expected_cuda'; assert not torch.cuda.is_available()"
+    "import accelerate, bitsandbytes, pyarrow, torch, transformers, triton; assert str(torch.__version__) == '$expected_torch', torch.__version__; assert torch.version.cuda == '$expected_cuda', torch.version.cuda; flags = set(torch._C._cuda_getArchFlags().split()); missing = set('$required_arches'.split()) - flags; assert not missing, (missing, flags); assert not torch.cuda.is_available()"
+
+image_entrypoint="$(docker image inspect --format '{{json .Config.Entrypoint}}' "$image")"
+[ "$image_entrypoint" = \
+    '["/usr/bin/tini","-s","--","/usr/local/bin/miru-entrypoint"]' ] || {
+    echo "unexpected image entrypoint: $image_entrypoint" >&2
+    exit 1
+}
+docker run --rm --entrypoint sh "$image" -c \
+    '/usr/bin/tini -s -- true; status=$?; :; exit "$status"' \
+    > "$tmp/nested-tini-log" 2>&1
+if grep -F 'Tini is not running as PID 1' "$tmp/nested-tini-log"; then
+    echo "nested Tini did not register as a child subreaper" >&2
+    exit 1
+fi
+
+docker run --rm -e MIRU_SSH_ENABLE=0 "$image" python -c \
+    'from miru_tracer.config import Settings; assert Settings.from_env().server_name == "127.0.0.1"'
 docker run --rm "$image" sh -c \
     'test "$(id -u)" = 10001 && command -v miru-tracer && command -v miru-tracer-fit-lens && command -v miru-tracer-convert-lens'
 docker run --rm "$image" miru-tracer-fit-lens --help >/dev/null
+
+docker run --rm "$image" true > "$tmp/no-key-log" 2>&1
+grep -Fqx \
+    'miru-entrypoint: SSH disabled: auto mode found no public key; configure a key or set MIRU_SSH_ENABLE=1 to make this fatal' \
+    "$tmp/no-key-log"
+if docker run --rm -e RUNPOD_TCP_PORT_22=32022 "$image" \
+    > "$tmp/runpod-no-key-log" 2>&1; then
+    echo "container accepted a RunPod SSH mapping without a public key" >&2
+    exit 1
+fi
+grep -Fqx \
+    'miru-entrypoint: RunPod exposed TCP port 22 but supplied no SSH public key; configure an account key before deployment, set SSH_PUBLIC_KEY, or set MIRU_SSH_ENABLE=0' \
+    "$tmp/runpod-no-key-log"
+docker run --rm -e RUNPOD_TCP_PORT_22=32022 "$image" true \
+    > "$tmp/runpod-explicit-command-log" 2>&1
+grep -Fqx \
+    'miru-entrypoint: SSH disabled: auto mode found no public key; configure a key or set MIRU_SSH_ENABLE=1 to make this fatal' \
+    "$tmp/runpod-explicit-command-log"
 
 docker run --rm --entrypoint sh "$image" -c \
     'ssh-keygen -A >/dev/null && exec /usr/sbin/sshd -T' > "$tmp/sshd-effective"
@@ -82,7 +128,10 @@ if docker run --rm -e MIRU_AUTO_START_UI=0 -e MIRU_SSH_ENABLE=1 \
     exit 1
 fi
 
-ui_container="$(docker run -d -e MIRU_SSH_ENABLE=0 -p 127.0.0.1::7860 "$image")"
+ui_container="$(docker run -d \
+    -e SSH_PUBLIC_KEY="$(cat "$tmp/id_ed25519.pub")" \
+    -p 127.0.0.1::22 \
+    "$image")"
 containers="$containers $ui_container"
 i=0
 until docker exec "$ui_container" /usr/local/bin/miru-healthcheck; do
@@ -93,3 +142,14 @@ until docker exec "$ui_container" /usr/local/bin/miru-healthcheck; do
     }
     sleep 1
 done
+test "$(docker exec "$ui_container" cat /run/miru/mode)" = ui+ssh
+docker logs "$ui_container" > "$tmp/ui-log" 2>&1
+grep -Fqx 'miru-entrypoint: SSH enabled (key source: SSH_PUBLIC_KEY)' \
+    "$tmp/ui-log"
+grep -F 'Server configuration: host=127.0.0.1, port=7860' "$tmp/ui-log" >/dev/null
+
+ui_ssh_mapping="$(docker port "$ui_container" 22/tcp)"
+ui_ssh_port="${ui_ssh_mapping##*:}"
+# shellcheck disable=SC2086
+ssh $ssh_opts -i "$tmp/id_ed25519" -p "$ui_ssh_port" root@127.0.0.1 \
+    'test "$HOME" = /root && command -v miru-tracer'

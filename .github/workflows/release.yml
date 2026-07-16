@@ -28,7 +28,7 @@ jobs:
         include:
           - variant: cu126
             suffix: -cu126
-            publish_unqualified: true
+            publish_unqualified: false
             cuda_image: nvidia/cuda:12.6.3-base-ubuntu24.04@sha256:c87e78933f4c16e3272123bf2f75537306596d0fbaa395a29696a22786e5ee0e
             torch_index: https://download.pytorch.org/whl/cu126
             expected_cuda: "12.6"
@@ -40,7 +40,7 @@ jobs:
             cuda_nvshmem_spec: nvidia-nvshmem-cu12==3.4.5
           - variant: cu130
             suffix: -cu130
-            publish_unqualified: false
+            publish_unqualified: true
             cuda_image: nvidia/cuda:13.0.3-base-ubuntu24.04@sha256:7c7413a56200486f71f181cad9310f6fd31b6bb21816ade15fc9c1e1e927a5c1
             torch_index: https://download.pytorch.org/whl/cu130
             expected_cuda: "13.0"
@@ -65,7 +65,7 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
           test -n "$version"
-          test "$version" = "0.2.1"
+          test "$version" = "0.2.2"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Reject a conflicting release tag
         env:
@@ -118,10 +118,20 @@ jobs:
         env:
           IMAGE: ghcr.io/${{ github.repository }}
           TAG: ${{ steps.version.outputs.version }}${{ matrix.suffix }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PUBLISH_UNQUALIFIED: ${{ matrix.publish_unqualified }}
           MAX_IMAGE_BYTES: "4500000000"
           MAX_LAYER_BYTES: "1500000000"
         run: |
           docker buildx imagetools inspect "${IMAGE}:${TAG}"
+          if [ "$PUBLISH_UNQUALIFIED" = true ]; then
+            qualified_digest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" | \
+              awk '$1 == "Digest:" { print $2; exit }')
+            unqualified_digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" | \
+              awk '$1 == "Digest:" { print $2; exit }')
+            test -n "$qualified_digest"
+            test "$unqualified_digest" = "$qualified_digest"
+          fi
           raw=$(docker buildx imagetools inspect --raw "${IMAGE}:${TAG}")
           if digest=$(echo "$raw" | jq -er \
             '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest'); then
@@ -163,7 +173,7 @@ jobs:
         run: |
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
           test -n "$version"
-          test "$version" = "0.2.1"
+          test "$version" = "0.2.2"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Create annotated tag if absent
         env:

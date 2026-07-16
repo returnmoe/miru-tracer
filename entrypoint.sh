@@ -12,25 +12,42 @@ die() {
     exit 1
 }
 
-has_key_material() {
-    [ -n "${MIRU_SSH_AUTHORIZED_KEYS:-}" ] || \
-        [ -s "$authorized_keys_source" ] || \
-        [ -n "${PUBLIC_KEY:-}" ]
+detect_ssh_key_source() {
+    if [ -n "${MIRU_SSH_AUTHORIZED_KEYS:-}" ]; then
+        printf '%s\n' MIRU_SSH_AUTHORIZED_KEYS
+    elif [ -n "${SSH_PUBLIC_KEY:-}" ]; then
+        # RunPod documents this as its per-Pod key override.
+        printf '%s\n' SSH_PUBLIC_KEY
+    elif [ -s "$authorized_keys_source" ]; then
+        printf '%s\n' /root/.ssh/authorized_keys
+    elif [ -n "${PUBLIC_KEY:-}" ]; then
+        printf '%s\n' PUBLIC_KEY
+    else
+        printf '%s\n' none
+    fi
 }
 
 install_authorized_keys() {
     mkdir -p /root/.ssh
     chmod 0700 /root/.ssh
-    if [ -n "${MIRU_SSH_AUTHORIZED_KEYS:-}" ]; then
-        printf '%s\n' "$MIRU_SSH_AUTHORIZED_KEYS" > "$authorized_keys_runtime"
-    elif [ -s "$authorized_keys_source" ]; then
-        # Copy out of a possibly read-only bind mount so StrictModes can
-        # validate predictable root ownership and permissions.
-        cp "$authorized_keys_source" "$authorized_keys_runtime"
-    elif [ -n "${PUBLIC_KEY:-}" ]; then
-        printf '%s\n' "$PUBLIC_KEY" > "$authorized_keys_runtime"
-    fi
-    [ -s "$authorized_keys_runtime" ] || die "SSH requires a root public key"
+    case "$ssh_key_source" in
+        MIRU_SSH_AUTHORIZED_KEYS)
+            printf '%s\n' "$MIRU_SSH_AUTHORIZED_KEYS" > "$authorized_keys_runtime"
+            ;;
+        SSH_PUBLIC_KEY)
+            printf '%s\n' "$SSH_PUBLIC_KEY" > "$authorized_keys_runtime"
+            ;;
+        /root/.ssh/authorized_keys)
+            # Copy out of a possibly read-only bind mount so StrictModes can
+            # validate predictable root ownership and permissions.
+            cp "$authorized_keys_source" "$authorized_keys_runtime"
+            ;;
+        PUBLIC_KEY)
+            printf '%s\n' "$PUBLIC_KEY" > "$authorized_keys_runtime"
+            ;;
+    esac
+    [ -s "$authorized_keys_runtime" ] || \
+        die "SSH requires a public key; configure MIRU_SSH_AUTHORIZED_KEYS, SSH_PUBLIC_KEY, PUBLIC_KEY, or /root/.ssh/authorized_keys"
     chown root:root /root/.ssh "$authorized_keys_runtime"
     chmod 0600 "$authorized_keys_runtime"
     ssh-keygen -l -f "$authorized_keys_runtime" >/dev/null 2>&1 || \
@@ -53,21 +70,41 @@ log_ssh_host_key_fingerprints() {
 configure_ssh() {
     [ "$(id -u)" -eq 0 ] || die "SSH requires the container to start as root"
     install_authorized_keys
-    port="${MIRU_SSH_PORT:-22}"
-    case "$port" in
+    ssh_port="${MIRU_SSH_PORT:-22}"
+    case "$ssh_port" in
         ''|*[!0-9]*) die "MIRU_SSH_PORT must be an integer from 1 to 65535" ;;
     esac
-    if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    if [ "$ssh_port" -lt 1 ] || [ "$ssh_port" -gt 65535 ]; then
         die "MIRU_SSH_PORT must be an integer from 1 to 65535"
     fi
-    printf 'Port %s\n' "$port" > /etc/ssh/sshd_config.d/99-miru-port.conf
+    printf 'Port %s\n' "$ssh_port" > /etc/ssh/sshd_config.d/99-miru-port.conf
     ssh-keygen -A
     log_ssh_host_key_fingerprints
     /usr/sbin/sshd -t
 }
 
 start_ssh_background() {
+    rm -f /run/miru/sshd.pid
     /usr/sbin/sshd
+    attempt=0
+    while [ "$attempt" -lt 50 ]; do
+        if [ -s /run/miru/sshd.pid ]; then
+            ssh_pid="$(cat /run/miru/sshd.pid)"
+            case "$ssh_pid" in
+                ''|*[!0-9]*) ;;
+                *)
+                    if kill -0 "$ssh_pid" 2>/dev/null; then
+                        printf 'miru-entrypoint: SSH daemon started on port %s (pid %s)\n' \
+                            "$ssh_port" "$ssh_pid"
+                        return
+                    fi
+                    ;;
+            esac
+        fi
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    die "SSH daemon did not create a live PID within 5 seconds"
 }
 
 exec_as_miru() {
@@ -77,25 +114,35 @@ exec_as_miru() {
     exec "$@"
 }
 
+automatic=0
+if [ "$#" -eq 1 ] && [ "$1" = "miru-auto" ]; then
+    automatic=1
+fi
+
 ssh_enabled=0
-case "${MIRU_SSH_ENABLE:-auto}" in
+ssh_mode="${MIRU_SSH_ENABLE:-auto}"
+ssh_key_source="$(detect_ssh_key_source)"
+case "$ssh_mode" in
     1) ssh_enabled=1 ;;
     0) ssh_enabled=0 ;;
     auto)
-        if has_key_material; then
+        if [ "$ssh_key_source" != none ]; then
             ssh_enabled=1
+        elif [ -n "${RUNPOD_TCP_PORT_22:-}" ] && [ "$automatic" -eq 1 ]; then
+            die "RunPod exposed TCP port 22 but supplied no SSH public key; configure an account key before deployment, set SSH_PUBLIC_KEY, or set MIRU_SSH_ENABLE=0"
         fi
         ;;
     *) die "MIRU_SSH_ENABLE must be auto, 1, or 0" ;;
 esac
 
 if [ "$ssh_enabled" -eq 1 ]; then
+    printf 'miru-entrypoint: SSH enabled (key source: %s)\n' "$ssh_key_source"
     configure_ssh
-fi
-
-automatic=0
-if [ "$#" -eq 1 ] && [ "$1" = "miru-auto" ]; then
-    automatic=1
+elif [ "$ssh_mode" = auto ]; then
+    printf '%s\n' \
+        'miru-entrypoint: SSH disabled: auto mode found no public key; configure a key or set MIRU_SSH_ENABLE=1 to make this fatal' >&2
+else
+    printf '%s\n' 'miru-entrypoint: SSH disabled by MIRU_SSH_ENABLE=0'
 fi
 
 if [ "$automatic" -eq 0 ]; then
@@ -123,6 +170,8 @@ case "${MIRU_AUTO_START_UI:-1}" in
             die "MIRU_AUTO_START_UI=0 requires SSH or an explicit command"
         printf '%s\n' ssh > "$mode_file"
         # Keep SSH as the foreground service so SSH-only cloud Pods stay alive.
+        printf 'miru-entrypoint: SSH daemon starting in foreground on port %s\n' \
+            "$ssh_port"
         exec /usr/sbin/sshd -D -e
         ;;
     *) die "MIRU_AUTO_START_UI must be 1 or 0" ;;
