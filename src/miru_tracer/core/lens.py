@@ -32,6 +32,10 @@ from miru_tracer.core._jlens import HFLensModel, JacobianLens, from_hf
 from miru_tracer.core._jlens.hooks import ActivationRecorder
 from miru_tracer.core.interventions import InterventionSet, apply_interventions
 from miru_tracer.core.lens_io import load_lens
+from miru_tracer.core.lens_provenance import (
+    clear_provenance_caches,
+    require_lens_compatible,
+)
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_runtime import serialized_model_operation
 from miru_tracer.core.tokenizer_utils import format_token_label
@@ -58,13 +62,10 @@ def is_word_token(text: str) -> bool:
     stripped = text.strip()
     if not stripped:
         return False
-    if "<|" in stripped or (
-        stripped.startswith("<") and stripped.endswith(">")
-    ):
+    if "<|" in stripped or (stripped.startswith("<") and stripped.endswith(">")):
         return False
     return all(
-        char.isalnum()
-        or (0 < pos < len(stripped) - 1 and char in "'-’")
+        char.isalnum() or (0 < pos < len(stripped) - 1 and char in "'-’")
         for pos, char in enumerate(stripped)
     )
 
@@ -103,9 +104,7 @@ LEGACY_LENS_FILENAME = "lens.pt"
 
 
 def default_lens_dir() -> Path:
-    return Path(
-        os.getenv("MIRU_LENS_DIR", str(Path.home() / ".cache" / "miru-tracer" / "lenses"))
-    )
+    return Path(os.getenv("MIRU_LENS_DIR", str(Path.home() / ".cache" / "miru-tracer" / "lenses")))
 
 
 def sanitize_model_name(model_name: str) -> str:
@@ -175,6 +174,7 @@ def clear_model_caches() -> None:
     _wrapper_cache.clear()
     _decode_cache = None
     _word_mask_cache = None
+    clear_provenance_caches()
     if _lens_store is not None:
         _lens_store._cache.clear()
 
@@ -197,9 +197,10 @@ class LensSlice:
     Indexing: ``tokens[i][j]`` is the top-k token-id list for
     ``layers[i]`` at ``positions[j]``; likewise probs/texts.
     ``pinned_ranks[token_id][i][j]`` is that token's rank (0 = top).
-    ``source_positions[j]`` records the residual-stream position actually
-    decoded. It equals ``positions[j]`` for raw state alignment and
-    ``positions[j] - 1`` for token alignment.
+
+    Positions are state-aligned: displayed token position ``p`` decodes the
+    block-output residual at that same position ``p``. The final layer therefore
+    gives the model's next-token distribution after consuming token ``p``.
     """
 
     mode: str
@@ -209,7 +210,6 @@ class LensSlice:
     tokens: list[list[list[int]]]
     probs: list[list[list[float]]]
     texts: list[list[list[str]]]
-    source_positions: list[int] = field(default_factory=list)
     pinned_ranks: dict[int, list[list[int]]] = field(default_factory=dict)
 
 
@@ -259,16 +259,15 @@ def compute_lens_slice(
     pinned_token_ids: list[int] | None = None,
     interventions: InterventionSet | None = None,
     activations: dict[int, torch.Tensor] | None = None,
-    token_aligned: bool = False,
 ) -> LensSlice:
     """Compute per-(layer, position) top-k lens readouts for a sequence.
 
     Args:
         input_ids: ``[1, seq_len]`` token ids (as produced by the tracer).
         layers: Block indices to read out (final block = model logits row).
-        positions: Sequence positions to read out; None = all. With
-            ``token_aligned=True``, these are displayed token positions rather
-            than raw residual positions.
+        positions: Residual-stream/token positions to read out; None = all.
+            Position ``p`` is the block-output state after token ``p`` has
+            entered the causal context.
         mode: "logit" or "jacobian".
         jlens: Fitted lens; required for "jacobian".
         top_k: Readouts per (layer, position) cell.
@@ -279,10 +278,6 @@ def compute_lens_slice(
             ``activations`` is given (they were applied at record time).
         activations: Pre-recorded block outputs from
             :func:`record_lens_activations`; skips the forward pass entirely.
-        token_aligned: Interpret ``positions`` as displayed token positions and
-            decode the preceding causal state (``p - 1``), so the readout is
-            aligned with the token at ``p`` rather than the token after it.
-            Position 0 has no preceding state and is therefore unavailable.
     """
     if mode not in LENS_MODES:
         raise ValueError(f"Unknown lens mode: {mode!r}. Use one of {LENS_MODES}.")
@@ -291,33 +286,12 @@ def compute_lens_slice(
 
     wrapper = wrap_model(model, tokenizer)
     if mode == "jacobian" and jlens is not None:
-        if jlens.d_model != wrapper.d_model:
-            raise ValueError(
-                f"lens d_model={jlens.d_model} does not match model "
-                f"d_model={wrapper.d_model}"
-            )
-        invalid_source_layers = [
-            layer for layer in jlens.source_layers if layer >= wrapper.n_layers
-        ]
-        if invalid_source_layers:
-            raise ValueError(
-                f"lens source layers {invalid_source_layers} are out of range "
-                f"for a {wrapper.n_layers}-layer model"
-            )
+        require_lens_compatible(jlens, model, tokenizer)
     seq_len = int(input_ids.shape[1])
-    if positions is None:
-        positions = list(range(1 if token_aligned else 0, seq_len))
-    else:
-        positions = list(positions)
-    first_position = 1 if token_aligned else 0
-    bad_positions = [p for p in positions if not first_position <= p < seq_len]
+    positions = list(range(seq_len)) if positions is None else list(positions)
+    bad_positions = [p for p in positions if not 0 <= p < seq_len]
     if bad_positions:
-        alignment = "token-aligned " if token_aligned else ""
-        raise ValueError(
-            f"{alignment}positions {bad_positions} out of range "
-            f"({first_position} <= position < {seq_len})"
-        )
-    source_positions = [p - 1 for p in positions] if token_aligned else positions
+        raise ValueError(f"positions {bad_positions} out of range (0 <= position < {seq_len})")
     layers = sorted(set(layers))
     bad = [layer for layer in layers if not 0 <= layer < wrapper.n_layers]
     if bad:
@@ -365,15 +339,11 @@ def compute_lens_slice(
             group = layers[group_start : group_start + group_size]
             stack: list[torch.Tensor] = []
             for layer in group:
-                residual = activations[layer][0, source_positions, :].float()  # [P, d]
+                residual = activations[layer][0, positions, :].float()  # [P, d]
                 use_transport = (
-                    mode == "jacobian"
-                    and layer != final_layer
-                    and layer in jlens.jacobians
+                    mode == "jacobian" and layer != final_layer and layer in jlens.jacobians
                 )
-                stack.append(
-                    jlens.transport(residual, layer) if use_transport else residual
-                )
+                stack.append(jlens.transport(residual, layer) if use_transport else residual)
             probs_all = torch.softmax(
                 wrapper.unembed(torch.cat(stack)).float(), dim=-1
             )  # [len(group) * P, vocab]
@@ -385,29 +355,25 @@ def compute_lens_slice(
                 ranked_scores = scores
                 if skip_non_words:
                     if display_mask is None:
-                        display_mask = word_token_mask(
-                            tokenizer, scores.shape[-1]
-                        ).to(scores.device)
+                        display_mask = word_token_mask(tokenizer, scores.shape[-1]).to(
+                            scores.device
+                        )
                         filtered_k = min(top_k, int(display_mask.sum().item()))
                     ranked_scores = scores.masked_fill(~display_mask, float("-inf"))
                     k = filtered_k
                 else:
                     k = min(top_k, scores.shape[-1])
-                top_scores, top_ids = torch.topk(
-                    ranked_scores, k, dim=-1
-                )  # [P, k]
+                top_scores, top_ids = torch.topk(ranked_scores, k, dim=-1)  # [P, k]
 
                 layer_tokens, layer_probs, layer_texts = [], [], []
                 for p in range(n_pos):
-                    pairs = list(
-                        zip(top_ids[p].tolist(), top_scores[p].tolist(), strict=True)
-                    )
+                    pairs = list(zip(top_ids[p].tolist(), top_scores[p].tolist(), strict=True))
                     if skip_non_words and layer == final_layer:
                         # Preserve the model's true top-1 at the decoded causal
                         # state even when it is punctuation or a special token,
                         # then fill the remaining slots with word-like candidates.
-                        # In token-aligned mode this is the distribution that
-                        # produced the displayed token.
+                        # This final row is the next-token distribution after
+                        # the displayed token has entered the causal context.
                         true_id = int(scores[p].argmax().item())
                         true_value = float(scores[p, true_id].item())
                         pairs = [(true_id, true_value)] + [
@@ -431,8 +397,7 @@ def compute_lens_slice(
                 if pinned_token_ids:
                     # rank = number of tokens with strictly higher probability
                     ranks = (
-                        probs_for_pin
-                        > probs_for_pin[:, pinned_token_ids].T.unsqueeze(-1)
+                        probs_for_pin > probs_for_pin[:, pinned_token_ids].T.unsqueeze(-1)
                     ).sum(dim=-1)  # [n_pinned, P]
                     for i, token_id in enumerate(pinned_token_ids):
                         pinned[token_id].append(ranks[i].tolist())
@@ -446,7 +411,6 @@ def compute_lens_slice(
         tokens=all_tokens,
         probs=all_probs,
         texts=all_texts,
-        source_positions=list(source_positions),
         pinned_ranks=pinned,
     )
 
@@ -525,9 +489,7 @@ def aggregate_readouts(slice_: LensSlice, *, limit: int | None = 50) -> list[Rea
                 row.relevance_by_layer[i] += relevance
                 best = row.best_rank_by_layer[i]
                 row.best_rank_by_layer[i] = rank if best is None else min(best, rank)
-                row.peak_prob_by_layer[i] = max(
-                    row.peak_prob_by_layer[i], float(probability)
-                )
+                row.peak_prob_by_layer[i] = max(row.peak_prob_by_layer[i], float(probability))
     # Dict insertion order is the final tie-break: position, layer, then
     # per-cell probability rank. Token-id order is arbitrary.
     ranked = sorted(

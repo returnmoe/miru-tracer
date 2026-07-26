@@ -61,16 +61,13 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
     exports = ExportManager("interactive")
 
     with gr.Tab("Interactive Mode") as tab, gr.Column(elem_classes="miru-narrow"):
-        gr.Markdown(
-            "Generate text step-by-step with full control over each token selection."
-        )
+        gr.Markdown("Generate text step-by-step with full control over each token selection.")
 
         mode_selector = gr.Radio(
             choices=list(GENERATION_MODES),
             value="Completion",
             label="Mode",
-            info="Direct text completion, chat format, or raw text with "
-            "explicit special tokens.",
+            info="Direct text completion, chat format, or raw text with explicit special tokens.",
         )
 
         with gr.Group() as completion_inputs:
@@ -219,9 +216,10 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
 
         with gr.Accordion("Layer Lens (current position)", open=False):
             gr.Markdown(
-                "Per-layer readout **aligned to the current token**. Miru decodes "
-                "the preceding causal state that produced this token, matching the "
-                "token-centered Neuronpedia presentation. "
+                "Per-layer readout of the **current token position's residual "
+                "state**, after that token has entered the causal context. The "
+                "final Logit row is the model's distribution for the next token, "
+                "matching Neuronpedia's position convention. "
                 "Refresh runs one extra forward pass. "
                 "Interventions added in the Lens tab can be applied to this "
                 "session here. ⚠️ *Experimental — still being tested; "
@@ -231,9 +229,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                 lens_mode_choice = gr.Radio(
                     choices=list(LENS_MODE_CHOICES), value="Logit", label="Lens"
                 )
-                lens_stride = gr.Number(
-                    minimum=1, value=1, precision=0, label="Layer stride"
-                )
+                lens_stride = gr.Number(minimum=1, value=1, precision=0, label="Layer stride")
                 lens_top_k = gr.Number(
                     minimum=1,
                     maximum=settings.max_log_top_k,
@@ -247,7 +243,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                     "Apply Lens-tab interventions to this session", size="sm"
                 )
             lens_status = gr.Textbox(label="Lens status", interactive=False, lines=1)
-            lens_plot = gr.Plot(label="Layer readouts aligned to the current token")
+            lens_plot = gr.Plot(label="Layer readouts after the current token")
 
         gr.Markdown("### Navigation & Export")
         with gr.Row():
@@ -296,10 +292,9 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                         f"the Lens tab or run: miru-tracer-fit-lens {model_name}"
                     )
                 try:
-                    if tracer.seq_len < 2:
+                    if tracer.seq_len < 1:
                         return None, (
-                            "Need at least two tokens for a current-token lens "
-                            "readout (the first token has no preceding causal state)."
+                            "Need at least one token for a current-position lens readout."
                         )
                     n_layers = tracer.model.config.get_text_config().num_hidden_layers
                     layers = lens_layer_selection(n_layers, -1, -1, stride, mode)
@@ -323,7 +318,6 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                         "jlens": jlens,
                         "top_k": top_k,
                         "interventions": tracer._intervention_set,
-                        "token_aligned": True,
                     }
                     if mode == "compare":
                         activations = record_lens_activations(
@@ -361,8 +355,8 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                     active = len(tracer.interventions)
                     status = (
                         f"{'Jacobian / Logit comparison' if mode == 'compare' else f'{mode} lens'} "
-                        f"over {len(layers)} layers aligned to token position "
-                        f"{tracer.seq_len - 1}."
+                        f"over {len(layers)} layers at residual position "
+                        f"{tracer.seq_len - 1}; the final row predicts the next token."
                     )
                     if active:
                         status += f" {active} intervention(s) active on this session."
@@ -393,9 +387,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
 
         def render_state(session_id, tracer, status, params, log_topk):
             """The canonical output tuple every successful handler returns."""
-            dist = tracer.peek(
-                top_k=max(int(log_topk or 10), 1), temperature=params.temperature
-            )
+            dist = tracer.peek(top_k=max(int(log_topk or 10), 1), temperature=params.temperature)
             # Preview exactly the token step() would commit; for sampling this
             # draws the sample now — clicking 'Next Step' locks it in.
             preview_id = select_token(dist.raw_logits, params)
@@ -432,23 +424,28 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
         def resolve_session(session_id):
             """Common session lookup; returns (session, error_tuple_or_None)."""
             if session_id is None:
-                return None, error_state(
-                    "Error: Not initialized. Click 'Initialize' first.", None
-                )
+                return None, error_state("Error: Not initialized. Click 'Initialize' first.", None)
             session = get_session_manager().get_session(
                 session_id, expected_generation=model_manager.get_generation()
             )
             if session is None:
-                return None, error_state(
-                    "Error: Session not found. Please reinitialize.", None
-                )
+                return None, error_state("Error: Session not found. Please reinitialize.", None)
             return session, None
 
         # ----------------------------------------------------------- handlers
 
         def initialize_tracer(
-            mode, prompt, chat_msgs, raw_text, think_choice, think_text,
-            temp, topk, topp, strat, log_topk,
+            mode,
+            prompt,
+            chat_msgs,
+            raw_text,
+            think_choice,
+            think_text,
+            temp,
+            topk,
+            topp,
+            strat,
+            log_topk,
         ):
             snapshot = model_manager.snapshot()
             if snapshot is None:
@@ -473,9 +470,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                     kind="interactive",
                     model_generation=generation,
                 )
-                session = session_manager.get_session(
-                    session_id, expected_generation=generation
-                )
+                session = session_manager.get_session(session_id, expected_generation=generation)
                 if session is None:
                     raise RuntimeError("Model changed while creating the session")
 
@@ -493,9 +488,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                         session.tracer.reset(prompt=prompt, mode="completion")
 
                     params = ui_sampling_params(strat, temp, topk, topp)
-                    logger.info(
-                        f"Interactive session initialized: {session_id} (mode={mode})"
-                    )
+                    logger.info(f"Interactive session initialized: {session_id} (mode={mode})")
                     return render_state(
                         session_id,
                         session.tracer,
@@ -556,9 +549,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                         raise ValueError(
                             f"Log Top-K must be between 1 and {settings.max_log_top_k}."
                         )
-                    existing_full = sum(
-                        step.full_probs is not None for step in tracer.history
-                    )
+                    existing_full = sum(step.full_probs is not None for step in tracer.history)
                     if log_full and existing_full >= settings.max_full_prob_steps:
                         raise ValueError(
                             "Full-probability logging limit reached "
@@ -588,8 +579,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                             token_id = None  # let the tracer pick per strategy
                         selection_source = (
                             preview.get("source")
-                            if preview
-                            and token_id == int(preview.get("token_id", -1))
+                            if preview and token_id == int(preview.get("token_id", -1))
                             else "manual"
                         )
 
@@ -718,8 +708,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                 return
             if n_tokens is None or not 1 <= int(n_tokens) <= settings.max_new_tokens:
                 yield error_state(
-                    "Error: Number of tokens must be between 1 and "
-                    f"{settings.max_new_tokens}",
+                    f"Error: Number of tokens must be between 1 and {settings.max_new_tokens}",
                     session_id,
                 )
                 return
@@ -732,22 +721,15 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                         raise ValueError(
                             f"Log Top-K must be between 1 and {settings.max_log_top_k}."
                         )
-                    existing_full = sum(
-                        step.full_probs is not None for step in tracer.history
-                    )
-                    if (
-                        log_full
-                        and existing_full + int(n_tokens) > settings.max_full_prob_steps
-                    ):
+                    existing_full = sum(step.full_probs is not None for step in tracer.history)
+                    if log_full and existing_full + int(n_tokens) > settings.max_full_prob_steps:
                         raise ValueError(
                             "Full-probability logging is limited to "
                             f"{settings.max_full_prob_steps} total steps."
                         )
                     params = ui_sampling_params(strat, temp, topk, topp)
                     tracer.clear_stop_flag()
-                    logger.info(
-                        f"Continue generation: session={session_id}, n_tokens={n_tokens}"
-                    )
+                    logger.info(f"Continue generation: session={session_id}, n_tokens={n_tokens}")
 
                     stopped_reason = None
                     for i in range(int(n_tokens)):
@@ -769,8 +751,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                         # The candidates table and download stay untouched
                         # (no flicker, no per-token export files).
                         yield (
-                            f"Generating... Step {len(tracer.history)} "
-                            f"({i + 1}/{int(n_tokens)})",
+                            f"Generating... Step {len(tracer.history)} ({i + 1}/{int(n_tokens)})",
                             tracer.get_full_text(),
                             gr.update(),
                             gr.update(),
@@ -826,9 +807,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
             inputs=[mode_selector],
             outputs=[completion_inputs, chat_inputs, raw_inputs],
         )
-        strategy.change(
-            fn=toggle_temperature, inputs=[strategy], outputs=[temperature]
-        )
+        strategy.change(fn=toggle_temperature, inputs=[strategy], outputs=[temperature])
         thinking_selector.change(
             fn=toggle_think_prefill,
             inputs=[thinking_selector],

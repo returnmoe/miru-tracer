@@ -3,6 +3,8 @@ of every architecture family Miru claims to support.
 
 - llama: the Llama/Qwen3 family (GQA, standard cache) — also the default
   fixture used by the rest of the suite.
+- qwen35: Qwen3.5/Qwen3.6 (hybrid Gated DeltaNet/full attention) using the
+  same PyTorch fallback exercised when optional fast kernels are absent.
 - gemma4: Gemma 4 (hybrid attention, logit softcapping, per-layer input
   embeddings, unified K/V) — tiny version of google/gemma-4-31B's text stack.
 - glm_dsa: GLM MoE-DSA (MoE MLPs, MLA-style sparse attention with indexer)
@@ -20,13 +22,18 @@ from miru_tracer.core.interventions import Intervention
 from miru_tracer.core.lens import compute_lens_slice
 from miru_tracer.core.tracer import LLMTracer
 
-ARCHS = ["llama", "gemma4", "glm_dsa"]
+ARCHS = ["llama", "qwen35", "gemma4", "glm_dsa"]
 
 # MLA/DSA-style attention (glm_dsa) uses different compute paths for prefill
 # vs incremental decode, so cached logits differ from a fresh full forward by
 # ~1e-3 (measured: plateaus, does not grow; top-5 ranks stay identical).
 # Standard attention architectures reproduce to float32 noise.
-CACHE_EQUIVALENCE_ATOL = {"llama": 1e-4, "gemma4": 1e-4, "glm_dsa": 5e-3}
+CACHE_EQUIVALENCE_ATOL = {
+    "llama": 1e-4,
+    "qwen35": 1e-4,
+    "gemma4": 1e-4,
+    "glm_dsa": 5e-3,
+}
 
 FIT_PROMPTS = [
     "Hello world, this is a much longer test prompt for fitting the lens today.",
@@ -35,8 +42,13 @@ FIT_PROMPTS = [
 
 
 @pytest.fixture(scope="module")
-def models(tiny_model, tiny_gemma4, tiny_glm_dsa):
-    return {"llama": tiny_model, "gemma4": tiny_gemma4, "glm_dsa": tiny_glm_dsa}
+def models(tiny_model, tiny_qwen35, tiny_gemma4, tiny_glm_dsa):
+    return {
+        "llama": tiny_model,
+        "qwen35": tiny_qwen35,
+        "gemma4": tiny_gemma4,
+        "glm_dsa": tiny_glm_dsa,
+    }
 
 
 @pytest.fixture(params=ARCHS)
@@ -57,9 +69,7 @@ def count_forwards(monkeypatch, model):
 
 
 class TestTracerAcrossArchitectures:
-    def test_step_peek_undo_and_cache_equivalence(
-        self, arch_model, tiny_tokenizer, monkeypatch
-    ):
+    def test_step_peek_undo_and_cache_equivalence(self, arch_model, tiny_tokenizer, monkeypatch):
         arch, model = arch_model
         tracer = LLMTracer(model, tiny_tokenizer, device="cpu")
         tracer.reset("Hello world test")
@@ -85,10 +95,7 @@ class TestTracerAcrossArchitectures:
         with torch.inference_mode():
             full = model(tracer.input_ids, use_cache=False).logits[0, -1].float()
         assert torch.allclose(incremental, full, atol=CACHE_EQUIVALENCE_ATOL[arch])
-        assert (
-            torch.topk(incremental, 5).indices.tolist()
-            == torch.topk(full, 5).indices.tolist()
-        )
+        assert torch.topk(incremental, 5).indices.tolist() == torch.topk(full, 5).indices.tolist()
 
 
 class TestLensAcrossArchitectures:
@@ -113,15 +120,11 @@ class TestLensAcrossArchitectures:
             real = model(ids).logits[0, -1].float()
         expected = torch.topk(torch.softmax(real, -1), 5)
         assert slice_.tokens[0][-1] == expected.indices.tolist()
-        assert slice_.probs[0][-1] == pytest.approx(
-            expected.values.tolist(), rel=1e-3
-        )
+        assert slice_.probs[0][-1] == pytest.approx(expected.values.tolist(), rel=1e-3)
 
 
 class TestInterventionsAcrossArchitectures:
-    def test_steer_raises_probability_and_cache_invalidates(
-        self, arch_model, tiny_tokenizer
-    ):
+    def test_steer_raises_probability_and_cache_invalidates(self, arch_model, tiny_tokenizer):
         _arch, model = arch_model
         token = 65
         final = model.config.get_text_config().num_hidden_layers - 1

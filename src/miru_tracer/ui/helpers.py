@@ -31,6 +31,7 @@ def ui_sampling_params(strategy, temperature, top_k, top_p) -> SamplingParams:
         top_p=min(max(float(top_p), 1e-3), 1.0),
     )
 
+
 CHAT_ROLES = ("system", "user", "assistant")
 
 DEFAULT_CHAT_JSON = json.dumps(
@@ -104,14 +105,8 @@ def parse_chat_messages(text: str) -> list[dict[str, str]]:
     if not isinstance(messages, list) or not messages:
         raise ChatValidationError("Chat messages must be a non-empty JSON array")
     for message in messages:
-        if (
-            not isinstance(message, dict)
-            or "role" not in message
-            or "content" not in message
-        ):
-            raise ChatValidationError(
-                "Each message must have 'role' and 'content' fields"
-            )
+        if not isinstance(message, dict) or "role" not in message or "content" not in message:
+            raise ChatValidationError("Each message must have 'role' and 'content' fields")
     return messages
 
 
@@ -133,9 +128,7 @@ TEMPERATURE_GREEDY_INFO = "No effect with greedy strategy: it always picks the a
 def toggle_temperature(strategy: str):
     """Enable the temperature slider only when it has an effect (sampling)."""
     sampling = strategy == "sampling"
-    return gr.update(
-        interactive=sampling, info=None if sampling else TEMPERATURE_GREEDY_INFO
-    )
+    return gr.update(interactive=sampling, info=None if sampling else TEMPERATURE_GREEDY_INFO)
 
 
 def prob_mode_key(ui_choice: str) -> str:
@@ -187,10 +180,7 @@ def static_table_html(headers: list[str], rows: list[list]) -> str:
         "background:var(--body-background-fill, #fff); padding:5px 14px; "
         'font-weight:600; border:0;"'
     )
-    td = (
-        'style="padding:5px 14px; border:0; '
-        'border-bottom:1px solid rgba(127,127,127,0.18);"'
-    )
+    td = 'style="padding:5px 14px; border:0; border-bottom:1px solid rgba(127,127,127,0.18);"'
     header = "".join(f"<th {th}>{html.escape(str(h))}</th>" for h in headers)
     body = "".join(
         "<tr>" + "".join(f"<td {td}>{html.escape(str(c))}</td>" for c in row) + "</tr>"

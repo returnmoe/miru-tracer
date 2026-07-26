@@ -102,10 +102,7 @@ class SessionManager:
             if session is None:
                 logger.warning(f"Session not found: {session_id}")
                 return None
-            if (
-                expected_generation is not None
-                and session.model_generation != expected_generation
-            ):
+            if expected_generation is not None and session.model_generation != expected_generation:
                 logger.warning(
                     f"Session generation mismatch: {session.model_generation} != "
                     f"{expected_generation}"
@@ -139,9 +136,7 @@ class SessionManager:
         now = datetime.now()
         with self._global_lock:
             expired = [
-                s
-                for s in self._sessions.values()
-                if now - s.last_access > self._cleanup_timeout
+                s for s in self._sessions.values() if now - s.last_access > self._cleanup_timeout
             ]
             for session in expired:
                 self._dispose_locked(session, reason="expired")
@@ -188,9 +183,7 @@ class SessionManager:
                 "steps": len(tracer.history),
                 "mode": tracer.mode,
                 "prompt": (
-                    tracer.prompt[:100] + "..."
-                    if len(tracer.prompt) > 100
-                    else tracer.prompt
+                    tracer.prompt[:100] + "..." if len(tracer.prompt) > 100 else tracer.prompt
                 ),
             }
 
@@ -206,9 +199,7 @@ class SessionManager:
             session.tracer.close()
         del self._sessions[session.session_id]
         lifetime = (datetime.now() - session.created).total_seconds()
-        logger.info(
-            f"Session {reason}: {session.session_id} (lifetime={lifetime:.1f}s)"
-        )
+        logger.info(f"Session {reason}: {session.session_id} (lifetime={lifetime:.1f}s)")
 
 
 # Global singleton instance

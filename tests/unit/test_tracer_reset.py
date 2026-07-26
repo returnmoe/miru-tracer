@@ -15,9 +15,7 @@ class TestChatPrefill:
         assert tracer.prompt.endswith("The capital is")
 
     def test_trailing_user_message_opens_assistant_turn(self, tracer):
-        tracer.reset(
-            messages=[{"role": "user", "content": "Hi"}], mode="chat"
-        )
+        tracer.reset(messages=[{"role": "user", "content": "Hi"}], mode="chat")
         assert tracer.prompt.endswith("assistant: ")
 
     def test_prefill_passes_continue_final_message(self, tracer, monkeypatch):
@@ -29,9 +27,7 @@ class TestChatPrefill:
             return original(messages, **kwargs)
 
         monkeypatch.setattr(tracer.tokenizer, "apply_chat_template", spy)
-        tracer.reset(
-            messages=[{"role": "assistant", "content": "Once upon"}], mode="chat"
-        )
+        tracer.reset(messages=[{"role": "assistant", "content": "Once upon"}], mode="chat")
         assert captured["continue_final_message"] is True
         assert captured["add_generation_prompt"] is False
 
@@ -130,9 +126,7 @@ class TestRawMode:
         tracer.reset(prompt="<|eos|>hi", mode="raw")
         ids = tracer.input_ids[0].tolist()
         assert ids[0] == eos_id
-        assert len(ids) == 1 + len(
-            tracer.tokenizer.encode("hi", add_special_tokens=False)
-        )
+        assert len(ids) == 1 + len(tracer.tokenizer.encode("hi", add_special_tokens=False))
 
     def test_raw_mode_generates(self, tracer):
         tracer.reset(prompt="Hello", mode="raw")

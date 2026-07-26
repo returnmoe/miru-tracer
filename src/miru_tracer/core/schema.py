@@ -144,8 +144,7 @@ def parse_log(data: dict[str, Any]) -> GenerationLog:
     step_defaults = {} if sampling_params.get("mixed") else sampling_params
     try:
         history = [
-            TokenStep.from_dict(step, default_sampling_params=step_defaults)
-            for step in history_raw
+            TokenStep.from_dict(step, default_sampling_params=step_defaults) for step in history_raw
         ]
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError(f"Malformed history entry in log file: {e}") from e

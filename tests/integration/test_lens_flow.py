@@ -16,6 +16,7 @@ from miru_tracer.core.lens_io import save_lens
 
 pytestmark = pytest.mark.integration
 
+
 @pytest.fixture()
 def lens_app(tiny_model, tiny_tokenizer, tmp_path, monkeypatch):
     with socket.socket() as sock:
@@ -50,9 +51,7 @@ def lens_app(tiny_model, tiny_tokenizer, tmp_path, monkeypatch):
 
     app = create_app()
     app.queue()
-    app.launch(
-        server_name="127.0.0.1", server_port=port, prevent_thread_lock=True, quiet=True
-    )
+    app.launch(server_name="127.0.0.1", server_port=port, prevent_thread_lock=True, quiet=True)
     try:
         yield Client(f"http://127.0.0.1:{port}/", verbose=False)
     finally:
@@ -65,11 +64,25 @@ class TestLensTabFlow:
         client = lens_app
         # Two simultaneous interventions — beyond Neuronpedia's single one.
         client.predict(
-            "steer", "A", "Text", "", "Text", "0-1", 2.0, "jacobian",
+            "steer",
+            "A",
+            "Text",
+            "",
+            "Text",
+            "0-1",
+            2.0,
+            "jacobian",
             api_name="/add_intervention",
         )
         result = client.predict(
-            "steer", "B", "Text", "", "Text", 1, 2.0, "logit",
+            "steer",
+            "B",
+            "Text",
+            "",
+            "Text",
+            1,
+            2.0,
+            "logit",
             api_name="/add_intervention",
         )
         assert "<table" in result[0]
@@ -81,9 +94,22 @@ class TestLensTabFlow:
         assert "1 pinned token" in pinned_result[2]
 
         out = client.predict(
-            "Completion", "Hello world", "[]", "", "Template default", "",
-            6, "greedy", 1.0,
-            "Jacobian", 0, -1, 1, 8, 100, False,
+            "Completion",
+            "Hello world",
+            "[]",
+            "",
+            "Template default",
+            "",
+            6,
+            "greedy",
+            1.0,
+            "Jacobian",
+            0,
+            -1,
+            1,
+            8,
+            100,
+            False,
             api_name="/generate_and_analyze",
         )
         readout_html, _heatmap, _pinned, status, text = out[:5]
@@ -96,7 +122,7 @@ class TestLensTabFlow:
         assert "⚠" not in status
         # Both steers compose; the final-layer one dominates greedy decoding,
         # so the generated text must consist of steered tokens.
-        generated = text[len("Hello world"):]
+        generated = text[len("Hello world") :]
         assert generated and set(generated) <= {"A", "B"}
         # ...and both steered tokens surface prominently in Readouts.
         assert ">A<" in readout_html and ">B<" in readout_html
@@ -113,22 +139,34 @@ class TestLensTabFlow:
         # jacobian-basis @L0 edit (the @L1 logit edit is final-layer exempt).
         # State inputs (analysis/positions/active_view) are excluded from the
         # client signature, so this passes only the lens controls.
-        out = client.predict(
-            "Logit", 0, -1, 1, 8, 100, False, api_name="/update_readouts"
-        )
+        out = client.predict("Logit", 0, -1, 1, 8, 100, False, api_name="/update_readouts")
         status = out[-1]
         assert "⚠" in status and "jacobian basis" in status and "@L0" in status
 
     def test_active_interventions_table_and_clear(self, lens_app):
         client = lens_app
         added = client.predict(
-            "ablate", "C", "Text", "", "Text", 0, 1.0, "logit",
+            "ablate",
+            "C",
+            "Text",
+            "",
+            "Text",
+            0,
+            1.0,
+            "logit",
             api_name="/add_intervention",
         )
         assert 'data-miru-iv-action="delete"' in added[0]
         assert 'style="width:100%; border:1px solid rgba(127,127,127,0.18) !important;' in added[0]
         repeated = client.predict(
-            "ablate", "C", "Text", "", "Text", 0, 1.0, "logit",
+            "ablate",
+            "C",
+            "Text",
+            "",
+            "Text",
+            0,
+            1.0,
+            "logit",
             api_name="/add_intervention",
         )
         assert repeated[0].count('data-miru-iv-row="') == 2
@@ -143,9 +181,22 @@ class TestLensTabFlow:
 
     def test_logit_mode_without_fitted_lens_still_works(self, lens_app):
         out = lens_app.predict(
-            "Completion", "Hello world", "[]", "", "Template default", "",
-            3, "greedy", 1.0,
-            "Logit", 0, -1, 1, 5, 100, False,
+            "Completion",
+            "Hello world",
+            "[]",
+            "",
+            "Template default",
+            "",
+            3,
+            "greedy",
+            1.0,
+            "Logit",
+            0,
+            -1,
+            1,
+            5,
+            100,
+            False,
             api_name="/generate_and_analyze",
         )
         status = out[3]
@@ -154,18 +205,29 @@ class TestLensTabFlow:
         assert shown is not None and int(shown.group(1)) > 5
         assert "data-readout-inspector" in out[0]  # Readouts is the default view
         assert "<table" in lens_app.predict(api_name="/open_heatmap_view")
-        assert "data-readout-inspector" in lens_app.predict(
-            api_name="/open_readouts_view"
-        )
+        assert "data-readout-inspector" in lens_app.predict(api_name="/open_readouts_view")
 
     def test_compare_mode_renders_two_independent_views(self, lens_app):
         pinned = lens_app.predict("A", "Text", api_name="/add_pinned")
         assert "1 pinned token" in pinned[2]
 
         out = lens_app.predict(
-            "Completion", "Hello world", "[]", "", "Template default", "",
-            3, "greedy", 1.0,
-            "Compare (Jacobian / Logit)", 0, -1, 1, 5, 100, True,
+            "Completion",
+            "Hello world",
+            "[]",
+            "",
+            "Template default",
+            "",
+            3,
+            "greedy",
+            1.0,
+            "Compare (Jacobian / Logit)",
+            0,
+            -1,
+            1,
+            5,
+            100,
+            True,
             api_name="/generate_and_analyze",
         )
         readouts, status = out[0], out[3]
@@ -188,8 +250,17 @@ class TestLensTabFlow:
 
     def test_interactive_compare_mode_uses_two_panel_plot(self, lens_app):
         initialized = lens_app.predict(
-            "Completion", "Hello world", "[]", "", "Template default", "",
-            1.0, 50, 1.0, "greedy", 10,
+            "Completion",
+            "Hello world",
+            "[]",
+            "",
+            "Template default",
+            "",
+            1.0,
+            50,
+            1.0,
+            "greedy",
+            10,
             api_name="/initialize_tracer",
         )
         assert "Initialized" in initialized[0]
@@ -210,6 +281,7 @@ class TestFitFileManagement:
         status = lens_app.predict(api_name="/fit_file_status")
         assert "tiny/test-model" in status
         assert "averaged over 2 prompts" in status
+        assert "legacy/upstream artifact" in status
 
     def test_upload_validates_and_installs(self, lens_app, tiny_model, tmp_path):
         from gradio_client import handle_file
@@ -219,20 +291,34 @@ class TestFitFileManagement:
 
         # Re-upload the existing fitted lens through the UI path
         source = get_lens_store().lens_path("tiny/test-model")
-        result = lens_app.predict(
-            handle_file(str(source)), api_name="/install_fit_file"
-        )
+        result = lens_app.predict(handle_file(str(source)), api_name="/install_fit_file")
         assert "Installed" in result
 
         # A lens with the wrong d_model must be rejected
         import torch
 
-        wrong = JacobianLens(
-            jacobians={0: torch.zeros(8, 8)}, n_prompts=1, d_model=8
-        )
+        wrong = JacobianLens(jacobians={0: torch.zeros(8, 8)}, n_prompts=1, d_model=8)
         wrong_path = tmp_path / "wrong.pt"
         wrong.save(str(wrong_path))
-        result = lens_app.predict(
-            handle_file(str(wrong_path)), api_name="/install_fit_file"
-        )
+        result = lens_app.predict(handle_file(str(wrong_path)), api_name="/install_fit_file")
         assert "different model" in result
+
+        # Matching dimensions are insufficient when provenance names another
+        # Hub model.
+        wrong_identity = JacobianLens(
+            jacobians={0: torch.zeros(32, 32)},
+            n_prompts=1,
+            d_model=32,
+            fit_metadata={
+                "schema_version": 1,
+                "provenance": {"model_name_or_path": "other/test-model"},
+            },
+        )
+        wrong_identity_path = tmp_path / "wrong-identity.safetensors"
+        save_lens(wrong_identity, wrong_identity_path)
+        result = lens_app.predict(
+            handle_file(str(wrong_identity_path)),
+            api_name="/install_fit_file",
+        )
+        assert "incompatible fit file" in result
+        assert "other/test-model" in result

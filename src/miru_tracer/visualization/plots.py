@@ -40,11 +40,7 @@ def _step_entropy(step: TokenStep, use_raw: bool = False) -> tuple[float, bool]:
     log(k)). Returns (entropy, is_exact).
     """
     full_probs = step.full_raw_probs if use_raw else step.full_probs
-    top_probs = (
-        (step.top_k_raw_probs or step.top_k_probs)
-        if use_raw
-        else step.top_k_probs
-    )
+    top_probs = (step.top_k_raw_probs or step.top_k_probs) if use_raw else step.top_k_probs
     if full_probs:
         probs = np.asarray(full_probs)
         exact = True
@@ -291,9 +287,7 @@ def get_generation_stats(
 
     entropy_pairs = [_step_entropy(step, use_raw) for step in history]
     entropies = [e for e, _ in entropy_pairs]
-    entropy_key = (
-        "avg_entropy" if all(exact for _, exact in entropy_pairs) else "avg_topk_entropy"
-    )
+    entropy_key = "avg_entropy" if all(exact for _, exact in entropy_pairs) else "avg_topk_entropy"
 
     return {
         "total_steps": len(history),
@@ -313,7 +307,7 @@ def get_generation_stats(
 def _lens_position_context(slice_: LensSlice, index: int) -> str:
     position = slice_.positions[index]
     token = _hover_text(slice_.position_texts[index])
-    return f"Readout aligned to token {token} (position {position})"
+    return f"Readout after token {token} (residual position {position})"
 
 
 def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
@@ -344,8 +338,8 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
                 + "<br>"
                 + (
                     "<br>".join(
-                    f"{rank + 1}. {_hover_text(t)} ({p:.3f})"
-                    for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
+                        f"{rank + 1}. {_hover_text(t)} ({p:.3f})"
+                        for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
                     )
                     or "(empty)"
                 )
@@ -370,7 +364,7 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
     )
     fig.update_layout(
         title=f"Lens readouts — {slice_.mode}<br>"
-        "<sub>Readout aligned to displayed token via preceding causal state | "
+        "<sub>Readout of the residual after each displayed token | "
         "Hover for top-k | Drag to pan, double-click to reset</sub>",
         xaxis_title="Selected token position",
         yaxis_title="Layer",
@@ -392,14 +386,10 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
     return fig
 
 
-def _comparison_slices(
-    jacobian: LensSlice, logit: LensSlice
-) -> tuple[LensSlice, LensSlice]:
+def _comparison_slices(jacobian: LensSlice, logit: LensSlice) -> tuple[LensSlice, LensSlice]:
     """Validate the fixed presentation order used by lens comparisons."""
     if jacobian.mode != "jacobian" or logit.mode != "logit":
-        raise ValueError(
-            "lens comparison requires a jacobian slice followed by a logit slice"
-        )
+        raise ValueError("lens comparison requires a jacobian slice followed by a logit slice")
     return jacobian, logit
 
 
@@ -418,8 +408,8 @@ def _lens_heatmap_data(slice_: LensSlice) -> tuple[list, list, list]:
                 + "<br>"
                 + (
                     "<br>".join(
-                    f"{rank + 1}. {_hover_text(t)} ({p:.3f})"
-                    for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
+                        f"{rank + 1}. {_hover_text(t)} ({p:.3f})"
+                        for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
                     )
                     or "(empty)"
                 )
@@ -430,9 +420,7 @@ def _lens_heatmap_data(slice_: LensSlice) -> tuple[list, list, list]:
     return z, text, hover
 
 
-def plot_lens_heatmap_comparison(
-    jacobian: LensSlice, logit: LensSlice
-) -> go.Figure | None:
+def plot_lens_heatmap_comparison(jacobian: LensSlice, logit: LensSlice) -> go.Figure | None:
     """Side-by-side Jacobian and Logit heatmaps on one probability scale.
 
     Each trace is built directly from its own ``LensSlice``.  No subtraction
@@ -467,9 +455,7 @@ def plot_lens_heatmap_comparison(
                 textfont={"size": 11},
                 x=[
                     f"{p}: {_display_text(token_text)}"
-                    for p, token_text in zip(
-                        slice_.positions, slice_.position_texts, strict=True
-                    )
+                    for p, token_text in zip(slice_.positions, slice_.position_texts, strict=True)
                 ],
                 y=[f"L{layer}" for layer in slice_.layers],
                 coloraxis="coloraxis",
@@ -493,7 +479,7 @@ def plot_lens_heatmap_comparison(
         title=(
             "Lens readout comparison — Jacobian / Logit<br>"
             "<sub>Independent top-1 probabilities on a shared color scale | "
-            "readouts aligned to displayed tokens via preceding causal states | "
+            "readouts use the residual after each displayed token | "
             "Hover for each lens's top-k</sub>"
         ),
         coloraxis=dict(
@@ -524,10 +510,7 @@ def plot_readout_distribution(
             z=[row.count_by_layer for row in rows],
             x=[f"L{layer}" for layer in layers],
             y=[f"{_display_text(row.text)} ({row.count})" for row in rows],
-            customdata=[
-                [f"{_hover_text(row.text)} ({row.count})"] * len(layers)
-                for row in rows
-            ],
+            customdata=[[f"{_hover_text(row.text)} ({row.count})"] * len(layers) for row in rows],
             colorscale="Greys",
             colorbar=dict(title="Count"),
             hovertemplate="%{customdata}<br>%{x}: %{z} cells<extra></extra>",
@@ -593,20 +576,13 @@ def plot_pinned_token_ranks_comparison(
     """Compare independent pinned ranks with shared axes and token colors."""
     slices = _comparison_slices(jacobian, logit)
     token_ids = list(
-        dict.fromkeys(
-            token_id
-            for slice_ in slices
-            for token_id in slice_.pinned_ranks
-        )
+        dict.fromkeys(token_id for slice_ in slices for token_id in slice_.pinned_ranks)
     )
     if not token_ids:
         return None
 
     palette = qualitative.Dark24
-    colors = {
-        token_id: palette[index % len(palette)]
-        for index, token_id in enumerate(token_ids)
-    }
+    colors = {token_id: palette[index % len(palette)] for index, token_id in enumerate(token_ids)}
     fig = make_subplots(
         rows=1,
         cols=2,
@@ -634,9 +610,7 @@ def plot_pinned_token_ranks_comparison(
                     showlegend=showlegend,
                     line={"color": colors[token_id]},
                     marker={"color": colors[token_id]},
-                    hovertemplate=(
-                        "%{x}<br>median rank %{y:.0f}<extra>" + label + "</extra>"
-                    ),
+                    hovertemplate=("%{x}<br>median rank %{y:.0f}<extra>" + label + "</extra>"),
                 ),
                 row=1,
                 col=col,

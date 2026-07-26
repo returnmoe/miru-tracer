@@ -77,9 +77,7 @@ class TestVisualizations:
         figures = plot_probability_visualizations(history, top_k=3)
         confidence = figures[1]
         labels = [a.text for a in confidence.layout.annotations]
-        assert any(
-            "Entropy (nats)" in label and "Top-k" not in label for label in labels
-        )
+        assert any("Entropy (nats)" in label and "Top-k" not in label for label in labels)
         # uniform over 4 => log(4)
         assert confidence.data[1].y[0] == pytest.approx(math.log(4))
 
@@ -96,9 +94,7 @@ class TestVisualizations:
                 full_raw_probs=[0.25, 0.25, 0.25, 0.25],
             )
         ]
-        confidence = plot_probability_visualizations(
-            history, probability_mode="raw"
-        )[1]
+        confidence = plot_probability_visualizations(history, probability_mode="raw")[1]
         assert confidence.data[1].y[0] == pytest.approx(math.log(4))
 
     def test_top_k_capped_at_logged(self):

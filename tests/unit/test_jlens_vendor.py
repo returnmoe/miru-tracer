@@ -63,9 +63,7 @@ class TestPersistence:
         assert loaded.n_prompts == lens.n_prompts
         for layer in lens.source_layers:
             # saved as fp16 — compare loosely
-            assert torch.allclose(
-                loaded.jacobians[layer], lens.jacobians[layer], atol=1e-2
-            )
+            assert torch.allclose(loaded.jacobians[layer], lens.jacobians[layer], atol=1e-2)
 
     def test_load_rejects_non_lens_file(self, tmp_path):
         path = tmp_path / "other.pt"
@@ -80,7 +78,6 @@ class TestPersistence:
         assert merged.n_prompts == lens.n_prompts + other.n_prompts
         layer = lens.source_layers[0]
         expected = (
-            lens.jacobians[layer] * lens.n_prompts
-            + other.jacobians[layer] * other.n_prompts
+            lens.jacobians[layer] * lens.n_prompts + other.jacobians[layer] * other.n_prompts
         ) / merged.n_prompts
         assert torch.allclose(merged.jacobians[layer], expected, atol=1e-6)

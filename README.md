@@ -43,7 +43,7 @@ Useful for:
 Requires Python 3.12+. Works on CPU; a CUDA GPU helps with larger models.
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/returnmoe/miru-tracer.git
 cd miru-tracer
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
@@ -55,8 +55,11 @@ pip install -e . --extra-index-url https://download.pytorch.org/whl/cpu
 # pip install -e .[gpu]
 ```
 
-`constraints.txt` pins a fully verified dependency set if you want exact
-reproducibility: `pip install -e . -c constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu`
+The declared dependencies stay within the minor release lines tested for
+v0.3.0. `constraints.txt` pins the exact verified set:
+`pip install -e . -c constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu`.
+GitHub Releases attach that exact constraints file beside the wheel and include
+both files in `SHA256SUMS`.
 
 ## Usage
 
@@ -108,15 +111,32 @@ miru-tracer-fit-lens Qwen/Qwen3-0.6B --dim-batch 32
 
 By default the fitter considers up to 1,000 prompts, truncates each sequence
 at 128 tokens, and will not stop for convergence before 100 prompts succeed.
+The built-in WikiText-103 corpus is pinned to dataset commit
+`b08601e04326c79dfdd32d625aee71d232d685c3`; custom prompt files remain the
+best option when an experiment needs a separately archived corpus.
 After that floor, it stops when the rolling arithmetic mean of the latest 10
 relative-change updates falls below 0.002; for example, the Neuronpedia
 [Qwen3-4B fit](https://huggingface.co/neuronpedia/jacobian-lens/blob/main/qwen3-4b/jlens/Salesforce-wikitext/config.yaml)
 converged after 479 prompts.
 Tune the floor and window with `--min-prompts` and `--stop-window`, or pass
 `--stop-at-delta 0` to force the full 1,000-prompt budget. Fitting is
-checkpointed (interrupt + re-run resumes), and partial fits are usable. The
-full walkthrough — corpus choice, convergence flags, loading, and reading the
-plots — is in [docs/lens-tutorial.md](docs/lens-tutorial.md).
+checkpointed once per five-prompt chunk (configure with `--chunk-size`), and
+partial fits are usable. An abrupt loss can discard only the unfinished chunk;
+re-running resumes from the last completed one. v0.3 also logs per-phase
+timings and samples long prompts in flight every 30 seconds, including current
+phase and backward-pass progress. It records process/host I/O and pressure,
+output-filesystem details, CUDA
+allocator state, and physical-GPU utilization, clocks, power, temperature,
+and memory so long-run or multi-GPU slowdowns can be diagnosed. CUDA cache
+emptying is an explicit `--empty-cuda-cache` A/B option, not an unmeasured
+default intervention. This work follows a cluster issue
+reported by [Lucas Teske (@racerxdl)](https://github.com/racerxdl). The full
+walkthrough — corpus choice, convergence flags, cluster diagnostics, loading,
+and reading the plots — is in [docs/lens-tutorial.md](docs/lens-tutorial.md).
+The exact two-H100 slowdown remains unresolved at v0.3.0 publication; the
+released instrumentation is intended to make that hardware reproduction
+actionable, with focused v0.3.x fixes to follow if the new evidence warrants
+them.
 
 In the **Lens tab** you can select layer ranges and token positions, browse
 aggregated readouts (which tokens appear across the selected cells, and at
@@ -124,10 +144,22 @@ which layers), pin tokens to track their rank across layers, and add
 **steer / swap / ablate** interventions on readout directions. Multiple
 interventions can be active at once; they apply during generation and are
 also reflected in the readouts. Interactive Mode has a "Layer Lens" panel
-showing a per-layer readout aligned to the current token and can
+showing a per-layer readout of the residual after the current token and can
 apply the Lens tab's interventions to its session.
 
-Architecture support: the Llama/Qwen/Mistral/Gemma family, **Gemma 4**
+Lens positions are state-aligned: selecting token position `p` decodes the
+block-output residual at position `p`, after that token has entered the causal
+context. The final Logit row is therefore the model's actual distribution for
+the following token. This position convention matches Neuronpedia. See
+[the v0.3.0 migration note](CHANGELOG.md) if you used Miru's
+earlier prediction-aligned readouts; fitted Jacobian-lens artifacts remain
+compatible and do not need to be retrained. v0.3 fit artifacts record model,
+resolved revision, normalized config, and tokenizer fingerprints. Miru rejects
+confirmed conflicts; older/upstream lenses remain usable with an explicit
+warning that their identity cannot be verified.
+
+Architecture support: the Llama/Qwen/Mistral/Gemma family (including hybrid
+Qwen3.5/Qwen3.6 cache handling), **Gemma 4**
 (text-only and multimodal wrappers, softcapping included), **GLM MoE-DSA**
 (GLM-5/5.2 style), GPT-2/Phi/NeoX — auto-detected, with a per-architecture
 test matrix at tiny scale. See the support table in
@@ -171,10 +203,15 @@ pip install -e .[dev] --extra-index-url https://download.pytorch.org/whl/cpu
 pytest                   # unit + offline app/lens integration tests
 pytest -m external_model # end-to-end Qwen/Qwen3-0.6B (~1.4GB download)
 ruff check src tests     # lint
+ruff format --check .    # formatting
 ```
 
 The unit suite runs entirely on CPU with a tiny randomly-initialized model
 built in-code — no network, suitable for CI.
+Release candidates additionally follow the
+[release checklist](docs/release-checklist.md). The process-local two-H100
+Qwen3.6-27B run that ordinary CI cannot perform is post-release validation for
+v0.3.0, not a completed pre-release test.
 
 ## Docker
 
@@ -189,13 +226,13 @@ current default and supports Turing, Ampere, Hopper, and Blackwell GPUs.
 CUDA 12.6 remains available as an explicit legacy build for older host drivers
 and Maxwell CC 5.x (except 5.3), Pascal, or Volta GPUs. No single PyTorch wheel
 covers both sets.
-Examples below use release `0.2.4`:
+Examples below use release `0.3.0`:
 
 | Tags | CUDA | Intended use |
 | --- | --- | --- |
-| `0.2.4`, `0.2`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
-| `0.2.4-cu130`, `0.2-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
-| `0.2.4-cu126`, `0.2-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
+| `0.3.0`, `0.3`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
+| `0.3.0-cu130`, `0.3-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
+| `0.3.0-cu126`, `0.3-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
 | `sha-<full-commit>` and `sha-<full-commit>-cu130` | 13.0 | Immutable commit build |
 | `sha-<full-commit>-cu126` | 12.6 | Immutable legacy CUDA 12.6 build |
 
@@ -206,16 +243,30 @@ Dockerfile; only the pinned NVIDIA base, PyTorch wheel index, and exact CUDA
 version assertion differ.
 
 ```bash
-docker pull ghcr.io/returnmoe/miru-tracer:0.2.4
-docker pull ghcr.io/returnmoe/miru-tracer:0.2.4-cu126
+docker pull ghcr.io/returnmoe/miru-tracer:0.3.0
+docker pull ghcr.io/returnmoe/miru-tracer:0.3.0-cu126
 ```
 
-Images are published only after CI succeeds on `master`; pull-request builds
-are tested but not pushed to GHCR. Both variants bundle the matching CUDA
-userspace runtime, cuDNN, CUDA compatibility libraries, PyTorch, Triton,
-bitsandbytes, and Miru's complete Python dependency set. The host NVIDIA
-kernel driver is supplied by RunPod/NVIDIA Container Runtime and cannot be
-replaced from inside an image.
+Images are published only by the manual release workflow after current-master
+tests, the real-Qwen integration test, wheel validation, both image builds,
+an exact-tag service/hardening smoke test of each immutable image, and explicit
+acknowledgement of the unresolved multi-GPU slowdown. The verified immutable
+images are promoted to exact version aliases before the GitHub Release is
+created; mutable minor and `latest` aliases are promoted afterward. The
+two-H100 Qwen3.6-27B long run is performed against the published v0.3.0
+artifacts. Pull-request builds are tested but not pushed to GHCR. Both variants
+bundle the matching CUDA userspace runtime, cuDNN, CUDA compatibility
+libraries, PyTorch, Triton, bitsandbytes, and Miru's complete Python dependency
+set. The host NVIDIA kernel driver is supplied by RunPod/NVIDIA Container
+Runtime and cannot be replaced from inside an image.
+
+The stock images deliberately do **not** claim to bundle Qwen3.5/Qwen3.6's
+optional Flash Linear Attention and causal-convolution extensions: those
+compiled packages need a separately validated PyTorch/CUDA/GPU combination.
+Miru logs the selected Gated DeltaNet implementation, warns on Transformers'
+slower, more memory-hungry PyTorch fallback, and
+`miru-tracer-fit-lens --require-fast-kernels ...` fails before fitting when a
+controlled run requires the optional fast path.
 
 ### Recommended RunPod template: SSH first
 
@@ -227,7 +278,7 @@ with the following values:
 
 | Template setting | Recommended value |
 | --- | --- |
-| Container image | `ghcr.io/returnmoe/miru-tracer:0.2.4` (`-cu126` only for a legacy GPU/driver) |
+| Container image | `ghcr.io/returnmoe/miru-tracer:0.3.0` for R580.65.06+; use `ghcr.io/returnmoe/miru-tracer:0.3.0-cu126` for an R550-class host |
 | Container disk | At least 20 GB; add enough local space for the model and Hugging Face cache |
 | SSH key injection | Required: deploy with `startSsh: true` (GraphQL) or `runpodctl ... --ssh=true` |
 | TCP ports | `22/tcp` |
@@ -265,7 +316,7 @@ runpodctl pod create \
 ```
 
 For a direct-image deployment, replace `--template-id excmb18ueh` with
-`--image ghcr.io/returnmoe/miru-tracer:0.2.4` and supply the desired `--env`
+`--image ghcr.io/returnmoe/miru-tracer:0.3.0` and supply the desired `--env`
 JSON. For a custom GraphQL client, set `startSsh: true` explicitly. Merely
 adding `22/tcp` does not set it. The verified CLI version is available from
 the [official GitHub releases](https://github.com/runpod/runpodctl/releases);
@@ -353,8 +404,18 @@ miru-tracer-fit-lens Qwen/Qwen3-0.6B \
 
 `--out` controls only the `.safetensors` artifact and `.checkpoint.pt` file.
 Increase the RunPod container disk if the selected model will not fit alongside
-the local Hugging Face cache. The `/workspace` path is persistent only when a
-volume is actually attached there.
+the local Hugging Face cache. Large lenses rewrite both files once per chunk;
+prefer fast local storage while fitting when it is durable enough for your
+job, or increase `--chunk-size` to reduce network-volume traffic. For a
+63-layer, 5,120-wide fit, the fp32 checkpoint is about 6.6 GB and the fp16
+artifact about 3.3 GB: the default five-prompt cadence generates roughly
+238 GB of logical writes by prompt 120 even though only the latest pair
+remains. The startup storage plan logs the estimate for the actual model and
+settings, warns about orphaned atomic-write temporary files, and every saved
+chunk records remaining output-disk space. A caught write failure removes its
+own temporary file; after a hard kill, remove reported `.tmp.<pid>` files only
+after confirming no fit still targets that output. The `/workspace` path is
+persistent only when a volume is actually attached there.
 
 To start Miru manually and reach it only through SSH:
 

@@ -1,6 +1,7 @@
 """Lens artifact I/O: safetensors default, legacy .pt fallback, format checks."""
 
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -168,6 +169,28 @@ class TestSerializationValidation:
         path = tmp_path / f"integer{suffix}"
         with pytest.raises(ValueError, match="storage dtype must be floating"):
             save_lens(tiny_lens, path, dtype=torch.int32)
+
+    @pytest.mark.parametrize("suffix", [".safetensors", ".pt"])
+    def test_failed_write_removes_atomic_temp(self, tiny_lens, tmp_path, monkeypatch, suffix):
+        path = tmp_path / f"lens{suffix}"
+
+        def failed_save(*args, **_kwargs):
+            destination = Path(args[1] if suffix == ".safetensors" else args[0])
+            destination.write_bytes(b"partial")
+            raise OSError("simulated full disk")
+
+        if suffix == ".safetensors":
+            import safetensors.torch
+
+            monkeypatch.setattr(safetensors.torch, "save_file", failed_save)
+        else:
+            monkeypatch.setattr(tiny_lens, "save", failed_save)
+
+        with pytest.raises(OSError, match="simulated full disk"):
+            save_lens(tiny_lens, path)
+
+        assert not path.exists()
+        assert list(tmp_path.glob(f"{path.name}.tmp.*")) == []
 
 
 class TestConvertCli:

@@ -72,13 +72,23 @@ Apache-2.0 code from Anthropic's jacobian-lens (see its VENDORED.md; keep it
 as close to upstream as possible — it is exempt from some lint rules).
 `compute_lens_slice` captures block outputs with hooks (NOT
 `output_hidden_states`, whose last entry is post-final-norm) and derives
-logit/jacobian/diff readouts per (layer, position); `LensStore` finds fitted
+logit/jacobian/diff readouts per (layer, position). Positions are state-aligned:
+displayed token `p` decodes block output `p`, and the final Logit row predicts
+token `p + 1`; do not relabel residual `p - 1` as token `p`. `LensStore` finds fitted
 artifacts (`lens.safetensors`, legacy `lens.pt`) under `MIRU_LENS_DIR` —
 artifact I/O goes through `lens_io.py` (safetensors default, vendored
 torch.save codec for `.pt`). Fitting runs OFFLINE via
 `miru-tracer-fit-lens` (deliberately not in-app — do it on a GPU box; see
 docs/lens-tutorial.md); the Lens tab only loads/validates fit files. Fitting
-is chunk-checkpointed and a partial artifact is a valid lens. `decode_token`
+is chunk-checkpointed (one full checkpoint and partial artifact per chunk,
+default five prompts), a partial artifact is a valid lens, and stable
+`fit_telemetry key=value` records cover host/I/O/CUDA state at prompt
+boundaries and every 30 seconds inside a live prompt, with phase/backward-pass
+progress. Provenance-aware compatibility checks fail on confirmed
+model/revision/config/tokenizer conflicts; missing provenance remains an
+explicit warning so legacy/upstream artifacts still work. Viewer position
+alignment is not encoded in fitted matrices, so changing it does not
+invalidate artifacts or checkpoints. `decode_token`
 must keep its `<id>` fallback: model embedding matrices are padded past the
 tokenizer vocab (Qwen3 included) and those ids appear in readouts. The lens
 features are flagged experimental in the UI/docs — keep those disclaimers

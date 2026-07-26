@@ -50,14 +50,23 @@ you run Miru.
 On the GPU instance:
 
 ```bash
-pip install miru-tracer  # or: pip install -e . from a checkout
+# Download both the wheel and constraints.txt attached to the GitHub release:
+pip install ./miru_tracer-0.3.0-py3-none-any.whl -c ./constraints.txt
+
+# Or install from a checkout:
+pip install -e .
 miru-tracer-fit-lens Qwen/Qwen3-0.6B --dim-batch 32
 ```
+
+The project dependency ranges are bounded to the minor versions tested for
+v0.3.0; the attached `constraints.txt` selects the exact release-verified
+versions.
 
 Useful flags:
 
 | Flag | Meaning |
 |---|---|
+| `--revision COMMIT` | Load an immutable Hugging Face model revision. Pin a commit for controlled or comparative fits; the resolved commit is also stored in provenance. |
 | `--num-prompts N` | Maximum prompt budget (default 1,000). The run may finish earlier when the convergence criterion below is met. |
 | `--min-prompts N` | Minimum number of successful prompts before convergence can stop the run (default 100). |
 | `--stop-window N` | Number of recent successful prompt updates used for the rolling convergence check (default 10). |
@@ -65,7 +74,11 @@ Useful flags:
 | `--prompts-file f.txt` | Use your own corpus (one prompt per line, still capped by `--num-prompts`) instead of WikiText-103. Prompts should look like the model's pretraining distribution and be at least a few hundred characters (the fitter skips the first 16 token positions). |
 | `--dim-batch K` | Jacobian rows per backward pass. Higher = fewer backward passes but more memory. 4–8 on CPU, 16–64 on GPU. |
 | `--max-length N` | Maximum sequence length (default 128 tokens); longer prompts are truncated, while shorter prompts remain shorter. Raising it averages more positions but uses more memory. |
+| `--chunk-size N` | Prompts between full checkpoint and partial-artifact writes (default 5). Larger values reduce storage traffic, but an abrupt process or node loss can discard more completed prompts. |
+| `--empty-cuda-cache` | Run `torch.cuda.empty_cache()` after each saved chunk. Off by default; use it for a labelled A/B run when fragmentation is suspected, not as a general memory-leak fix. |
+| `--telemetry-interval S` | Sample process, host, allocator, and physical-GPU state while a prompt is still running (default every 30 seconds; `0` disables periodic samples but retains prompt-boundary records). |
 | `--device cuda --dtype bfloat16` | Defaults resolve to this automatically when CUDA is available. |
+| `--require-fast-kernels` | For Gated DeltaNet models, fail before fitting if Miru detects Transformers' PyTorch fallback instead of the optional linear-attention and causal-convolution fast paths. |
 | `--out path/lens.safetensors` | Write somewhere specific (default: Miru's lens cache). A `.pt` extension writes the legacy torch.save format instead. |
 | `--fresh` | Discard the checkpoint and start over. |
 
@@ -77,6 +90,9 @@ budget and 128-token maximum, and its default WikiText-103 corpus serves the
 same broad purpose, but it is not claimed to be the paper's undisclosed corpus.
 For WikiText, Miru follows Neuronpedia by concatenating source rows and
 rechunking them into roughly 2,000-character contexts before tokenization.
+The built-in download is pinned to Salesforce/WikiText commit
+`b08601e04326c79dfdd32d625aee71d232d685c3`, and that revision plus the
+ordered prompt-sequence hash are stored in fit provenance.
 Sequences are truncated rather than padded, so a short custom or final partial
 prompt can still contribute fewer than 128 tokens. Like the
 [released reference fitter](https://github.com/anthropics/jacobian-lens/blob/main/jlens/fitting.py),
@@ -111,16 +127,33 @@ miru-tracer-fit-lens Qwen/Qwen3-4B --dim-batch 32 --stop-at-delta 0
 
 Practical notes:
 
-- **Interrupt freely.** Fitting checkpoints after every prompt. Ctrl-C (or a
-  spot-instance reclaim) loses nothing; re-running the same command resumes
-  both the Jacobian average and its rolling convergence window. New checkpoints
-  record and validate the ordered prompt prefix, model identifier/revision when
-  available, model-config and tokenizer fingerprints, dtype, and
-  estimator-affecting settings. Checkpoints created before this metadata was
-  introduced cannot be matched to the newly rechunked corpus, so Miru refuses
-  to resume them and directs you to restart with `--fresh`. Finished lens
-  artifacts remain compatible. Mutable local model paths still cannot prove
-  that their underlying weight file contents stayed unchanged.
+- **Resume safely.** The CLI writes the full checkpoint and partial artifact
+  once per chunk (five prompts by default), rather than serializing a
+  multi-gigabyte accumulator after every prompt. Re-running the same command
+  resumes both the Jacobian average and its rolling convergence window. An
+  abrupt process or node loss can discard the unfinished chunk; use
+  `--chunk-size 1` for per-prompt persistence or a larger value to reduce I/O
+  further. Checkpoints record and validate the ordered prompt prefix, model
+  identifier/revision when available, model-config and tokenizer fingerprints,
+  dtype, and estimator-affecting settings. Checkpoints created before this
+  metadata was introduced cannot be matched to the newly rechunked corpus, so
+  Miru refuses to resume them and directs you to restart with `--fresh`.
+  Finished lens artifacts remain compatible. Mutable local model paths still
+  cannot prove that their underlying weight file contents stayed unchanged.
+- **Plan large-model I/O.** A fit with `L` source layers and hidden width `d`
+  has an fp32 checkpoint of approximately `4 × L × d²` bytes and an fp16
+  artifact of approximately `2 × L × d²` bytes. For 63 layers at width 5,120,
+  those are about 6.6 GB and 3.3 GB respectively, so the default five-prompt
+  cadence generates roughly 238 GB of logical writes by prompt 120 even though
+  only the latest two files remain. Miru logs
+  `fit_storage_plan` with the actual estimate, atomic-rewrite headroom,
+  filesystem, mount point, free space, and any orphaned `.tmp.<pid>` files.
+  Every `chunk_saved` record includes the remaining output-disk space. A
+  caught write error removes its own temporary file; a hard kill cannot, so
+  inspect and remove a reported orphan only when no fit is still targeting
+  that output. Put large outputs on fast local storage when its durability is
+  acceptable, or use a larger chunk such as 20–25 and accept the wider
+  preemption window.
 - **Partial fits work.** The output `lens.safetensors` is (re)written after
   every chunk and is a valid lens averaged over the prompts so far. You can
   start using it while the rest of the corpus finishes.
@@ -140,8 +173,16 @@ The fitting **method is identical for every architecture** — the fitter only
 needs residual blocks, a final norm, and an unembedding, all auto-detected.
 What differs is logistics:
 
-- **Llama / Qwen / Mistral / Gemma ≤3** (e.g. `Qwen/Qwen3-0.6B`): nothing
-  special. One consumer GPU fits models in this size class.
+- **Llama / Qwen through Qwen3 / Mistral / Gemma ≤3** (e.g.
+  `Qwen/Qwen3-0.6B`): nothing special. One consumer GPU fits models in this
+  size class.
+- **Qwen3.5/Qwen3.6 Gated DeltaNet** (e.g. `Qwen/Qwen3.6-27B`): Transformers
+  can use optional Flash Linear Attention and causal-convolution extensions.
+  Without both, it emits a warning and uses a substantially slower,
+  more-memory-hungry PyTorch path—the supplied two-H100 incident logs were
+  using that fallback. Miru records each detected component as `fit_backend`;
+  add `--require-fast-kernels` when a controlled benchmark must reject the
+  fallback. Multi-GPU `device_map` remains sequential layer sharding.
 - **Gemma 4** (e.g. `google/gemma-4-31B`): loads through the same command —
   transformers resolves the multimodal checkpoint automatically and the
   fitter locates the text decoder inside it (`model.language_model`); the
@@ -158,6 +199,75 @@ What differs is logistics:
 # multi-GPU sharding for models that don't fit on one device
 miru-tracer-fit-lens zai-org/GLM-5.2 --device-map auto --dim-batch 16
 ```
+
+### Long-run and multi-GPU diagnostics
+
+In v0.3 the fit log records the runtime environment, resolved device map,
+optional Gated DeltaNet backend, CUDA allocator backend, estimated
+checkpoint/artifact sizes, output mount/filesystem, and one machine-readable
+`fit_telemetry key=value` stream. `prompt_start` and `prompt_complete` bracket
+each prompt; `prompt_sample` records the current encode, allocation, forward,
+or backward/copy phase every 30 seconds, including backward-pass progress.
+When a completed prompt is at least twice the rolling process-local median and
+at least 60 seconds slower, `prompt_slowdown` emits an additional warning-level
+snapshot. The boundary telemetry also separates tokenization, CPU allocation,
+forward submission, backward/copy, and checkpoint/artifact time. It records
+process RSS/PSS/swap and I/O; host load,
+dirty/writeback memory, and Linux CPU/memory/I/O pressure stalls; PyTorch
+allocated/reserved/active/inactive-split/peak/free memory, allocator retries,
+and OOM counts for every CUDA device; and physical-GPU utilization, P-state,
+device memory, clocks, power, and temperature from `nvidia-smi`. The
+`nvidiaN_` prefix is a physical index and is intentionally distinct from the
+process-local `cudaN_` index when `CUDA_VISIBLE_DEVICES` remaps devices.
+
+Keep the complete stdout and stderr logs when reporting a slowdown. Compare
+`process_prompt` (prompts completed in this process, independent of resumed
+corpus position), the `prompt_sample` sequence inside the last healthy and
+first slow prompt, its `phase`/`backward_pass` progress,
+`phase_forward_enqueue_s`/`phase_backward_and_copy_s`, `proc_write_bytes`,
+host I/O PSI,
+GPU utilization/clocks/P-state, and allocated versus reserved/physical device
+memory. That combination distinguishes compute throttling, storage stalls,
+allocator fragmentation, and a retained live tensor much better than a single
+memory number.
+
+Treat a complete fit log as potentially identifying cluster data. Before
+posting one publicly, redact or replace the hostname, PID, SLURM job ID,
+`CUDA_VISIBLE_DEVICES`, output mount/path, and physical GPU UUIDs. Preserve the
+timings, counters, driver version, device model, and consistent pseudonyms for
+hosts/GPUs so the diagnostic sequence remains useful. Private reports may keep
+the original identifiers when the recipient is authorized to receive them.
+On a shared bare-metal node, `nvidia-smi` may expose physical GPUs outside the
+job's CUDA allocation, so review those records as well as the process-local
+`cudaN_` fields before sharing.
+
+`--device-map auto` uses Accelerate's layer-dispatch path. It lets a model that
+does not fit on one GPU run across several GPUs, but it is not data parallelism:
+one prompt still travels through the sharded layers in order, so two GPUs do
+not imply twice the fitting throughput and uneven memory use is expected. For
+Qwen-family models with Gated DeltaNet layers, heed Transformers' warning if
+the optional fast linear-attention or causal-convolution kernels are missing;
+the PyTorch fallback is slower and more memory hungry. Miru records the backend
+it can detect as `fit_backend` and emits `kind=linear_attention_fallback` when
+appropriate. The stock Miru Docker images do not bundle these separately
+compiled extensions; build and hardware-test a compatible derived image when
+they are required, then use `--require-fast-kernels` to make that requirement
+enforceable.
+
+This diagnostics work followed a reproducible multi-GPU slowdown reported,
+with cluster logs, by
+[Lucas Teske (@racerxdl)](https://github.com/racerxdl). Those logs showed a
+roughly 4.7× process-lifetime slowdown that disappeared on restart. They did
+not prove a single CUDA allocator defect; Miru v0.3 fixes the confirmed
+full-checkpoint write amplification and large-object lifetimes, and preserves
+the new intra-prompt telemetry so any remaining backend or allocator component
+can be isolated in the required post-release hardware reproduction. The exact
+slowdown is not considered resolved merely by publishing v0.3.0.
+`torch.cuda.empty_cache()` is therefore an opt-in
+`--empty-cuda-cache` experiment. It does not increase the memory available to
+PyTorch, although it can reduce fragmentation in some workloads; leaving it
+off preserves the allocator's normal behavior and avoids mandatory
+reallocation after every chunk.
 
 ### Fitting inside Docker (GPU cloud platforms)
 
@@ -206,7 +316,8 @@ ssh -L 7860:127.0.0.1:7860 -p <external-ssh-port> root@<pod-ip>
 ```
 
 The default `miru-tracer` image is CUDA 13.0 and supports Blackwell on an
-R580.65.06+ host. Use `miru-tracer:0.2.4-cu126` only for an older driver or a
+R580.65.06+ host. Use `miru-tracer:0.3.0-cu126` for an older driver—including
+the R550.54.15 driver in the reported two-H100 run—or a
 Maxwell CC 5.x (except 5.3),
 Pascal, or Volta GPU. Both images contain the matching CUDA userspace libraries;
 the host kernel driver still comes from the cloud platform/NVIDIA container runtime.
@@ -225,8 +336,11 @@ Three equivalent ways to get your file there:
 
 1. **Upload in the app**: Lens tab → *"Jacobian lens fit file"* accordion →
    drop the `lens.safetensors` (or a legacy `lens.pt`) in. Miru validates it
-   against the loaded model (`d_model`, layer count) and installs it in the
-   cache — always as safetensors. "Check status" shows what's currently loaded.
+   against the loaded model (`d_model`, layer count, model identity, resolved
+   revision, normalized config, and tokenizer fingerprint when recorded) and
+   installs it in the cache — always as safetensors. Confirmed conflicts are
+   rejected. Older and upstream lenses without provenance remain loadable, but
+   "Check status" warns that their identity cannot be verified.
 2. **Copy it yourself**:
    `scp gpu-box:lens.safetensors ~/.cache/miru-tracer/lenses/Qwen--Qwen3-0.6B/lens.safetensors`
    (the directory name is the model name with `/` replaced by `--`).
@@ -256,7 +370,7 @@ Load a model (Model Loader tab), then open the **Lens** tab:
    independent Jacobian and Logit columns. Active interventions are shown above
    the inspector.
 4. **Interactive Mode** has a *"Layer Lens"* accordion showing the per-layer
-   readout aligned to the current token while you step.
+   residual readout after the current token while you step.
 
 **Candidates per layer+position** controls the top-N retained in each cell
 (default 8). **All Layers rows** independently caps the aggregate list (default
@@ -268,15 +382,26 @@ token decodes to useful non-ASCII text, the readable form is appended—for
 example, Qwen's `æ³ķåĽ½` appears as `æ³ķåĽ½ (法国)`. Ordinary ASCII labels stay
 compact, while incomplete UTF-8 fragments remain in their raw tokenizer form.
 
-Selecting token position `p` produces a readout **for that displayed token**.
-Miru decodes the preceding causal state at `p−1`—the state whose output
-distribution produced token `p`—and keeps the UI label and highlight on `p`.
-Consequently, the final identity layer is the model distribution for the
-selected token rather than for the token that follows it. Position 0 is omitted
-because there is no earlier causal state in the captured sequence. A fitted
-Jacobian readout remains broader than the final distribution: it describes
-verbalizable concepts in that preceding state that can influence present or
-future outputs.
+Selecting token position `p` decodes the block-output residual **at that same
+position `p`**, after the displayed token has entered the causal context. This
+matches Neuronpedia's position convention. Consequently, the final identity
+layer is the model's true next-token distribution from that state: it predicts
+the token after the selected token. Position 0 is a valid state and is included.
+A fitted Jacobian readout remains broader than the final distribution: it
+describes verbalizable concepts in the selected state that can influence
+current or future computation.
+
+Miru versions before v0.3.0 instead displayed token `p` while decoding residual
+position `p−1`. That attached readouts to a different causal state. v0.3.0
+changes the readout slicer and UI selection semantics; that alignment fix does
+not change the Jacobian estimator or matrices. v0.3.0 also changes fitter
+checkpoint cadence, memory cleanup, and diagnostics, but the artifact and
+checkpoint schemas remain unchanged. Existing lenses created by
+`miru-tracer-fit-lens` or the upstream reference implementation remain valid
+and do **not** need retraining. Provenance-free older/upstream artifacts now
+show an identity-verification warning; that warning does not indicate damaged
+Jacobians. Re-run the inexpensive readout step to replace screenshots, tables,
+or conclusions produced with the old alignment.
 
 The recommended Jacobian/Compare range starts after the first 29% of layers,
 which are commonly degenerate, and always includes the final model-output layer
@@ -324,7 +449,8 @@ plus Qwen3-0.6B end-to-end):
 
 | Family | Example | Notes |
 |---|---|---|
-| Llama / Qwen / Mistral / Gemma ≤3 / OLMo | `Qwen/Qwen3-0.6B` (integration-tested for real) | Standard `model.layers` layout. |
+| Llama / Qwen through Qwen3 / Mistral / Gemma ≤3 / OLMo | `Qwen/Qwen3-0.6B` (integration-tested for real) | Standard `model.layers` layout. |
+| **Qwen3.5/Qwen3.6 hybrid Gated DeltaNet** | Tiny Qwen3.5 (full trace/lens/intervention matrix); `Qwen/Qwen3.6-27B` is scheduled for post-release v0.3 hardware validation | Standard residual layout, but hybrid recurrent caches cannot be cropped. Miru invalidates and rebuilds them on undo/replay. Optional fast kernels are detected separately from the PyTorch fallback. |
 | **Gemma 4** | `google/gemma-4-31B` | Text-only and multimodal-wrapper classes both detected; logit softcapping handled; per-layer input embeddings are internal to blocks and don't affect readouts. Multimodal models run in text-only mode. 31B ⇒ GPU (4-bit is fine: quantization skips the LM head, so lens directions stay full-precision). |
 | **GLM MoE-DSA** | `zai-org/GLM-5.2` | Standard layout; MoE and sparse attention are internal to blocks; MTP layers are not part of the traced stack. Note: MLA-style attention computes prefill and decode slightly differently, so cached logits can differ from a from-scratch forward by ~1e-3 (rankings unaffected). At 753B parameters this is multi-GPU-server territory — architectural support is verified at tiny scale. |
 | GPT-2 / Phi / GPT-NeoX (Pythia) | `gpt2` | Covered by the vendored layout table. |
@@ -342,4 +468,6 @@ error message tells you when it doesn't.
 | "none of the selected layers are fitted" | Your fit covers fewer layers than the range you selected (e.g. a partial fit); widen the stride or refit. |
 | J-lens readouts look like noise everywhere | Too few prompts in the fit, or a corpus very unlike the model's pretraining data. |
 | Fitting OOMs on GPU | Lower `--dim-batch` or `--max-length`. |
+| Qwen3.5/Qwen3.6 reports that its fast path is unavailable | Install and hardware-test compatible Flash Linear Attention and causal-convolution extensions in a derived environment, or accept Transformers' slower fallback. Use `--require-fast-kernels` when fallback would invalidate the run. |
+| A long fit slows down after many process-local prompts | Keep both output streams and compare the `fit_telemetry` phase, allocator, physical-GPU, PSI, and I/O fields around the transition. Retry from the durable checkpoint in a fresh process; use `--empty-cuda-cache` only as a labelled A/B test. |
 | `<12345>` shown as a readout token | The id is in the model's (padded) embedding matrix but not in the tokenizer vocab; normal for some models. |

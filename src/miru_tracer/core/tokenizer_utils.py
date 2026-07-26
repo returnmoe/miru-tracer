@@ -66,9 +66,7 @@ def extract_token_bytes(tokenizer, token_str: str) -> bytes | None:
     return bytes(byte_values) if byte_values else None
 
 
-def safe_decode_token(
-    tokenizer, token_id: int
-) -> tuple[str | None, str, str | None]:
+def safe_decode_token(tokenizer, token_id: int) -> tuple[str | None, str, str | None]:
     """
     Safely decode a single token ID for display.
 
@@ -143,9 +141,7 @@ def detect_byte_level_bpe(tokenizer) -> bool:
         True if byte-level BPE, False otherwise
     """
     # Check for common indicators
-    if hasattr(tokenizer, "backend_tokenizer") and hasattr(
-        tokenizer.backend_tokenizer, "decoder"
-    ):
+    if hasattr(tokenizer, "backend_tokenizer") and hasattr(tokenizer.backend_tokenizer, "decoder"):
         decoder_type = type(tokenizer.backend_tokenizer.decoder).__name__
         if "ByteLevel" in decoder_type:
             return True

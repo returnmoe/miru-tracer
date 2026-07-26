@@ -16,7 +16,7 @@ repository (package `jlens` v0.1.0), companion code to the paper
 |---|---|
 | `hooks.py` | Import paths rewritten `jlens.*` → `miru_tracer.core._jlens.*` |
 | `lens.py` | Import paths rewritten; optional JSON-safe Miru fit metadata added |
-| `fitting.py` | Import paths rewritten; resumable convergence diagnostics, early stopping, and checkpoint provenance checks added |
+| `fitting.py` | Import paths rewritten; resumable convergence diagnostics, early stopping, checkpoint provenance/write de-duplication, prompt-lifetime cleanup, phase-aware intra-prompt telemetry, and slowdown detection added |
 | `protocol.py` | Import paths rewritten |
 | `hf.py` | Import paths rewritten |
 | `__init__.py` | New file (subset of upstream public API re-exports) |

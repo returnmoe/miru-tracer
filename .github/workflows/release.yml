@@ -1,34 +1,132 @@
 name: Release
 
 on:
-  workflow_run:
-    workflows: [CI]
-    branches: [master]
-    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version declared in pyproject.toml
+        required: true
+        default: "0.3.0"
+        type: string
+      unresolved_slowdown_acknowledged:
+        description: Acknowledge the Qwen3.6-27B multi-GPU slowdown root cause remains unresolved
+        required: true
+        default: false
+        type: boolean
 
-permissions:
-  contents: write
-  packages: write
-  id-token: write
-  attestations: write
-  artifact-metadata: write
+permissions: {}
 
 concurrency:
-  group: release-master
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  GRADIO_ANALYTICS_ENABLED: "False"
+
 jobs:
-  publish-images:
-    if: github.event.workflow_run.conclusion == 'success'
-    name: Publish ${{ matrix.variant }} image
+  verify-release:
+    name: Verify source and release gates
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      minor: ${{ steps.version.outputs.minor }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+          cache: pip
+      - id: version
+        name: Confirm release source and known-risk acknowledgement
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          UNRESOLVED_SLOWDOWN_ACKNOWLEDGED: ${{ inputs.unresolved_slowdown_acknowledged }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/master"
+          git fetch origin master --depth=1
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/master)"
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
+          test -n "$version"
+          test "$version" = "$REQUESTED_VERSION"
+          test "$version" = "0.3.0"
+          grep -q "^## ${version} — " CHANGELOG.md
+          if grep -Fqx "## ${version} — unreleased" CHANGELOG.md; then
+            echo "date the ${version} changelog entry before publishing" >&2
+            exit 1
+          fi
+          test "$UNRESOLVED_SLOWDOWN_ACKNOWLEDGED" = "true"
+          minor="${version%.*}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "minor=$minor" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Known-risk acknowledgement"
+            echo
+            echo "Unresolved Qwen3.6-27B multi-GPU slowdown acknowledged: **yes**"
+            echo
+            echo "The released v0.3.0 artifacts require post-release hardware validation before the slowdown can be described as resolved."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Reject a conflicting release tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="v${VERSION}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "$tag")" = "$(git rev-parse HEAD)"
+          fi
+      - name: Install verified CPU dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]' -c constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip check
+      - run: ruff check src tests
+      - run: ruff format --check .
+      - run: pytest
+      - name: Run required real-Qwen tests
+        env:
+          MIRU_REQUIRE_EXTERNAL_MODEL: "1"
+          HF_HOME: ${{ runner.temp }}/huggingface
+        run: pytest -m external_model
+      - name: Build and smoke-test the release wheel
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python -m pip wheel . --no-deps --wheel-dir dist
+          wheel="dist/miru_tracer-${VERSION}-py3-none-any.whl"
+          test -f "$wheel"
+          python -m pip uninstall -y miru-tracer
+          python -m pip install --no-deps "$wheel"
+          python -m pip check
+          python -c "from importlib.metadata import version; assert version('miru-tracer') == '${VERSION}'"
+          miru-tracer-fit-lens --help
+          miru-tracer-convert-lens --help
+      - name: Preserve the exact tested wheel
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: miru-tracer-${{ steps.version.outputs.version }}-wheel
+          path: dist/miru_tracer-${{ steps.version.outputs.version }}-py3-none-any.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-images:
+    needs: verify-release
+    name: Build immutable ${{ matrix.variant }} image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - variant: cu126
             suffix: -cu126
-            publish_unqualified: false
             cuda_image: nvidia/cuda:12.6.3-base-ubuntu24.04@sha256:c87e78933f4c16e3272123bf2f75537306596d0fbaa395a29696a22786e5ee0e
             torch_index: https://download.pytorch.org/whl/cu126
             expected_cuda: "12.6"
@@ -40,7 +138,6 @@ jobs:
             cuda_nvshmem_spec: nvidia-nvshmem-cu12==3.4.5
           - variant: cu130
             suffix: -cu130
-            publish_unqualified: true
             cuda_image: nvidia/cuda:13.0.3-base-ubuntu24.04@sha256:7c7413a56200486f71f181cad9310f6fd31b6bb21816ade15fc9c1e1e927a5c1
             torch_index: https://download.pytorch.org/whl/cu130
             expected_cuda: "13.0"
@@ -52,29 +149,6 @@ jobs:
             cuda_nvshmem_spec: nvidia-nvshmem-cu13==3.4.5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
-      - name: Confirm this is the current master commit
-        run: |
-          git fetch origin master --depth=1
-          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/master)"
-      - id: version
-        name: Read and validate release version
-        shell: bash
-        run: |
-          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
-          test -n "$version"
-          test "$version" = "0.2.4"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Reject a conflicting release tag
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          tag="v${VERSION}"
-          if git rev-parse "$tag" >/dev/null 2>&1; then
-            test "$(git rev-list -n 1 "$tag")" = "$(git rev-parse HEAD)"
-          fi
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
       - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0
         with:
@@ -85,15 +159,7 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302
         with:
           images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=${{ steps.version.outputs.version }}${{ matrix.suffix }}
-            type=raw,value=0.2${{ matrix.suffix }}
-            type=raw,value=latest${{ matrix.suffix }}
-            type=sha,format=long,suffix=${{ matrix.suffix }}
-            type=raw,value=${{ steps.version.outputs.version }},enable=${{ matrix.publish_unqualified }}
-            type=raw,value=0.2,enable=${{ matrix.publish_unqualified }}
-            type=raw,value=latest,enable=${{ matrix.publish_unqualified }}
-            type=sha,format=long,enable=${{ matrix.publish_unqualified }}
+          tags: type=raw,value=sha-${{ github.sha }}${{ matrix.suffix }}
       - id: push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
@@ -114,24 +180,14 @@ jobs:
             CUDA_NVSHMEM_SPEC=${{ matrix.cuda_nvshmem_spec }}
           cache-from: type=gha,scope=docker-${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.variant }}
-      - name: Verify published version tag and pull size
+      - name: Verify immutable image and pull size
         env:
           IMAGE: ghcr.io/${{ github.repository }}
-          TAG: ${{ steps.version.outputs.version }}${{ matrix.suffix }}
-          VERSION: ${{ steps.version.outputs.version }}
-          PUBLISH_UNQUALIFIED: ${{ matrix.publish_unqualified }}
+          TAG: sha-${{ github.sha }}${{ matrix.suffix }}
           MAX_IMAGE_BYTES: "4500000000"
           MAX_LAYER_BYTES: "1500000000"
         run: |
           docker buildx imagetools inspect "${IMAGE}:${TAG}"
-          if [ "$PUBLISH_UNQUALIFIED" = true ]; then
-            qualified_digest=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" | \
-              awk '$1 == "Digest:" { print $2; exit }')
-            unqualified_digest=$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" | \
-              awk '$1 == "Digest:" { print $2; exit }')
-            test -n "$qualified_digest"
-            test "$unqualified_digest" = "$qualified_digest"
-          fi
           raw=$(docker buildx imagetools inspect --raw "${IMAGE}:${TAG}")
           if digest=$(echo "$raw" | jq -er \
             '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest'); then
@@ -144,7 +200,7 @@ jobs:
           test "$total_bytes" -le "$MAX_IMAGE_BYTES"
           test "$largest_layer_bytes" -le "$MAX_LAYER_BYTES"
           {
-            echo "### Published ${{ matrix.variant }} image"
+            echo "### Built ${{ matrix.variant }} image"
             echo
             echo "\`${IMAGE}:${TAG}\`"
             echo
@@ -153,31 +209,100 @@ jobs:
             echo "Compressed layers: $(numfmt --to=iec-i --suffix=B "$total_bytes") total; " \
               "$(numfmt --to=iec-i --suffix=B "$largest_layer_bytes") largest"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke-test exact immutable image
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAG: sha-${{ github.sha }}${{ matrix.suffix }}
+          EXPECTED_CUDA: ${{ matrix.expected_cuda }}
+        run: |
+          # The pushed image is large; release BuildKit's local copy before
+          # Docker pulls and runs the exact registry tag on this ephemeral host.
+          docker buildx prune --all --force
+          tests/docker/smoke.sh "${IMAGE}:${TAG}" "$EXPECTED_CUDA"
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-  release-metadata:
-    needs: publish-images
+  promote-version-images:
+    needs: [verify-release, publish-images]
+    name: Promote exact version image aliases
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote exact CUDA 12.6 version alias
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          VERSION: ${{ needs.verify-release.outputs.version }}
+        run: |
+          source="${IMAGE}:sha-${GITHUB_SHA}-cu126"
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${VERSION}-cu126" \
+            "$source"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}-cu126"
+      - name: Promote exact CUDA 13.0 version aliases
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          VERSION: ${{ needs.verify-release.outputs.version }}
+        run: |
+          source="${IMAGE}:sha-${GITHUB_SHA}-cu130"
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${VERSION}-cu130" \
+            --tag "${IMAGE}:${VERSION}" \
+            --tag "${IMAGE}:sha-${GITHUB_SHA}" \
+            "$source"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}-cu130"
+          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
+          docker buildx imagetools inspect "${IMAGE}:sha-${GITHUB_SHA}"
+
+  release-metadata:
+    needs: [verify-release, promote-version-images]
+    name: Publish tag, notes, and wheel
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
-      - id: version
-        name: Read and validate release version
-        shell: bash
+      - name: Retrieve the exact tested wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: miru-tracer-${{ needs.verify-release.outputs.version }}-wheel
+          path: dist
+      - name: Prepare verified artifacts and curated release notes
+        env:
+          VERSION: ${{ needs.verify-release.outputs.version }}
         run: |
-          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
-          test -n "$version"
-          test "$version" = "0.2.4"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          wheel="dist/miru_tracer-${VERSION}-py3-none-any.whl"
+          test -f "$wheel"
+          cp constraints.txt dist/constraints.txt
+          sha256sum "$wheel" dist/constraints.txt | sed 's#dist/##' > dist/SHA256SUMS
+          awk -v heading="## ${VERSION} " '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+            END { if (!found) exit 2 }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        with:
+          subject-path: dist/miru_tracer-${{ needs.verify-release.outputs.version }}-py3-none-any.whl
       - name: Create annotated tag if absent
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.verify-release.outputs.version }}
         run: |
           tag="v${VERSION}"
           if git rev-parse "$tag" >/dev/null 2>&1; then
@@ -188,11 +313,59 @@ jobs:
             git tag -a "$tag" -m "Miru Tracer $tag"
             git push origin "$tag"
           fi
-      - name: Create generated GitHub Release if absent
+      - name: Publish curated GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.verify-release.outputs.version }}
         run: |
           tag="v${VERSION}"
-          gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --verify-tag --generate-notes --title "$tag"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$tag" --notes-file release-notes.md
+          else
+            gh release create "$tag" --verify-tag --title "$tag" --notes-file release-notes.md
+          fi
+          gh release upload "$tag" \
+            dist/*.whl dist/constraints.txt dist/SHA256SUMS --clobber
+
+  promote-rolling-images:
+    needs: [verify-release, release-metadata]
+    name: Promote mutable image aliases for verified commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote rolling CUDA 12.6 aliases
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          MINOR: ${{ needs.verify-release.outputs.minor }}
+        run: |
+          source="${IMAGE}:sha-${GITHUB_SHA}-cu126"
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${MINOR}-cu126" \
+            --tag "${IMAGE}:latest-cu126" \
+            "$source"
+          docker buildx imagetools inspect "${IMAGE}:${MINOR}-cu126"
+          docker buildx imagetools inspect "${IMAGE}:latest-cu126"
+      - name: Promote rolling CUDA 13.0 and unqualified aliases
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          MINOR: ${{ needs.verify-release.outputs.minor }}
+        run: |
+          source="${IMAGE}:sha-${GITHUB_SHA}-cu130"
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${MINOR}-cu130" \
+            --tag "${IMAGE}:latest-cu130" \
+            --tag "${IMAGE}:${MINOR}" \
+            --tag "${IMAGE}:latest" \
+            "$source"
+          docker buildx imagetools inspect "${IMAGE}:${MINOR}-cu130"
+          docker buildx imagetools inspect "${IMAGE}:latest-cu130"
+          docker buildx imagetools inspect "${IMAGE}:${MINOR}"
+          docker buildx imagetools inspect "${IMAGE}:latest"

@@ -62,9 +62,7 @@ class Intervention:
                 f"Unknown intervention kind: {self.kind!r}. Use one of {INTERVENTION_KINDS}."
             )
         if self.basis not in VECTOR_BASES:
-            raise ValueError(
-                f"Unknown basis: {self.basis!r}. Use one of {VECTOR_BASES}."
-            )
+            raise ValueError(f"Unknown basis: {self.basis!r}. Use one of {VECTOR_BASES}.")
         if self.kind == "swap" and self.token_id_to is None:
             raise ValueError("swap interventions need token_id_to")
 
@@ -103,12 +101,8 @@ def lens_vector(
     u_hat = unembed_direction(model, token_id)
     is_final = n_layers is not None and layer == n_layers - 1
     if basis == "logit" or is_final or jlens is None or layer not in jlens.jacobians:
-        if basis == "jacobian" and not is_final and (
-            jlens is None or layer not in jlens.jacobians
-        ):
-            raise ValueError(
-                f"jacobian basis requires a fitted lens covering layer {layer}"
-            )
+        if basis == "jacobian" and not is_final and (jlens is None or layer not in jlens.jacobians):
+            raise ValueError(f"jacobian basis requires a fitted lens covering layer {layer}")
         return u_hat
 
     J = jlens.jacobians[layer].float().to(u_hat.device)
@@ -117,9 +111,7 @@ def lens_vector(
     except Exception:  # pragma: no cover - driver-dependent
         solution = J.T @ u_hat
     if not torch.isfinite(solution).all() or solution.norm() < 1e-8:
-        logger.warning(
-            f"lstsq ill-conditioned for layer {layer}; falling back to J^T u"
-        )
+        logger.warning(f"lstsq ill-conditioned for layer {layer}; falling back to J^T u")
         solution = J.T @ u_hat
     return solution / solution.norm()
 
@@ -141,14 +133,22 @@ class InterventionSet:
             if not 0 <= iv.layer < n_layers:
                 raise ValueError(f"layer {iv.layer} out of range (n_layers={n_layers})")
             v = lens_vector(
-                model, iv.token_id, iv.layer,
-                basis=iv.basis, jlens=jlens, n_layers=n_layers,
+                model,
+                iv.token_id,
+                iv.layer,
+                basis=iv.basis,
+                jlens=jlens,
+                n_layers=n_layers,
             )
             v_to = None
             if iv.kind == "swap":
                 v_to = lens_vector(
-                    model, iv.token_id_to, iv.layer,
-                    basis=iv.basis, jlens=jlens, n_layers=n_layers,
+                    model,
+                    iv.token_id_to,
+                    iv.layer,
+                    basis=iv.basis,
+                    jlens=jlens,
+                    n_layers=n_layers,
                 )
             self._edits.setdefault(iv.layer, []).append((iv, v, v_to))
 

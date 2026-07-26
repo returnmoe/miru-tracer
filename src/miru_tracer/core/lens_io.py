@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import suppress
 from pathlib import Path
 
 import torch
@@ -89,7 +90,13 @@ def save_lens(lens: JacobianLens, path: str | Path, *, dtype: torch.dtype = torc
     while the app may be reading it."""
     path = Path(path)
     if path.suffix == ".pt":
-        lens.save(str(path), dtype=dtype)
+        tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+        try:
+            lens.save(str(tmp), dtype=dtype)
+            os.replace(tmp, path)
+        finally:
+            with suppress(OSError):
+                tmp.unlink()
         return
     from safetensors.torch import save_file
 
@@ -107,8 +114,12 @@ def save_lens(lens: JacobianLens, path: str | Path, *, dtype: torch.dtype = torc
     if lens.fit_metadata is not None:
         metadata["fit_metadata"] = encode_fit_metadata(lens.fit_metadata, n_prompts=lens.n_prompts)
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-    save_file(tensors, str(tmp), metadata=metadata)
-    os.replace(tmp, path)
+    try:
+        save_file(tensors, str(tmp), metadata=metadata)
+        os.replace(tmp, path)
+    finally:
+        with suppress(OSError):
+            tmp.unlink()
 
 
 def load_lens(path: str | Path) -> JacobianLens:

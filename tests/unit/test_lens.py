@@ -38,9 +38,7 @@ def input_ids(tiny_tokenizer):
 
 
 class TestComputeLensSlice:
-    def test_logit_mode_final_layer_matches_model(
-        self, tiny_model, tiny_tokenizer, input_ids
-    ):
+    def test_logit_mode_final_layer_matches_model(self, tiny_model, tiny_tokenizer, input_ids):
         final = tiny_model.config.num_hidden_layers - 1
         slice_ = compute_lens_slice(
             tiny_model, tiny_tokenizer, input_ids, layers=[final], mode="logit", top_k=5
@@ -54,15 +52,19 @@ class TestComputeLensSlice:
 
     def test_position_subset(self, tiny_model, tiny_tokenizer, input_ids):
         slice_ = compute_lens_slice(
-            tiny_model, tiny_tokenizer, input_ids,
-            layers=[0], positions=[2, 5], mode="logit", top_k=3,
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=[0],
+            positions=[2, 5],
+            mode="logit",
+            top_k=3,
         )
         assert slice_.positions == [2, 5]
-        assert slice_.source_positions == [2, 5]
         assert len(slice_.tokens[0]) == 2
         assert len(slice_.position_texts) == 2
 
-    def test_token_alignment_reads_state_that_produced_selected_token(
+    def test_selected_position_reads_same_position_next_token_distribution(
         self, tiny_model, tiny_tokenizer, input_ids
     ):
         final = tiny_model.config.num_hidden_layers - 1
@@ -75,40 +77,32 @@ class TestComputeLensSlice:
             positions=[selected_position],
             mode="logit",
             top_k=5,
-            token_aligned=True,
         )
         with torch.no_grad():
-            real = tiny_model(input_ids).logits[0, selected_position - 1].float()
+            real = tiny_model(input_ids).logits[0, selected_position].float()
         expected = torch.topk(torch.softmax(real, -1), 5)
         assert slice_.positions == [selected_position]
-        assert slice_.source_positions == [selected_position - 1]
         assert slice_.position_texts == [
             decode_token(tiny_tokenizer, int(input_ids[0, selected_position]))
         ]
         assert slice_.tokens[0][0] == expected.indices.tolist()
         assert slice_.probs[0][0] == pytest.approx(expected.values.tolist(), rel=1e-4)
 
-    def test_token_alignment_omits_unpredictable_first_token(
-        self, tiny_model, tiny_tokenizer, input_ids
-    ):
+    def test_state_alignment_includes_first_position(self, tiny_model, tiny_tokenizer, input_ids):
+        final = tiny_model.config.num_hidden_layers - 1
         slice_ = compute_lens_slice(
             tiny_model,
             tiny_tokenizer,
             input_ids,
-            layers=[0],
-            token_aligned=True,
+            layers=[final],
+            top_k=5,
         )
-        assert slice_.positions == list(range(1, input_ids.shape[1]))
-        assert slice_.source_positions == list(range(input_ids.shape[1] - 1))
-        with pytest.raises(ValueError, match="token-aligned positions"):
-            compute_lens_slice(
-                tiny_model,
-                tiny_tokenizer,
-                input_ids,
-                layers=[0],
-                positions=[0],
-                token_aligned=True,
-            )
+        with torch.no_grad():
+            real = tiny_model(input_ids).logits[0, 0].float()
+        expected = torch.topk(torch.softmax(real, -1), 5)
+        assert slice_.positions == list(range(input_ids.shape[1]))
+        assert slice_.tokens[0][0] == expected.indices.tolist()
+        assert slice_.probs[0][0] == pytest.approx(expected.values.tolist(), rel=1e-4)
 
     def test_prerecorded_activations_match_and_skip_forward(
         self, tiny_model, tiny_tokenizer, input_ids, monkeypatch
@@ -129,22 +123,28 @@ class TestComputeLensSlice:
 
         monkeypatch.setattr(tiny_model, "forward", counting_forward)
         cached = compute_lens_slice(
-            tiny_model, tiny_tokenizer, input_ids,
-            layers=layers, mode="logit", activations=acts,
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=layers,
+            mode="logit",
+            activations=acts,
         )
         assert calls == 0  # no model forward with pre-recorded residuals
         assert cached.tokens == fresh.tokens
         assert cached.probs == fresh.probs  # deterministic CPU path, same math
 
-    def test_missing_activation_layer_rejected(
-        self, tiny_model, tiny_tokenizer, input_ids
-    ):
+    def test_missing_activation_layer_rejected(self, tiny_model, tiny_tokenizer, input_ids):
         acts = record_lens_activations(tiny_model, tiny_tokenizer, input_ids)
         del acts[1]
         with pytest.raises(ValueError, match="activations missing"):
             compute_lens_slice(
-                tiny_model, tiny_tokenizer, input_ids,
-                layers=[0, 1], mode="logit", activations=acts,
+                tiny_model,
+                tiny_tokenizer,
+                input_ids,
+                layers=[0, 1],
+                mode="logit",
+                activations=acts,
             )
 
     def test_jacobian_mode_differs_from_logit_in_early_layer(
@@ -154,24 +154,46 @@ class TestComputeLensSlice:
             tiny_model, tiny_tokenizer, input_ids, layers=[0], mode="logit", top_k=5
         )
         jac = compute_lens_slice(
-            tiny_model, tiny_tokenizer, input_ids,
-            layers=[0], mode="jacobian", jlens=tiny_lens, top_k=5,
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=[0],
+            mode="jacobian",
+            jlens=tiny_lens,
+            top_k=5,
         )
         # A fitted transport is not the identity; readouts should differ somewhere.
         assert logit.tokens != jac.tokens
 
+    def test_existing_fitted_jacobian_decodes_selected_residual_position(
+        self, tiny_model, tiny_tokenizer, input_ids, tiny_lens
+    ):
+        selected_position = 3
+        activations = record_lens_activations(tiny_model, tiny_tokenizer, input_ids)
+        slice_ = compute_lens_slice(
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=[0],
+            positions=[selected_position],
+            mode="jacobian",
+            jlens=tiny_lens,
+            top_k=5,
+            activations=activations,
+        )
+        residual = activations[0][0, selected_position, :].float().unsqueeze(0)
+        transported = tiny_lens.transport(residual, 0)
+        logits = wrap_model(tiny_model, tiny_tokenizer).unembed(transported).float()[0]
+        expected = torch.topk(torch.softmax(logits, -1), 5)
+        assert slice_.tokens[0][0] == expected.indices.tolist()
+        assert slice_.probs[0][0] == pytest.approx(expected.values.tolist(), rel=1e-4)
+
     def test_jacobian_mode_requires_lens(self, tiny_model, tiny_tokenizer, input_ids):
         with pytest.raises(ValueError, match="requires a fitted"):
-            compute_lens_slice(
-                tiny_model, tiny_tokenizer, input_ids, layers=[0], mode="jacobian"
-            )
+            compute_lens_slice(tiny_model, tiny_tokenizer, input_ids, layers=[0], mode="jacobian")
 
-    def test_jacobian_lens_width_must_match_model(
-        self, tiny_model, tiny_tokenizer, input_ids
-    ):
-        incompatible = JacobianLens(
-            jacobians={0: torch.zeros(8, 8)}, n_prompts=1, d_model=8
-        )
+    def test_jacobian_lens_width_must_match_model(self, tiny_model, tiny_tokenizer, input_ids):
+        incompatible = JacobianLens(jacobians={0: torch.zeros(8, 8)}, n_prompts=1, d_model=8)
         with pytest.raises(ValueError, match="d_model=8 does not match"):
             compute_lens_slice(
                 tiny_model,
@@ -182,9 +204,7 @@ class TestComputeLensSlice:
                 jlens=incompatible,
             )
 
-    def test_jacobian_lens_source_layers_must_exist(
-        self, tiny_model, tiny_tokenizer, input_ids
-    ):
+    def test_jacobian_lens_source_layers_must_exist(self, tiny_model, tiny_tokenizer, input_ids):
         width = tiny_model.config.hidden_size
         incompatible = JacobianLens(
             jacobians={99: torch.zeros(width, width)},
@@ -205,21 +225,21 @@ class TestComputeLensSlice:
         # tiny_lens covers layer 0 only; final layer is exempt (J = I)
         final = tiny_model.config.num_hidden_layers - 1
         compute_lens_slice(  # final layer alone is fine
-            tiny_model, tiny_tokenizer, input_ids,
-            layers=[final], mode="jacobian", jlens=tiny_lens,
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=[final],
+            mode="jacobian",
+            jlens=tiny_lens,
         )
 
     def test_out_of_range_layer_rejected(self, tiny_model, tiny_tokenizer, input_ids):
         with pytest.raises(ValueError, match="out of range"):
-            compute_lens_slice(
-                tiny_model, tiny_tokenizer, input_ids, layers=[99], mode="logit"
-            )
+            compute_lens_slice(tiny_model, tiny_tokenizer, input_ids, layers=[99], mode="logit")
 
     def test_unknown_mode_rejected(self, tiny_model, tiny_tokenizer, input_ids):
         with pytest.raises(ValueError, match="Unknown lens mode"):
-            compute_lens_slice(
-                tiny_model, tiny_tokenizer, input_ids, layers=[0], mode="tuned"
-            )
+            compute_lens_slice(tiny_model, tiny_tokenizer, input_ids, layers=[0], mode="tuned")
 
     def test_synthetic_diff_mode_is_rejected(
         self, tiny_model, tiny_tokenizer, input_ids, tiny_lens
@@ -234,9 +254,7 @@ class TestComputeLensSlice:
                 jlens=tiny_lens,
             )
 
-    def test_pinned_ranks_top_token_is_rank_zero(
-        self, tiny_model, tiny_tokenizer, input_ids
-    ):
+    def test_pinned_ranks_top_token_is_rank_zero(self, tiny_model, tiny_tokenizer, input_ids):
         final = tiny_model.config.num_hidden_layers - 1
         probe = compute_lens_slice(
             tiny_model, tiny_tokenizer, input_ids, layers=[final], mode="logit", top_k=1
@@ -244,21 +262,27 @@ class TestComputeLensSlice:
         last = len(probe.positions) - 1
         top_token = probe.tokens[0][last]
         slice_ = compute_lens_slice(
-            tiny_model, tiny_tokenizer, input_ids,
-            layers=[final], mode="logit", pinned_token_ids=top_token,
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=[final],
+            mode="logit",
+            pinned_token_ids=top_token,
         )
         assert slice_.pinned_ranks[top_token[0]][0][last] == 0
 
     def test_skip_non_words_filters(self, tiny_model, tiny_tokenizer, input_ids):
         slice_ = compute_lens_slice(
-            tiny_model, tiny_tokenizer, input_ids,
-            layers=[0], mode="logit", top_k=5, skip_non_words=True,
+            tiny_model,
+            tiny_tokenizer,
+            input_ids,
+            layers=[0],
+            mode="logit",
+            top_k=5,
+            skip_non_words=True,
         )
         for token_ids in slice_.tokens[0]:
-            assert all(
-                is_word_token(tiny_tokenizer.decode([token_id]))
-                for token_id in token_ids
-            )
+            assert all(is_word_token(tiny_tokenizer.decode([token_id])) for token_id in token_ids)
 
     def test_word_mask_searches_full_vocab_not_four_x_top_k(
         self, tiny_model, tiny_tokenizer, input_ids, monkeypatch
@@ -283,9 +307,7 @@ class TestComputeLensSlice:
                 device=residual.device,
                 dtype=logits.dtype,
             )
-            logits[:, words] = -torch.arange(
-                len(words), device=residual.device, dtype=logits.dtype
-            )
+            logits[:, words] = -torch.arange(len(words), device=residual.device, dtype=logits.dtype)
             return logits
 
         monkeypatch.setattr(wrapper, "unembed", punctuation_dominated_unembed)
@@ -317,9 +339,7 @@ class TestComputeLensSlice:
                 device=residual.device,
             )
             logits[:, non_word] = 20.0
-            logits[:, words] = torch.arange(
-                5, 0, -1, dtype=logits.dtype, device=logits.device
-            )
+            logits[:, words] = torch.arange(5, 0, -1, dtype=logits.dtype, device=logits.device)
             return logits
 
         monkeypatch.setattr(wrapper, "unembed", unembed_with_punctuation_top1)
@@ -477,22 +497,37 @@ class TestLensStore:
 
 
 class TestIsWordToken:
-    @pytest.mark.parametrize("text,expected", [
-        (" hello", True), ("虚假", True), ("123", True),
-        ("can't", True), ("well-being", True), ("l’amour", True),
-        (" ", False), ("...", False), ("\n", False), ("", False),
-        ("**word", False), ("word!", False), ("-word", False),
-        ("word-", False), ("snake_case", False), ("<|endoftext|>", False),
-        ("<pad>", False), ("�", False),
-    ])
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            (" hello", True),
+            ("虚假", True),
+            ("123", True),
+            ("can't", True),
+            ("well-being", True),
+            ("l’amour", True),
+            (" ", False),
+            ("...", False),
+            ("\n", False),
+            ("", False),
+            ("**word", False),
+            ("word!", False),
+            ("-word", False),
+            ("word-", False),
+            ("snake_case", False),
+            ("<|endoftext|>", False),
+            ("<pad>", False),
+            ("�", False),
+        ],
+    )
     def test_cases(self, text, expected):
         assert is_word_token(text) is expected
 
     def test_qwen_byte_tokens_are_classified_by_decoded_text(self):
         class QwenLikeTokenizer:
-            raw = ["âĢĶ\"", "Ġlove", "Âł", "can\'t", "æ³ķåĽ½"]
+            raw = ['âĢĶ"', "Ġlove", "Âł", "can't", "æ³ķåĽ½"]
             decoded = [
-                "—\"",
+                '—"',
                 " love",
                 "\N{NO-BREAK SPACE}",
                 "can't",

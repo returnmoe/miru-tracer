@@ -62,9 +62,7 @@ def main() -> None:
     settings = Settings.from_env()
 
     logger.info("Miru Tracer application starting...")
-    logger.info(
-        f"Server configuration: host={settings.server_name}, port={settings.server_port}"
-    )
+    logger.info(f"Server configuration: host={settings.server_name}, port={settings.server_port}")
     logger.info(f"Debug mode: {'enabled' if settings.debug else 'disabled'}")
 
     demo = create_app(settings)

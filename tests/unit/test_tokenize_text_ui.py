@@ -42,10 +42,10 @@ def test_tokenize_refresh_unmounts_and_remounts_dataframe():
     assert table["type"] == "dataframe"
     assert hidden["outputs"] == [table_id]
     assert len(shown) == 2
-    assert {
-        (d["trigger_only_on_success"], d["trigger_only_on_failure"])
-        for d in shown
-    } == {(True, False), (False, True)}
+    assert {(d["trigger_only_on_success"], d["trigger_only_on_failure"]) for d in shown} == {
+        (True, False),
+        (False, True),
+    }
     assert all(d["outputs"] == [table_id] for d in shown)
     assert hidden["api_visibility"] == "private"
     assert all(d["api_visibility"] == "private" for d in shown)

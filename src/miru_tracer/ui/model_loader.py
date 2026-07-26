@@ -243,9 +243,7 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
                     *buttons_enabled(),
                 )
             except Exception as e:
-                logger.error(
-                    f"Model load failed via UI: {model_name_val} - {e}", exc_info=True
-                )
+                logger.error(f"Model load failed via UI: {model_name_val} - {e}", exc_info=True)
                 yield (
                     f"Error loading model:\n\n{e}",
                     "",
@@ -300,7 +298,11 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
         load_button.click(
             fn=load_model_handler,
             inputs=[
-                quick_model, model_name, quantization, trust_remote_code, minimize_ram,
+                quick_model,
+                model_name,
+                quantization,
+                trust_remote_code,
+                minimize_ram,
             ],
             outputs=outputs,
         )
@@ -329,10 +331,7 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
                     indent=2,
                 )
             else:
-                status = (
-                    "No model currently loaded.\n\n"
-                    "Load a model using the controls above."
-                )
+                status = "No model currently loaded.\n\nLoad a model using the controls above."
             return status, get_current_model_display(), get_memory_usage(), model_info
 
     return tab, (

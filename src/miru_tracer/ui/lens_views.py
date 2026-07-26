@@ -26,8 +26,15 @@ from miru_tracer.core.lens import LensSlice, ReadoutRow
 
 # YlOrRd (matches the previous Plotly colorscale)
 _YLORRD = [
-    (255, 255, 204), (255, 237, 160), (254, 217, 118), (254, 178, 76),
-    (253, 141, 60), (252, 78, 42), (227, 26, 28), (189, 0, 38), (128, 0, 38),
+    (255, 255, 204),
+    (255, 237, 160),
+    (254, 217, 118),
+    (254, 178, 76),
+    (253, 141, 60),
+    (252, 78, 42),
+    (227, 26, 28),
+    (189, 0, 38),
+    (128, 0, 38),
 ]
 
 _BG = "var(--body-background-fill, #fff)"
@@ -220,9 +227,7 @@ def _tok(text: str) -> str:
     return html.escape(text)
 
 
-def _layer_label(
-    layer: int, intervened: dict[int, str] | None, *, glyph: bool = True
-) -> str:
+def _layer_label(layer: int, intervened: dict[int, str] | None, *, glyph: bool = True) -> str:
     """Layer label, marked and hoverable when the layer carries an intervention.
 
     Color lives on the innermost span (Gradio's prose CSS defeats inherited
@@ -272,8 +277,8 @@ def _top1_values(slice_: LensSlice) -> list[float]:
 def _position_header(slice_: LensSlice, index: int) -> tuple[str, str]:
     position = slice_.positions[index]
     token = slice_.position_texts[index]
-    relation = f"Readout aligned to token {token}, position {position}"
-    return f'{position}<br>{_tok(token)}', relation
+    relation = f"Readout after token {token}, residual position {position}"
+    return f"{position}<br>{_tok(token)}", relation
 
 
 def heatmap_html(
@@ -324,8 +329,8 @@ def heatmap_html(
         body.append('<tr style="border:0;">' + "".join(cells) + "</tr>")
 
     caption = (
-        f"<b>Lens readouts — {slice_.mode}</b> · each column is aligned to its "
-        "displayed token using the preceding causal state that produced it · "
+        f"<b>Lens readouts — {slice_.mode}</b> · each column decodes the residual "
+        "at its displayed token's position, after that token entered context · "
         "color = top-1 probability · "
         "hover a cell for its top-k · scroll sideways for more positions"
     )
@@ -346,15 +351,11 @@ def comparison_heatmap_html(
 ) -> str:
     """Render two ordinary heatmaps with one shared probability scale."""
     if jacobian_slice.mode != "jacobian" or logit_slice.mode != "logit":
-        raise ValueError(
-            "comparison heatmaps require a jacobian slice followed by a logit slice"
-        )
+        raise ValueError("comparison heatmaps require a jacobian slice followed by a logit slice")
 
     values = _top1_values(jacobian_slice) + _top1_values(logit_slice)
     shared_range = (0.0, max(values, default=0.0))
-    jacobian = heatmap_html(
-        jacobian_slice, intervened, value_range=shared_range
-    )
+    jacobian = heatmap_html(jacobian_slice, intervened, value_range=shared_range)
     logit = heatmap_html(logit_slice, intervened, value_range=shared_range)
     return comparison_html(jacobian, logit)
 
@@ -460,11 +461,11 @@ def _inspector_column_html(
         final = slice_.layers[-1]
         for index, layer in enumerate(slice_.layers):
             if layer == final:
-                label = f"Layer {layer} · final model distribution for selected token"
+                label = f"Layer {layer} · next-token distribution after selected token"
             elif slice_.mode == "logit":
-                label = f"Layer {layer} · Logit readout for selected token"
+                label = f"Layer {layer} · Logit readout after selected token"
             else:
-                label = f"Layer {layer} · J-lens concepts at selected token"
+                label = f"Layer {layer} · J-lens concepts after selected token"
             warning = ""
             if slice_.mode == "jacobian" and layer < recommended_start:
                 warning = (
@@ -476,7 +477,7 @@ def _inspector_column_html(
                 f'<div class="miru-readout-panel-head"><span>{label}</span>'
                 '<span style="text-align:right">ID</span>'
                 '<span style="text-align:right">Probability</span>'
-                '<span>Count by layer</span></div>'
+                "<span>Count by layer</span></div>"
                 f"{warning}{_exact_layer_rows(slice_, index, stats_by_id, interactive=True)}"
                 "</div>"
             )
@@ -507,7 +508,7 @@ def readout_inspector_html(
         token = representative.position_texts[0]
         context = (
             '<p class="miru-readout-context"><b>Selected token</b> '
-            f'<code>{_tok(token)}</code> · position {position}</p>'
+            f"<code>{_tok(token)}</code> · position {position}</p>"
         )
     else:
         context = (
@@ -528,7 +529,7 @@ def readout_inspector_html(
                 classes.append("miru-readout-output")
             title = f"Layer {layer}"
             if layer == final:
-                title += " · final model distribution for the selected token"
+                title += " · next-token distribution after the selected token"
             elif layer < recommended_start and mode in ("jacobian", "compare"):
                 title += " · early J-lens layer; often degenerate"
             slots.append(
@@ -541,12 +542,12 @@ def readout_inspector_html(
             '<span role="button" tabindex="0" '
             'class="miru-readout-all miru-readout-all-active" '
             'data-readout-all aria-label="Show all layers" aria-pressed="true">'
-            '<span>All</span><span>Layers</span></span>'
+            "<span>All</span><span>Layers</span></span>"
             '<div style="flex:1;min-width:0">'
             f'<div class="miru-readout-layer-track">{"".join(slots)}</div>'
             '<div class="miru-readout-layer-labels">'
             f"<span>Layer {representative.layers[0]}</span>"
-            '<span data-readout-active-label>All Layers</span>'
+            "<span data-readout-active-label>All Layers</span>"
             f"<span>Layer {representative.layers[-1]} · output</span>"
             "</div></div></div>"
         )
@@ -565,28 +566,29 @@ def readout_inspector_html(
     intervention_banner = ""
     if intervened:
         items = "; ".join(
-            f"L{layer}: {html.escape(desc)}"
-            for layer, desc in sorted(intervened.items())
+            f"L{layer}: {html.escape(desc)}" for layer, desc in sorted(intervened.items())
         )
         intervention_banner = (
-            '<p class="miru-readout-interventions">⚡ <b>Interventions</b> — '
-            f"{items}</p>"
+            f'<p class="miru-readout-interventions">⚡ <b>Interventions</b> — {items}</p>'
         )
     return (
         f"{_INSPECTOR_STYLE}"
         '<div class="miru-readout-inspector" data-readout-inspector>'
         f"{context}{intervention_banner}"
-        '<p class="miru-readout-note">Readouts are aligned to the selected token: '
-        "for token p, Miru decodes the preceding causal state p−1 that produced it. "
-        "The final row is therefore the model distribution for the selected token, "
-        "not for the token that follows it.</p>"
+        '<p class="miru-readout-note">Readouts are state-aligned: for token p, '
+        "Miru decodes residual position p after that token entered the causal "
+        "context. The final row is therefore the model distribution for the "
+        "token that follows it.</p>"
         f'{selector}<div class="miru-readout-columns{compare_class}">{columns}</div>'
         "</div>"
     )
 
 
 def distribution_html(
-    rows: list[ReadoutRow], layers: list[int], *, limit: int | None = None,
+    rows: list[ReadoutRow],
+    layers: list[int],
+    *,
+    limit: int | None = None,
     intervened: dict[int, str] | None = None,
 ) -> str:
     """Token x layer grid of readout counts (theme-aware accent scale).

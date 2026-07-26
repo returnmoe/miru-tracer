@@ -44,16 +44,13 @@ def create_logging_mode_tab(model_manager: ModelManager, settings: Settings) -> 
     exports = ExportManager("log")
 
     with gr.Tab("Logging Mode") as tab, gr.Column(elem_classes="miru-narrow"):
-        gr.Markdown(
-            "Generate text with complete token probability logging and visualization."
-        )
+        gr.Markdown("Generate text with complete token probability logging and visualization.")
 
         mode_selector = gr.Radio(
             choices=list(GENERATION_MODES),
             value="Completion",
             label="Mode",
-            info="Direct text completion, chat format, or raw text with "
-            "explicit special tokens.",
+            info="Direct text completion, chat format, or raw text with explicit special tokens.",
         )
 
         with gr.Group() as completion_inputs:
@@ -255,13 +252,10 @@ def create_logging_mode_tab(model_manager: ModelManager, settings: Settings) -> 
             log_topk = int(log_topk) if log_topk is not None else 10
             if not 1 <= new_tokens <= settings.max_new_tokens:
                 raise ValueError(
-                    f"Maximum new tokens must be between 1 and "
-                    f"{settings.max_new_tokens}."
+                    f"Maximum new tokens must be between 1 and {settings.max_new_tokens}."
                 )
             if not 1 <= log_topk <= settings.max_log_top_k:
-                raise ValueError(
-                    f"Log Top-K must be between 1 and {settings.max_log_top_k}."
-                )
+                raise ValueError(f"Log Top-K must be between 1 and {settings.max_log_top_k}.")
             if log_full and existing_full + new_tokens > settings.max_full_prob_steps:
                 raise ValueError(
                     "Full-probability logging is limited to "
@@ -292,15 +286,12 @@ def create_logging_mode_tab(model_manager: ModelManager, settings: Settings) -> 
             snapshot = model_manager.snapshot()
             if snapshot is None:
                 yield error_yield(
-                    "Error: No model loaded. Please load a model in the "
-                    "Model Loader tab first."
+                    "Error: No model loaded. Please load a model in the Model Loader tab first."
                 )
                 return
             model, tokenizer, device, generation = snapshot
             try:
-                max_new_tokens, log_topk = validate_request(
-                    max_new_tokens, log_topk, log_full
-                )
+                max_new_tokens, log_topk = validate_request(max_new_tokens, log_topk, log_full)
             except ValueError as e:
                 yield error_yield(f"Error: {e}")
                 return
@@ -384,9 +375,7 @@ def create_logging_mode_tab(model_manager: ModelManager, settings: Settings) -> 
                 logger.error(f"Generation error: {e}", exc_info=True)
                 if session_id is not None:
                     get_session_manager().delete_session(session_id)
-                yield error_yield(
-                    f"Error during generation: {e}"
-                )
+                yield error_yield(f"Error during generation: {e}")
 
         def continue_handler(
             session_id,
@@ -413,9 +402,7 @@ def create_logging_mode_tab(model_manager: ModelManager, settings: Settings) -> 
                     max_new_tokens, log_topk, log_full, existing_full
                 )
             except ValueError as e:
-                yield error_yield(
-                    f"Error: {e}", session_id, originals
-                )
+                yield error_yield(f"Error: {e}", session_id, originals)
                 return
 
             start_time = time.time()
@@ -549,15 +536,25 @@ def create_logging_mode_tab(model_manager: ModelManager, settings: Settings) -> 
                 return None, None
 
         def check_continue_availability(
-            mode, prompt, chat_msgs, raw_text, think_choice, think_text,
-            originals, session_id,
+            mode,
+            prompt,
+            chat_msgs,
+            raw_text,
+            think_choice,
+            think_text,
+            originals,
+            session_id,
         ):
             """Disable Continue when the inputs no longer match the run."""
             if resolve_session(session_id) is None or originals is None:
                 return gr.update(interactive=False)
             (
-                original_mode, original_prompt, original_messages,
-                original_raw, original_think, original_think_text,
+                original_mode,
+                original_prompt,
+                original_messages,
+                original_raw,
+                original_think,
+                original_think_text,
             ) = originals
             if mode == "Chat":
                 unchanged = (
@@ -590,9 +587,7 @@ def create_logging_mode_tab(model_manager: ModelManager, settings: Settings) -> 
             inputs=[mode_selector],
             outputs=[completion_inputs, chat_inputs, raw_inputs],
         )
-        strategy.change(
-            fn=toggle_temperature, inputs=[strategy], outputs=[temperature]
-        )
+        strategy.change(fn=toggle_temperature, inputs=[strategy], outputs=[temperature])
         thinking_selector.change(
             fn=toggle_think_prefill,
             inputs=[thinking_selector],
@@ -663,8 +658,12 @@ def create_logging_mode_tab(model_manager: ModelManager, settings: Settings) -> 
         )
 
         for input_component in (
-            mode_selector, prompt_input, chat_messages, raw_input,
-            thinking_selector, think_prefill_box,
+            mode_selector,
+            prompt_input,
+            chat_messages,
+            raw_input,
+            thinking_selector,
+            think_prefill_box,
         ):
             input_component.change(
                 fn=check_continue_availability,

@@ -35,6 +35,7 @@ from miru_tracer.core.lens import (
     record_lens_activations,
 )
 from miru_tracer.core.lens_io import load_lens, save_lens
+from miru_tracer.core.lens_provenance import check_lens_compatibility
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_manager import ModelManager
 from miru_tracer.core.sampling import SamplingParams
@@ -168,9 +169,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                         open=False,
                         elem_classes=["miru-interventions-panel"],
                     ):
-                        gr.Markdown(
-                            "Steer, swap, or ablate readout directions during generation."
-                        )
+                        gr.Markdown("Steer, swap, or ablate readout directions during generation.")
                         with gr.Row(equal_height=True):
                             iv_kind = gr.Radio(
                                 choices=["steer", "swap", "ablate"],
@@ -184,9 +183,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                                 label="Basis",
                                 scale=2,
                             )
-                        with gr.Row(
-                            equal_height=True, elem_classes=["miru-iv-pair-row"]
-                        ):
+                        with gr.Row(equal_height=True, elem_classes=["miru-iv-pair-row"]):
                             iv_token = gr.Textbox(
                                 label="Token",
                                 placeholder="e.g. Paris",
@@ -200,9 +197,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                                 scale=2,
                                 min_width=160,
                             )
-                        with gr.Row(
-                            equal_height=True, elem_classes=["miru-iv-pair-row"]
-                        ):
+                        with gr.Row(equal_height=True, elem_classes=["miru-iv-pair-row"]):
                             iv_swap_to = gr.Textbox(
                                 label="Swap to",
                                 placeholder="e.g. Paris",
@@ -262,12 +257,8 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                         )
                     generate_button = gr.Button("Generate", variant="primary", size="lg")
 
-                status_output = gr.Textbox(
-                    label="Status", interactive=False, lines=2, max_lines=4
-                )
-                text_output = gr.Textbox(
-                    label="Text", lines=4, interactive=False, buttons=["copy"]
-                )
+                status_output = gr.Textbox(label="Status", interactive=False, lines=2, max_lines=4)
+                text_output = gr.Textbox(label="Text", lines=4, interactive=False, buttons=["copy"])
 
             # ------------------------------------------ right: lens controls
             with gr.Column(scale=2):
@@ -302,12 +293,8 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                             precision=0,
                             label="From layer (-1 = recommended)",
                         )
-                        layer_end = gr.Number(
-                            value=-1, precision=0, label="To (-1 = last)"
-                        )
-                        layer_stride = gr.Number(
-                            minimum=1, value=1, precision=0, label="Stride"
-                        )
+                        layer_end = gr.Number(value=-1, precision=0, label="To (-1 = last)")
+                        layer_stride = gr.Number(minimum=1, value=1, precision=0, label="Stride")
                     with gr.Accordion("Display options", open=False):
                         readouts_per_cell = gr.Number(
                             minimum=1,
@@ -323,9 +310,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                             precision=0,
                             label="All Layers rows",
                         )
-                        skip_non_words = gr.Checkbox(
-                            label="Hide non-word tokens", value=True
-                        )
+                        skip_non_words = gr.Checkbox(label="Hide non-word tokens", value=True)
                         gr.Markdown("#### Pinned tokens")
                         with gr.Row():
                             pinned_token_ref = gr.Textbox(
@@ -351,8 +336,9 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
 
                 tokens_display = gr.HighlightedText(
                     label="Sequence — click tokens to select positions "
-                    "(none = all). Readouts are aligned to the selected token: "
-                    "token p uses the preceding causal state p−1 that produced it.",
+                    "(none = all). Readouts are state-aligned: token p uses "
+                    "residual position p after that token entered context; "
+                    "the final Logit row predicts the following token.",
                     value=[],
                     color_map=TOKEN_COLOR_MAP,
                     show_inline_category=False,
@@ -400,8 +386,16 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
         # ----------------------------------------------------------- compute
 
         def compute_slice_bundle(
-            analysis, positions, mode_choice, l_start, l_end, l_stride,
-            per_cell, row_limit, skip_nw, pinned_ids,
+            analysis,
+            positions,
+            mode_choice,
+            l_start,
+            l_end,
+            l_stride,
+            per_cell,
+            row_limit,
+            skip_nw,
+            pinned_ids,
         ):
             """One forward pass over the stored sequence -> (bundle, status)."""
             if analysis is None:
@@ -415,8 +409,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 or analysis.get("model_generation") != generation
             ):
                 return None, (
-                    "Error: the model changed since this sequence was generated. "
-                    "Generate again."
+                    "Error: the model changed since this sequence was generated. Generate again."
                 )
 
             mode = lens_mode_key(mode_choice)
@@ -429,9 +422,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 )
 
             try:
-                layers = lens_layer_selection(
-                    analysis["n_layers"], l_start, l_end, l_stride, mode
-                )
+                layers = lens_layer_selection(analysis["n_layers"], l_start, l_end, l_stride, mode)
                 if mode in ("jacobian", "compare") and jlens is not None:
                     fitted = set(jlens.source_layers) | {analysis["n_layers"] - 1}
                     dropped = [layer for layer in layers if layer not in fitted]
@@ -444,14 +435,14 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 else:
                     dropped = []
                 seq_len = int(analysis["input_ids"].shape[1])
-                selected = [p for p in positions if 0 < p < seq_len] or None
-                if positions and selected is None:
+                valid_selected = [p for p in positions if 0 <= p < seq_len]
+                if positions and not valid_selected:
                     return None, (
-                        "Error: token position 0 has no preceding causal state. "
-                        "Select a later token."
+                        "Error: none of the selected token positions exist in the current sequence."
                     )
+                selected = valid_selected or None
 
-                cell_positions = len(selected) if selected is not None else max(seq_len - 1, 0)
+                cell_positions = len(selected) if selected is not None else seq_len
                 if len(layers) * cell_positions > settings.max_lens_cells:
                     return None, (
                         "Error: requested lens grid exceeds the configured limit of "
@@ -474,9 +465,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
 
                 readout_limit = max(1, int(per_cell))
                 aggregate_limit = max(1, int(row_limit))
-                requested_modes = (
-                    ("jacobian", "logit") if mode == "compare" else (mode,)
-                )
+                requested_modes = ("jacobian", "logit") if mode == "compare" else (mode,)
                 slices = {}
                 rows_by_mode = {}
                 all_rows_by_mode = {}
@@ -494,7 +483,6 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                         pinned_token_ids=list(pinned_ids or []),
                         interventions=analysis["iset"],
                         activations=activations,
-                        token_aligned=True,
                     )
                     slices[readout_mode] = slice_
                     all_rows = aggregate_readouts(slice_, limit=None)
@@ -528,14 +516,9 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                     )
                 if dropped:
                     status += f" (skipped unfitted layers: {dropped})"
-                recommended_start = int(
-                    analysis["n_layers"] * JACOBIAN_DEFAULT_LAYER_FRACTION
-                )
+                recommended_start = int(analysis["n_layers"] * JACOBIAN_DEFAULT_LAYER_FRACTION)
                 explicit_start = int(l_start) if l_start is not None else -1
-                if (
-                    mode in ("jacobian", "compare")
-                    and 0 <= explicit_start < recommended_start
-                ):
+                if mode in ("jacobian", "compare") and 0 <= explicit_start < recommended_start:
                     status += (
                         f" Early J-lens layers below L{recommended_start} are often "
                         "degenerate; they were included because the range was explicit."
@@ -588,9 +571,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                     bundle["slices"]["logit"],
                     bundle.get("intervened"),
                 )
-            return heatmap_html(
-                bundle["slices"][bundle["mode"]], bundle.get("intervened")
-            )
+            return heatmap_html(bundle["slices"][bundle["mode"]], bundle.get("intervened"))
 
         def show_pinned_view(bundle):
             if bundle is None:
@@ -630,20 +611,52 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
         # ---------------------------------------------------------- handlers
 
         def update_readouts(
-            analysis, positions, active_view, mode_choice, l_start, l_end,
-            l_stride, per_cell, row_limit, skip_nw, pinned_ids,
+            analysis,
+            positions,
+            active_view,
+            mode_choice,
+            l_start,
+            l_end,
+            l_stride,
+            per_cell,
+            row_limit,
+            skip_nw,
+            pinned_ids,
         ):
             bundle, status = compute_slice_bundle(
-                analysis, positions, mode_choice, l_start, l_end, l_stride,
-                per_cell, row_limit, skip_nw, pinned_ids,
+                analysis,
+                positions,
+                mode_choice,
+                l_start,
+                l_end,
+                l_stride,
+                per_cell,
+                row_limit,
+                skip_nw,
+                pinned_ids,
             )
             return (bundle, *render_active_view(bundle, active_view), status)
 
         def generate_and_analyze(
-            mode, prompt, chat_msgs, raw_text, think_choice, think_text,
-            n_tokens, strat, temp,
-            interventions, active_view, mode_choice, l_start, l_end, l_stride,
-            per_cell, row_limit, skip_nw, pinned_ids,
+            mode,
+            prompt,
+            chat_msgs,
+            raw_text,
+            think_choice,
+            think_text,
+            n_tokens,
+            strat,
+            temp,
+            interventions,
+            active_view,
+            mode_choice,
+            l_start,
+            l_end,
+            l_stride,
+            per_cell,
+            row_limit,
+            skip_nw,
+            pinned_ids,
         ):
             def progress(status, text=""):
                 """Streaming yield: only status/text change while generating."""
@@ -676,9 +689,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 return
             model, tokenizer, device, generation = snapshot
             if n_tokens is None or not 0 <= int(n_tokens) <= settings.max_new_tokens:
-                yield failed(
-                    f"Error: New tokens must be between 0 and {settings.max_new_tokens}."
-                )
+                yield failed(f"Error: New tokens must be between 0 and {settings.max_new_tokens}.")
                 return
 
             tracer = None
@@ -718,9 +729,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                             tracer.get_full_text(),
                         )
 
-                position_texts = [
-                    decode_token(tokenizer, int(t)) for t in tracer.input_ids[0]
-                ]
+                position_texts = [decode_token(tokenizer, int(t)) for t in tracer.input_ids[0]]
                 analysis = {
                     "input_ids": tracer.input_ids.detach().cpu().clone(),
                     "model_name": model_manager.get_model_name(),
@@ -732,8 +741,16 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 }
                 positions: list[int] = []  # all
                 bundle, status = compute_slice_bundle(
-                    analysis, positions, mode_choice, l_start, l_end, l_stride,
-                    per_cell, row_limit, skip_nw, pinned_ids,
+                    analysis,
+                    positions,
+                    mode_choice,
+                    l_start,
+                    l_end,
+                    l_stride,
+                    per_cell,
+                    row_limit,
+                    skip_nw,
+                    pinned_ids,
                 )
                 yield (
                     bundle,
@@ -761,13 +778,6 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             if analysis is None:
                 return positions, gr.update(), gr.update()
             texts = analysis["position_texts"]
-            if int(evt.index) == 0:
-                return (
-                    positions,
-                    highlighted_tokens(texts, positions),
-                    "**Selection:** position 0 cannot be read token-aligned because "
-                    "the captured sequence has no preceding causal state.",
-                )
             updated = toggle_position(positions, evt.index)
             return (
                 updated,
@@ -794,16 +804,21 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             return [], highlighted_tokens(texts, []), selection_summary([], len(texts))
 
         def add_intervention(
-            interventions, kind, token_ref, token_mode, swap_to_ref,
-            swap_to_mode, layer_refs, strength, basis,
+            interventions,
+            kind,
+            token_ref,
+            token_mode,
+            swap_to_ref,
+            swap_to_mode,
+            layer_refs,
+            strength,
+            basis,
         ):
             tokenizer = model_manager.get_tokenizer()
             if tokenizer is None:
                 return interventions, gr.update(), "Error: No model loaded."
             try:
-                token_id = token_ref_to_id(
-                    token_ref, tokenizer, token_mode_key(token_mode)
-                )
+                token_id = token_ref_to_id(token_ref, tokenizer, token_mode_key(token_mode))
                 token_id_to = (
                     token_ref_to_id(swap_to_ref, tokenizer, token_mode_key(swap_to_mode))
                     if kind == "swap"
@@ -852,8 +867,10 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
 
         def clear_interventions(_interventions):
             set_active_interventions([])
-            return [], interventions_table_html([], None), (
-                "Cleared all interventions — regenerate to apply."
+            return (
+                [],
+                interventions_table_html([], None),
+                ("Cleared all interventions — regenerate to apply."),
             )
 
         def add_pinned(pinned_ids, token_ref, token_mode):
@@ -884,8 +901,11 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             )
 
         def clear_pinned(_pinned_ids):
-            return [], pinned_tokens_table_html([]), gr.update(choices=[], value=[]), (
-                "Cleared pinned tokens."
+            return (
+                [],
+                pinned_tokens_table_html([]),
+                gr.update(choices=[], value=[]),
+                ("Cleared pinned tokens."),
             )
 
         def toggle_intervention_fields(kind):
@@ -908,19 +928,31 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                     f"Expected at: {store.lens_path(model_name)}\n"
                     f"Fit one on a GPU instance: miru-tracer-fit-lens {model_name}"
                 )
-            return (
+            compatibility = check_lens_compatibility(
+                lens,
+                model_manager.get_model(),
+                model_manager.get_tokenizer(),
+                model_name_or_path=model_name,
+            )
+            result = (
                 f"Fitted lens loaded for {model_name}: "
                 f"{len(lens.source_layers)} layers "
                 f"(L{lens.source_layers[0]}..L{lens.source_layers[-1]}), "
                 f"averaged over {lens.n_prompts} prompts.\n"
                 f"Path: {store.existing_lens_path(model_name)}"
             )
+            if compatibility.errors:
+                result += "\nCompatibility error: " + "; ".join(compatibility.errors)
+            if compatibility.warnings:
+                result += "\nCompatibility warning: " + "; ".join(compatibility.warnings)
+            return result
 
         def install_fit_file(filepath):
             """Validate an uploaded fit file and install it for the loaded model."""
             if filepath is None:
                 return fit_file_status()
             model = model_manager.get_model()
+            tokenizer = model_manager.get_tokenizer()
             model_name = model_manager.get_model_name()
             if model is None:
                 return "Error: Load a model first — the fit file is stored per model."
@@ -929,19 +961,14 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             except Exception as e:
                 return f"Error: not a valid lens file: {e}"
 
-            d_model = model.config.get_text_config().hidden_size
-            n_layers = model.config.get_text_config().num_hidden_layers
-            if lens.d_model != d_model:
-                return (
-                    f"Error: fit file has d_model={lens.d_model}, but "
-                    f"{model_name} has d_model={d_model}. This lens was fitted "
-                    "for a different model."
-                )
-            if lens.source_layers[-1] >= n_layers:
-                return (
-                    f"Error: fit file covers layer {lens.source_layers[-1]}, but "
-                    f"{model_name} only has {n_layers} layers."
-                )
+            compatibility = check_lens_compatibility(
+                lens,
+                model,
+                tokenizer,
+                model_name_or_path=model_name,
+            )
+            if compatibility.errors:
+                return "Error: incompatible fit file: " + "; ".join(compatibility.errors)
 
             path = get_lens_store().lens_path(model_name)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -950,7 +977,12 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             # the unsafe copy around — drop it.
             path.with_name(LEGACY_LENS_FILENAME).unlink(missing_ok=True)
             logger.info(f"Installed fit file for {model_name} at {path}")
-            return f"Installed.\n{fit_file_status()}"
+            warning = (
+                "\nInstalled with compatibility warning: " + "; ".join(compatibility.warnings)
+                if compatibility.warnings
+                else ""
+            )
+            return f"Installed.{warning}\n{fit_file_status()}"
 
         # ------------------------------------------------------------ wiring
 
@@ -959,9 +991,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             inputs=[mode_selector],
             outputs=[completion_inputs, chat_inputs, raw_inputs],
         )
-        strategy.change(
-            fn=toggle_temperature, inputs=[strategy], outputs=[temperature]
-        )
+        strategy.change(fn=toggle_temperature, inputs=[strategy], outputs=[temperature])
         thinking_selector.change(
             fn=toggle_think_prefill,
             inputs=[thinking_selector],
@@ -974,21 +1004,41 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
         )
 
         lens_controls = [
-            lens_mode, layer_start, layer_end, layer_stride,
-            readouts_per_cell, readout_rows, skip_non_words, pinned_tokens_state,
+            lens_mode,
+            layer_start,
+            layer_end,
+            layer_stride,
+            readouts_per_cell,
+            readout_rows,
+            skip_non_words,
+            pinned_tokens_state,
         ]
 
         generate_button.click(
             fn=generate_and_analyze,
             inputs=[
-                mode_selector, prompt_input, chat_messages, raw_input,
-                thinking_selector, think_prefill_box,
-                max_tokens, strategy, temperature,
-                interventions_state, active_view_state, *lens_controls,
+                mode_selector,
+                prompt_input,
+                chat_messages,
+                raw_input,
+                thinking_selector,
+                think_prefill_box,
+                max_tokens,
+                strategy,
+                temperature,
+                interventions_state,
+                active_view_state,
+                *lens_controls,
             ],
             outputs=[
-                slice_state, *view_components, status_output, text_output,
-                tokens_display, selection_info, analysis_state, positions_state,
+                slice_state,
+                *view_components,
+                status_output,
+                text_output,
+                tokens_display,
+                selection_info,
+                analysis_state,
+                positions_state,
             ],
         )
         update_button.click(
@@ -1030,8 +1080,15 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
         iv_add_button.click(
             fn=add_intervention,
             inputs=[
-                interventions_state, iv_kind, iv_token, iv_token_mode,
-                iv_swap_to, iv_swap_to_mode, iv_layer, iv_strength, iv_basis,
+                interventions_state,
+                iv_kind,
+                iv_token,
+                iv_token_mode,
+                iv_swap_to,
+                iv_swap_to_mode,
+                iv_layer,
+                iv_strength,
+                iv_basis,
             ],
             outputs=[interventions_state, iv_table, status_output],
         )
@@ -1050,21 +1107,30 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             fn=add_pinned,
             inputs=[pinned_tokens_state, pinned_token_ref, pinned_token_mode],
             outputs=[
-                pinned_tokens_state, pinned_tokens_table, pinned_select, status_output,
+                pinned_tokens_state,
+                pinned_tokens_table,
+                pinned_select,
+                status_output,
             ],
         )
         pinned_remove_button.click(
             fn=remove_pinned,
             inputs=[pinned_tokens_state, pinned_select],
             outputs=[
-                pinned_tokens_state, pinned_tokens_table, pinned_select, status_output,
+                pinned_tokens_state,
+                pinned_tokens_table,
+                pinned_select,
+                status_output,
             ],
         )
         pinned_clear_button.click(
             fn=clear_pinned,
             inputs=[pinned_tokens_state],
             outputs=[
-                pinned_tokens_state, pinned_tokens_table, pinned_select, status_output,
+                pinned_tokens_state,
+                pinned_tokens_table,
+                pinned_select,
+                status_output,
             ],
         )
 
@@ -1073,8 +1139,6 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             inputs=[lens_file_upload],
             outputs=[lens_file_status],
         )
-        lens_file_check_button.click(
-            fn=fit_file_status, inputs=[], outputs=[lens_file_status]
-        )
+        lens_file_check_button.click(fn=fit_file_status, inputs=[], outputs=[lens_file_status])
 
     return tab

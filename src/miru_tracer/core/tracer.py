@@ -16,7 +16,9 @@ part (turning logits into distributions):
   :mod:`miru_tracer.core.sampling`. Peeking repeatedly with different display
   parameters therefore never triggers another forward pass.
 
-Undo crops the KV cache (``DynamicCache.crop``) and truncates ``input_ids``;
+Undo crops rewindable KV caches (``DynamicCache.crop``) and truncates
+``input_ids``. Hybrid recurrent/attention caches whose recurrent layers cannot
+be cropped are discarded and rebuilt from ``input_ids`` on the next forward;
 the prompt is never re-tokenized after ``reset()``.
 """
 
@@ -33,6 +35,7 @@ from miru_tracer.core.interventions import (
     InterventionSet,
     apply_interventions,
 )
+from miru_tracer.core.lens_provenance import require_lens_compatible
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_runtime import serialized_model_operation
 from miru_tracer.core.sampling import (
@@ -83,9 +86,7 @@ class NextTokenDistribution:
         self.temperature = temperature
 
         self.raw_probs = torch.softmax(raw_logits, dim=-1)
-        self.adjusted_probs = torch.softmax(
-            apply_temperature(raw_logits, temperature), dim=-1
-        )
+        self.adjusted_probs = torch.softmax(apply_temperature(raw_logits, temperature), dim=-1)
         k = min(top_k, raw_logits.shape[-1])
         top_probs, top_indices = torch.topk(self.adjusted_probs, k)
 
@@ -223,9 +224,7 @@ class LLMTracer:
                 return_tensors="pt",
                 add_special_tokens=(mode != "raw"),
             ).to(self.device)
-            logger.info(
-                f"Reset in {mode} mode: prompt_tokens={self.input_ids.shape[1]}"
-            )
+            logger.info(f"Reset in {mode} mode: prompt_tokens={self.input_ids.shape[1]}")
         else:
             self.input_ids = None
             logger.debug("Reset with empty prompt")
@@ -265,9 +264,7 @@ class LLMTracer:
             return []
         return list(self._intervention_set.interventions)
 
-    def set_interventions(
-        self, interventions: list[Intervention] | None, jlens=None
-    ) -> None:
+    def set_interventions(self, interventions: list[Intervention] | None, jlens=None) -> None:
         """Replace the active intervention set.
 
         Invalidates the KV cache and logits memo — cached values were computed
@@ -275,9 +272,9 @@ class LLMTracer:
         subsequent forwards otherwise.
         """
         if interventions:
-            self._intervention_set = InterventionSet(
-                interventions, self.model, jlens=jlens
-            )
+            if jlens is not None and any(iv.basis == "jacobian" for iv in interventions):
+                require_lens_compatible(jlens, self.model, self.tokenizer)
+            self._intervention_set = InterventionSet(interventions, self.model, jlens=jlens)
         else:
             self._intervention_set = None
         self._invalidate_kv()
@@ -289,6 +286,44 @@ class LLMTracer:
 
     def _cache_len(self) -> int:
         return int(self._kv.get_seq_length()) if self._kv is not None else 0
+
+    def _cache_supports_rewind(self) -> bool:
+        """Return whether every layer in the current cache can be cropped.
+
+        Transformers exposes ``crop`` on the top-level ``DynamicCache`` even
+        when it contains ``LinearAttentionLayer`` instances whose ``crop``
+        method is intentionally a no-op. Treat any layer that cannot report its
+        own sequence length as non-rewindable. Recomputing is slower, but avoids
+        replaying from recurrent state that still contains undone tokens.
+        """
+        if self._kv is None or not hasattr(self._kv, "crop"):
+            return False
+        layers = getattr(self._kv, "layers", None)
+        if layers is None:
+            return True
+        return all(hasattr(layer, "crop") and hasattr(layer, "get_seq_length") for layer in layers)
+
+    def _rewind_cache(self, max_length: int) -> bool:
+        """Crop and verify the cache, returning False when it must be rebuilt."""
+        if not self._cache_supports_rewind():
+            return False
+        try:
+            self._kv.crop(max_length)
+            actual = self._cache_len()
+        except Exception as exc:
+            logger.warning(
+                "KV cache rewind failed (%s); rebuilding from input_ids",
+                type(exc).__name__,
+            )
+            return False
+        if actual != max_length:
+            logger.warning(
+                "KV cache crop reported length %d, expected %d; rebuilding from input_ids",
+                actual,
+                max_length,
+            )
+            return False
+        return True
 
     def _invalidate_kv(self) -> None:
         self._kv = None
@@ -314,19 +349,14 @@ class LLMTracer:
             # The cache is ahead of input_ids (interrupted operation, undo
             # without crop support, external mutation). Recover instead of
             # assuming: trim to just before the last token, or start over.
-            logger.warning(
-                f"KV cache length {cache_len} >= sequence length {seq_len}; recovering"
-            )
-            if self._kv is not None and hasattr(self._kv, "crop"):
-                self._kv.crop(seq_len - 1)
+            logger.warning(f"KV cache length {cache_len} >= sequence length {seq_len}; recovering")
+            if self._rewind_cache(seq_len - 1):
                 cache_len = self._cache_len()
             else:
-                self._kv = None
+                self._invalidate_kv()
                 cache_len = 0
 
-        with torch.inference_mode(), apply_interventions(
-            self.model, self._intervention_set
-        ):
+        with torch.inference_mode(), apply_interventions(self.model, self._intervention_set):
             if self._kv is None:
                 outputs = self.model(self.input_ids, use_cache=True)
             else:
@@ -334,9 +364,7 @@ class LLMTracer:
                     self.input_ids[:, cache_len:],
                     past_key_values=self._kv,
                     use_cache=True,
-                    cache_position=torch.arange(
-                        cache_len, seq_len, device=self.input_ids.device
-                    ),
+                    cache_position=torch.arange(cache_len, seq_len, device=self.input_ids.device),
                 )
             self._kv = outputs.past_key_values
 
@@ -398,8 +426,7 @@ class LLMTracer:
             inferred_source = "manual"
         if not 0 <= int(token_id) < dist.raw_logits.shape[-1]:
             raise ValueError(
-                f"token_id {token_id} out of range for vocabulary size "
-                f"{dist.raw_logits.shape[-1]}"
+                f"token_id {token_id} out of range for vocabulary size {dist.raw_logits.shape[-1]}"
             )
         selection_source = selection_source or inferred_source
         if selection_source not in {"greedy", "sampled", "manual"}:
@@ -459,9 +486,7 @@ class LLMTracer:
             raise ValueError(f"max_new_tokens must be at least 1, got {max_new_tokens}")
         self.clear_stop_flag()
         for _ in range(max_new_tokens):
-            step_data = self.step(
-                params=params, log_top_k=log_top_k, log_full_probs=log_full_probs
-            )
+            step_data = self.step(params=params, log_top_k=log_top_k, log_full_probs=log_full_probs)
             yield step_data
             if stop_at_eos and self.is_eos(step_data.token_id):
                 logger.debug(f"EOS token reached at step {len(self.history)}")
@@ -504,14 +529,13 @@ class LLMTracer:
         del self.history[-n:]
         self.input_ids = self.input_ids[:, :-n]
 
-        if self._kv is not None:
-            if hasattr(self._kv, "crop") and self.seq_len > 0:
-                # Trim to just before the (new) last position so the next
-                # forward recomputes exactly one token.
-                self._kv.crop(self.seq_len - 1)
-            else:
-                self._kv = None
-        # The memo slot stays: if it matches the new seq_len it is valid again.
+        # Trim to just before the (new) last position so the next forward
+        # recomputes exactly one token. Rebuild when crop is unsupported or did
+        # not produce the claimed length.
+        if self._kv is not None and (self.seq_len <= 0 or not self._rewind_cache(self.seq_len - 1)):
+            self._invalidate_kv()
+        # For a rewindable cache the memo slot stays: if it matches the new
+        # seq_len it is valid again. Non-rewindable caches discard it too.
 
         logger.debug(f"Undo({n}) successful: steps={len(self.history)}")
         return True
@@ -552,13 +576,9 @@ class LLMTracer:
         """Cheap internal consistency checks (no re-tokenization)."""
         expected_len = self._prompt_len + len(self.history)
         if self.seq_len != expected_len:
-            return False, (
-                f"input_ids length ({self.seq_len}) != prompt + steps ({expected_len})"
-            )
+            return False, (f"input_ids length ({self.seq_len}) != prompt + steps ({expected_len})")
         if self._cache_len() > self.seq_len:
-            return False, (
-                f"KV cache ({self._cache_len()}) longer than sequence ({self.seq_len})"
-            )
+            return False, (f"KV cache ({self._cache_len()}) longer than sequence ({self.seq_len})")
         return True, None
 
     def get_state_info(self) -> dict[str, Any]:

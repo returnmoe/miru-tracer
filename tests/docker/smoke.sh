@@ -39,6 +39,13 @@ image_user="$(docker image inspect --format '{{.Config.User}}' "$image")"
     echo "unexpected image bootstrap user: $image_user" >&2
     exit 1
 }
+qwen_fast_kernels="$(docker image inspect \
+    --format '{{index .Config.Labels "io.returnmoe.miru-tracer.qwen-fast-kernels"}}' \
+    "$image")"
+[ "$qwen_fast_kernels" = not-bundled ] || {
+    echo "unexpected Qwen fast-kernel policy label: $qwen_fast_kernels" >&2
+    exit 1
+}
 docker run --rm --entrypoint sh "$image" -c \
     'test "$(id -u)" = 0 && test "$HOME" = /root && tmux -V >/dev/null'
 docker run --rm --entrypoint sh "$image" -c \

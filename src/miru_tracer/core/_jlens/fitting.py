@@ -29,7 +29,8 @@ import logging
 import math
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext, suppress
 from typing import Any
 
 import torch
@@ -38,6 +39,15 @@ from miru_tracer.core._jlens.fit_metadata import normalize_fit_metadata
 from miru_tracer.core._jlens.hooks import ActivationRecorder
 from miru_tracer.core._jlens.lens import JacobianLens
 from miru_tracer.core._jlens.protocol import LensModel
+from miru_tracer.core.fit_diagnostics import (
+    DEFAULT_TELEMETRY_INTERVAL_S,
+    SLOWDOWN_WINDOW_PROMPTS,
+    PromptTelemetrySampler,
+    log_cuda_memory_summaries,
+    log_fit_telemetry,
+    prompt_slowdown,
+    reset_cuda_peak_stats,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +64,19 @@ _RESUME_PROVENANCE_KEYS = (
     "model_manifest_sha256",
     "model_commit_hash",
     "model_config_sha256",
+    "model_architecture_sha256",
     "tokenizer_name_or_path",
     "tokenizer_sha256",
     "compute_dtype",
 )
+
+
+class PromptTooShortError(ValueError):
+    """A prompt has no positions left after the estimator's exclusions."""
+
+
+class NoFittedPromptsError(ValueError):
+    """A fit prefix was processed without producing one usable Jacobian."""
 
 
 def _update_prompt_digest(hasher: Any, prompt: str) -> None:
@@ -194,15 +213,18 @@ def valid_position_mask(seq_len: int, *, skip_first: int = SKIP_FIRST_N_POSITION
         Boolean tensor of shape ``[seq_len]``.
 
     Raises:
-        ValueError: If ``skip_first`` is negative or the prompt is too short to
-            leave any valid positions.
+        ValueError: If ``skip_first`` is negative.
+        PromptTooShortError: If the prompt is too short to leave any valid
+            positions.
     """
     if skip_first < 0:
         raise ValueError(f"skip_first must be >= 0, got {skip_first}")
     mask = torch.zeros(seq_len, dtype=torch.bool)
     mask[skip_first : seq_len - 1] = True
     if mask.sum() == 0:
-        raise ValueError(f"prompt too short: seq_len={seq_len}, need > {skip_first + 1} tokens")
+        raise PromptTooShortError(
+            f"prompt too short: seq_len={seq_len}, need > {skip_first + 1} tokens"
+        )
     return mask
 
 
@@ -238,6 +260,8 @@ def jacobian_for_prompt(
     dim_batch: int = 8,
     max_seq_len: int = 128,
     skip_first: int = SKIP_FIRST_N_POSITIONS,
+    timings: dict[str, float] | None = None,
+    phase_callback: Callable[..., None] | None = None,
 ) -> tuple[dict[int, torch.Tensor], int, int]:
     """Compute the per-layer Jacobian estimator ``J_l`` for one prompt.
 
@@ -262,23 +286,41 @@ def jacobian_for_prompt(
             backward FLOPs are unchanged.
         max_seq_len: Truncate the prompt to this many tokens.
         skip_first: Leading positions to exclude; see :func:`valid_position_mask`.
+        timings: Optional dictionary populated with phase timings for
+            diagnostics. GPU work is asynchronous, so ``forward_enqueue_s`` is
+            submission time; ``backward_and_copy_s`` includes the synchronizing
+            device-to-CPU copies and is the reliable end-to-end GPU phase.
+        phase_callback: Optional low-overhead callback receiving the current
+            phase plus backward-pass progress for periodic telemetry.
 
     Returns:
         ``(jacobians, seq_len, n_valid_positions)``. ``jacobians`` maps each
         source layer to a ``[d_model, d_model]`` fp32 CPU tensor.
     """
+    prompt_start = time.perf_counter()
     n_layers, d_model = model.n_layers, model.d_model
     source_layers, target_layer = _check_layer_indices(source_layers, target_layer, n_layers)
 
+    if phase_callback is not None:
+        phase_callback("encode")
+    encode_start = time.perf_counter()
     input_ids = model.encode(prompt, max_length=max_seq_len)
     seq_len = input_ids.shape[1]
     position_mask = valid_position_mask(seq_len, skip_first=skip_first)
     n_valid_positions = int(position_mask.sum())
+    encode_s = time.perf_counter() - encode_start
 
+    if phase_callback is not None:
+        phase_callback("cpu_allocation")
+    allocation_start = time.perf_counter()
     jacobians = {
         layer: torch.zeros(d_model, d_model, dtype=torch.float32) for layer in source_layers
     }
+    cpu_allocation_s = time.perf_counter() - allocation_start
     n_passes = math.ceil(d_model / dim_batch)
+    forward_enqueue_s = 0.0
+    backward_and_copy_s = 0.0
+    cpu_copy_s = 0.0
 
     with (
         ActivationRecorder(
@@ -291,7 +333,11 @@ def jacobian_for_prompt(
         # One forward on the prompt replicated dim_batch times. The retained
         # graph is reused for every backward pass below.
         replicated_ids = input_ids.expand(dim_batch, -1)
+        if phase_callback is not None:
+            phase_callback("forward")
+        forward_start = time.perf_counter()
         model.forward(replicated_ids)
+        forward_enqueue_s = time.perf_counter() - forward_start
         target_activation = recorder.activations[target_layer]  # [dim_batch, seq_len, d_model]
         source_activations = [recorder.activations[layer] for layer in source_layers]
 
@@ -299,8 +345,23 @@ def jacobian_for_prompt(
         batch_indices = torch.arange(dim_batch, device=target_activation.device)
         cotangent = torch.zeros_like(target_activation)
 
+        if phase_callback is not None:
+            phase_callback(
+                "backward_and_copy",
+                backward_pass=0,
+                backward_passes=n_passes,
+            )
+        backward_start = time.perf_counter()
         for pass_idx, dim_start in enumerate(range(0, d_model, dim_batch)):
             n_dims_this_pass = min(dim_batch, d_model - dim_start)
+            if phase_callback is not None:
+                phase_callback(
+                    "backward_and_copy",
+                    backward_pass=pass_idx + 1,
+                    backward_passes=n_passes,
+                    dim_start=dim_start,
+                    dimensions=n_dims_this_pass,
+                )
             # One-hot cotangent at dim (dim_start + b) for batch element b,
             # at every valid target position. Yields rows dim_start..+n of J_l.
             cotangent.zero_()
@@ -320,7 +381,12 @@ def jacobian_for_prompt(
                 # layer lives on; mean over the valid positions -> dim_batch rows.
                 positions_on_device = valid_positions.to(grad.device, non_blocking=True)
                 rows = grad[:n_dims_this_pass, positions_on_device, :].float().mean(dim=1)
-                jacobians[layer][dim_start : dim_start + n_dims_this_pass, :] = rows.cpu()
+                copy_start = time.perf_counter()
+                rows_cpu = rows.cpu()
+                cpu_copy_s += time.perf_counter() - copy_start
+                jacobians[layer][dim_start : dim_start + n_dims_this_pass, :] = rows_cpu
+                del positions_on_device, rows, rows_cpu
+            del grad
             del grads
             if pass_idx % 100 == 0 or pass_idx == n_passes - 1:
                 logger.debug(
@@ -330,7 +396,30 @@ def jacobian_for_prompt(
                     dim_start,
                     dim_start + n_dims_this_pass,
                 )
+        backward_and_copy_s = time.perf_counter() - backward_start
 
+    # Hook removal alone does not drop the tensors stored by the recorder.
+    # Clear every remaining graph reference before the next prompt starts.
+    recorder.activations.clear()
+    del (
+        target_activation,
+        source_activations,
+        cotangent,
+        valid_positions,
+        batch_indices,
+        replicated_ids,
+    )
+    if timings is not None:
+        timings.update(
+            {
+                "encode_s": encode_s,
+                "cpu_allocation_s": cpu_allocation_s,
+                "forward_enqueue_s": forward_enqueue_s,
+                "backward_and_copy_s": backward_and_copy_s,
+                "cpu_copy_s": cpu_copy_s,
+                "jacobian_total_s": time.perf_counter() - prompt_start,
+            }
+        )
     return jacobians, seq_len, n_valid_positions
 
 
@@ -338,8 +427,12 @@ def _atomic_save(obj: object, path: str) -> None:
     """``torch.save`` to a temp file then ``os.replace`` so a crash never
     leaves a half-written checkpoint."""
     tmp_path = f"{path}.tmp.{os.getpid()}"
-    torch.save(obj, tmp_path)
-    os.replace(tmp_path, path)
+    try:
+        torch.save(obj, tmp_path)
+        os.replace(tmp_path, path)
+    finally:
+        with suppress(OSError):
+            os.unlink(tmp_path)
 
 
 def fit(
@@ -358,6 +451,11 @@ def fit(
     stop_window: int = 10,
     stop_at_delta: float | None = None,
     fit_provenance: dict[str, Any] | None = None,
+    log_diagnostics: bool = False,
+    diagnostic_run_start_idx: int = 0,
+    diagnostic_interval_s: float | None = DEFAULT_TELEMETRY_INTERVAL_S,
+    diagnostic_prompt_durations: list[float] | None = None,
+    resume_state: dict[str, Any] | None = None,
 ) -> JacobianLens:
     """Fit ``J_l`` over a list of prompts and return a :class:`JacobianLens`.
 
@@ -390,6 +488,17 @@ def fit(
             positive threshold. ``None`` disables convergence stopping.
         fit_provenance: Optional JSON-safe model/corpus provenance to embed in
             the returned lens artifact.
+        log_diagnostics: Emit per-prompt process, host, I/O, CUDA allocator,
+            and phase-timing records. The fit CLI enables this by default.
+        diagnostic_run_start_idx: Global prompt index at which this OS process
+            started fitting. Used only to number prompts in diagnostics.
+        diagnostic_interval_s: Seconds between intra-prompt telemetry samples;
+            ``None`` disables periodic samples while retaining boundary logs.
+        diagnostic_prompt_durations: Mutable process-local duration history
+            used to detect slow prompts across chunked :func:`fit` calls.
+        resume_state: Optional already-loaded checkpoint state. The chunked
+            wrapper uses this to avoid reading a large checkpoint twice while
+            determining its first unfinished prompt.
 
     Returns:
         The fitted :class:`JacobianLens`.
@@ -405,6 +514,25 @@ def fit(
         raise ValueError(
             f"checkpoint_every must be a positive integer or None, got {checkpoint_every!r}"
         )
+    if type(diagnostic_run_start_idx) is not int or diagnostic_run_start_idx < 0:
+        raise ValueError(
+            "diagnostic_run_start_idx must be a nonnegative integer, got "
+            f"{diagnostic_run_start_idx!r}"
+        )
+    if diagnostic_interval_s is not None and (
+        isinstance(diagnostic_interval_s, bool)
+        or not isinstance(diagnostic_interval_s, (int, float))
+        or not math.isfinite(diagnostic_interval_s)
+        or diagnostic_interval_s <= 0
+    ):
+        raise ValueError(
+            "diagnostic_interval_s must be a positive finite number or None, got "
+            f"{diagnostic_interval_s!r}"
+        )
+    if diagnostic_prompt_durations is None:
+        diagnostic_prompt_durations = []
+    if resume_state is not None and (not resume or checkpoint_path is None):
+        raise ValueError("resume_state requires resume=True and checkpoint_path")
     if isinstance(stop_at_delta, bool):
         raise ValueError(
             f"stop_at_delta must be a positive finite number or None, got {stop_at_delta!r}"
@@ -444,8 +572,17 @@ def fit(
     next_idx: int
     fit_history: list[dict[str, Any]]
     prompt_hasher = hashlib.sha256()
-    if resume and checkpoint_path is not None and os.path.exists(checkpoint_path):
-        state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    loaded_checkpoint_is_current = False
+    if (
+        resume
+        and checkpoint_path is not None
+        and (resume_state is not None or os.path.exists(checkpoint_path))
+    ):
+        state = (
+            resume_state
+            if resume_state is not None
+            else torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        )
         safety_fields = {
             "source_layers",
             "target_layer",
@@ -524,12 +661,16 @@ def fit(
         _check_resume_provenance(state.get("fit_provenance"), fit_provenance, checkpoint_path)
         if fit_provenance is None:
             fit_provenance = state.get("fit_provenance")
+        loaded_checkpoint_is_current = not missing_safety_fields
         logger.info(
             "  resuming from checkpoint: %d/%d prompts processed (%d fitted)",
             next_idx,
             len(prompts),
             n_done,
         )
+        # ``state`` otherwise keeps a second reference to every multi-gigabyte
+        # accumulator for the duration of the fit.
+        del state, resume_state
     else:
         jacobian_sum = {
             layer: torch.zeros(d_model, d_model, dtype=torch.float32) for layer in source_layers
@@ -538,25 +679,52 @@ def fit(
         next_idx = 0
         fit_history = []
 
-    def write_checkpoint() -> None:
-        if checkpoint_path is not None:
-            _atomic_save(
-                {
-                    "jacobian_sum": jacobian_sum,
-                    "n_done": n_done,
-                    "next_idx": next_idx,
-                    "source_layers": source_layers,
-                    "target_layer": target_layer,
-                    "skip_first": skip_first,
-                    "max_seq_len": max_seq_len,
-                    "d_model": d_model,
-                    "prompt_prefix_sha256": prompt_hasher.hexdigest(),
-                    "fit_history": fit_history,
-                    "fit_provenance": fit_provenance,
-                    "estimator": ESTIMATOR_VERSION,
-                },
-                checkpoint_path,
-            )
+    # Do not serialize the same unchanged state twice. Previously every chunk
+    # ended with an unconditional duplicate of its last per-prompt checkpoint.
+    last_checkpointed_next_idx: int | None = next_idx if loaded_checkpoint_is_current else None
+
+    def write_checkpoint(reason: str) -> bool:
+        nonlocal last_checkpointed_next_idx
+        if checkpoint_path is None or last_checkpointed_next_idx == next_idx:
+            return False
+        checkpoint_start = time.perf_counter()
+        _atomic_save(
+            {
+                "jacobian_sum": jacobian_sum,
+                "n_done": n_done,
+                "next_idx": next_idx,
+                "source_layers": source_layers,
+                "target_layer": target_layer,
+                "skip_first": skip_first,
+                "max_seq_len": max_seq_len,
+                "d_model": d_model,
+                "prompt_prefix_sha256": prompt_hasher.hexdigest(),
+                "fit_history": fit_history,
+                "fit_provenance": fit_provenance,
+                "estimator": ESTIMATOR_VERSION,
+            },
+            checkpoint_path,
+        )
+        elapsed_s = time.perf_counter() - checkpoint_start
+        last_checkpointed_next_idx = next_idx
+        try:
+            checkpoint_bytes = os.path.getsize(checkpoint_path)
+        except OSError:
+            checkpoint_bytes = -1
+        logger.info(
+            "fit_checkpoint event=write reason=%s global_prompt=%d fitted_prompts=%d "
+            "bytes=%d elapsed_s=%.3f",
+            reason,
+            next_idx,
+            n_done,
+            checkpoint_bytes,
+            elapsed_s,
+        )
+        return True
+
+    def write_periodic_checkpoint() -> None:
+        if checkpoint_every is not None and next_idx > 0 and next_idx % checkpoint_every == 0:
+            write_checkpoint("cadence")
 
     converged, rolling_mean = _convergence_state(
         fit_history,
@@ -571,23 +739,81 @@ def fit(
             break
         if prompt_idx < next_idx:
             continue
+        if log_diagnostics:
+            reset_cuda_peak_stats()
         start_time = time.perf_counter()
-        try:
-            per_prompt_J, seq_len, n_valid = jacobian_for_prompt(
-                model,
-                prompt,
-                source_layers,
-                target_layer=target_layer,
-                dim_batch=dim_batch,
-                max_seq_len=max_seq_len,
-                skip_first=skip_first,
+        prompt_timings: dict[str, float] = {}
+        prompt_number_fields = {
+            "global_prompt": prompt_idx + 1,
+            "process_prompt": prompt_idx - diagnostic_run_start_idx + 1,
+        }
+        sampler = (
+            PromptTelemetrySampler(
+                logger,
+                interval_s=diagnostic_interval_s,
+                **prompt_number_fields,
             )
-        except ValueError as exc:
+            if log_diagnostics and diagnostic_interval_s is not None
+            else None
+        )
+        if log_diagnostics and sampler is None:
+            log_fit_telemetry(
+                logger,
+                "prompt_start",
+                **prompt_number_fields,
+                phase="setup",
+                telemetry_interval_s="disabled",
+            )
+        try:
+            with sampler if sampler is not None else nullcontext():
+                per_prompt_J, seq_len, n_valid = jacobian_for_prompt(
+                    model,
+                    prompt,
+                    source_layers,
+                    target_layer=target_layer,
+                    dim_batch=dim_batch,
+                    max_seq_len=max_seq_len,
+                    skip_first=skip_first,
+                    timings=prompt_timings,
+                    phase_callback=(sampler.update_phase if sampler is not None else None),
+                )
+        except PromptTooShortError as exc:
             logger.warning("  skipping prompt %d: %s", prompt_idx, exc)
             _update_prompt_digest(prompt_hasher, prompt)
             next_idx = prompt_idx + 1
-            write_checkpoint()
+            if log_diagnostics:
+                log_fit_telemetry(
+                    logger,
+                    "prompt_skipped",
+                    global_prompt=next_idx,
+                    process_prompt=next_idx - diagnostic_run_start_idx,
+                    elapsed_s=time.perf_counter() - start_time,
+                    error_type=type(exc).__name__,
+                )
+            write_periodic_checkpoint()
             continue
+        except BaseException as exc:
+            # The accumulator only contains fully completed prompts, so it is
+            # safe to persist on OOM, Ctrl-C, or another mid-prompt failure.
+            log_fit_telemetry(
+                logger,
+                "prompt_failed",
+                level=logging.ERROR,
+                global_prompt=prompt_idx + 1,
+                process_prompt=prompt_idx - diagnostic_run_start_idx + 1,
+                elapsed_s=time.perf_counter() - start_time,
+                error_type=type(exc).__name__,
+            )
+            if isinstance(exc, torch.OutOfMemoryError):
+                log_cuda_memory_summaries(logger)
+            try:
+                write_checkpoint("exception")
+            except Exception:
+                logger.exception(
+                    "failed to persist the last completed prompt after %s",
+                    type(exc).__name__,
+                )
+            raise
 
         layer_norms = {layer: matrix.norm().item() for layer, matrix in per_prompt_J.items()}
         nonfinite_layers = [layer for layer, norm in layer_norms.items() if not math.isfinite(norm)]
@@ -599,7 +825,17 @@ def fit(
             )
             _update_prompt_digest(prompt_hasher, prompt)
             next_idx = prompt_idx + 1
-            write_checkpoint()
+            del per_prompt_J, layer_norms
+            if log_diagnostics:
+                log_fit_telemetry(
+                    logger,
+                    "prompt_skipped",
+                    global_prompt=next_idx,
+                    process_prompt=next_idx - diagnostic_run_start_idx,
+                    elapsed_s=time.perf_counter() - start_time,
+                    error_type="NonFiniteJacobian",
+                )
+            write_periodic_checkpoint()
             continue
 
         # The prompt norm flags heavy-tailed outliers. Convergence matches
@@ -629,6 +865,9 @@ def fit(
 
         for layer in source_layers:
             jacobian_sum[layer] += per_prompt_J[layer]
+        if n_done > 0:
+            del old_mean
+        del per_prompt_J, layer_norms
         n_done += 1
         _update_prompt_digest(prompt_hasher, prompt)
         next_idx = prompt_idx + 1
@@ -652,6 +891,30 @@ def fit(
             stop_at_delta=stop_at_delta,
         )
 
+        prompt_elapsed_s = time.perf_counter() - start_time
+        slowdown = (
+            prompt_slowdown(prompt_elapsed_s, diagnostic_prompt_durations)
+            if log_diagnostics
+            else None
+        )
+        if log_diagnostics:
+            diagnostic_prompt_durations.append(prompt_elapsed_s)
+        if slowdown is not None:
+            baseline_s, slowdown_ratio = slowdown
+            log_fit_telemetry(
+                logger,
+                "prompt_slowdown",
+                level=logging.WARNING,
+                global_prompt=next_idx,
+                process_prompt=next_idx - diagnostic_run_start_idx,
+                elapsed_s=prompt_elapsed_s,
+                rolling_median_s=baseline_s,
+                slowdown_ratio=slowdown_ratio,
+                baseline_prompts=min(
+                    len(diagnostic_prompt_durations) - 1,
+                    SLOWDOWN_WINDOW_PROMPTS,
+                ),
+            )
         logger.info(
             "  prompt %d/%d  seq_len=%d n_valid=%d  %.0fs  "
             "max||J||/sqrt(d)=%.3f  d_mean=%s  rolling=%s",
@@ -659,17 +922,28 @@ def fit(
             len(prompts),
             seq_len,
             n_valid,
-            time.perf_counter() - start_time,
+            prompt_elapsed_s,
             prompt_norm,
             "n/a" if mean_rel_change is None else f"{mean_rel_change:.2e}",
             "n/a" if rolling_mean is None else f"{rolling_mean:.2e}",
         )
-        if checkpoint_every is not None and next_idx % checkpoint_every == 0:
-            write_checkpoint()
+        if log_diagnostics:
+            log_fit_telemetry(
+                logger,
+                "prompt_complete",
+                global_prompt=next_idx,
+                process_prompt=next_idx - diagnostic_run_start_idx,
+                fitted_prompts=n_done,
+                seq_len=seq_len,
+                valid_positions=n_valid,
+                elapsed_s=prompt_elapsed_s,
+                **{f"phase_{name}": round(value, 3) for name, value in prompt_timings.items()},
+            )
+        write_periodic_checkpoint()
         if converged:
             # Always persist the exact stopping point even when checkpointing
             # was configured less frequently than once per prompt.
-            write_checkpoint()
+            write_checkpoint("converged")
             logger.info(
                 "fit: converged after %d prompts (rolling d_mean %.3g < %.3g)",
                 n_done,
@@ -678,10 +952,14 @@ def fit(
             )
             break
 
-    write_checkpoint()
+    write_checkpoint("final")
     if n_done == 0:
-        raise ValueError("no prompts were long enough to fit on")
-    jacobian_mean = {layer: jacobian_sum[layer] / n_done for layer in source_layers}
+        raise NoFittedPromptsError("no prompts were long enough to fit on")
+    # The persisted checkpoint already contains the sums. Divide the in-memory
+    # tensors in place to avoid briefly allocating a second full-size fp32 lens.
+    for matrix in jacobian_sum.values():
+        matrix.div_(n_done)
+    jacobian_mean = jacobian_sum
     logger.info("fit: done, %d prompts", n_done)
     last_change = next(
         (

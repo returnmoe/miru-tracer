@@ -108,12 +108,10 @@ class TestSelectToken:
         logits = torch.randn(100)
         params = SamplingParams(strategy="sampling", temperature=1.0, top_k=50)
         picks_a = [
-            select_token(logits, params, torch.Generator().manual_seed(42))
-            for _ in range(5)
+            select_token(logits, params, torch.Generator().manual_seed(42)) for _ in range(5)
         ]
         picks_b = [
-            select_token(logits, params, torch.Generator().manual_seed(42))
-            for _ in range(5)
+            select_token(logits, params, torch.Generator().manual_seed(42)) for _ in range(5)
         ]
         assert picks_a == picks_b
 

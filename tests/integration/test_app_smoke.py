@@ -4,7 +4,6 @@ These run with the tiny offline model (via a patched ModelManager), so they
 are in the integration folder only because they spin up a real Gradio server.
 """
 
-
 import socket
 
 import httpx
@@ -42,9 +41,7 @@ class TestAppSmoke:
         finally:
             app.close()
 
-    def test_handlers_work_against_tiny_model(
-        self, tiny_model, tiny_tokenizer, monkeypatch
-    ):
+    def test_handlers_work_against_tiny_model(self, tiny_model, tiny_tokenizer, monkeypatch):
         """Drive the interactive-mode flow at the session/tracer level the way
         the UI handlers do, with the ModelManager patched to the tiny model."""
         from miru_tracer.core.model_manager import ModelManager

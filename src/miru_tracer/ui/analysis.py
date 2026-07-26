@@ -25,9 +25,7 @@ def create_analysis_tab(settings: Settings) -> gr.Tab:
             "Current schema-v3 and older logs are supported."
         )
 
-        json_file_input = gr.File(
-            label="Upload JSON Log", file_types=[".json"], type="filepath"
-        )
+        json_file_input = gr.File(label="Upload JSON Log", file_types=[".json"], type="filepath")
 
         gr.Markdown("### Visualization Settings")
         with gr.Row():
@@ -89,8 +87,7 @@ def create_analysis_tab(settings: Settings) -> gr.Tab:
 
                 use_raw = prob_mode_key(prob_mode) == "raw"
                 probs = [
-                    step.raw_probability if use_raw else step.probability
-                    for step in log.history
+                    step.raw_probability if use_raw else step.probability for step in log.history
                 ]
                 family = "Raw" if use_raw else "Temperature-adjusted"
                 stats_text = (

@@ -32,12 +32,8 @@ class SamplingParams:
 
     def __post_init__(self):
         if self.strategy not in STRATEGIES:
-            raise ValueError(
-                f"Unknown strategy: {self.strategy!r}. Use one of {STRATEGIES}."
-            )
-        object.__setattr__(
-            self, "temperature", max(float(self.temperature), MIN_TEMPERATURE)
-        )
+            raise ValueError(f"Unknown strategy: {self.strategy!r}. Use one of {STRATEGIES}.")
+        object.__setattr__(self, "temperature", max(float(self.temperature), MIN_TEMPERATURE))
         if self.top_k < 0:
             raise ValueError(f"top_k must be >= 0, got {self.top_k}")
         if not 0.0 < self.top_p <= 1.0:

@@ -40,7 +40,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chmod 0700 /root/.ssh && \
     chown -R miru:miru /home/miru
 
-COPY pyproject.toml README.md LICENSE constraints.txt ./
 RUN python3.12 -m venv /opt/miru && \
     /opt/miru/bin/pip install --upgrade pip
 
@@ -68,6 +67,7 @@ RUN /opt/miru/bin/pip install triton==3.7.1 \
 RUN /opt/miru/bin/pip install torch==2.12.1 --no-deps \
       --index-url "${TORCH_INDEX}"
 
+COPY pyproject.toml README.md LICENSE constraints.txt ./
 COPY src/ src/
 RUN /opt/miru/bin/pip install '.[gpu]' -c constraints.txt && \
     /opt/miru/bin/pip check && \
@@ -98,7 +98,8 @@ RUN chmod 0755 /usr/local/bin/miru-entrypoint /usr/local/bin/miru-healthcheck &&
     rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
 
 LABEL org.opencontainers.image.title="Miru Tracer" \
-      io.returnmoe.miru-tracer.cuda="${EXPECTED_CUDA}"
+      io.returnmoe.miru-tracer.cuda="${EXPECTED_CUDA}" \
+      io.returnmoe.miru-tracer.qwen-fast-kernels="not-bundled"
 
 EXPOSE 22 7860
 VOLUME ["/home/miru/.cache/miru-tracer"]

@@ -212,6 +212,7 @@ def normalize_fit_metadata(
         _optional_sha256(provenance, "model_location_sha256", "fit_metadata.provenance")
         _optional_sha256(provenance, "model_manifest_sha256", "fit_metadata.provenance")
         _optional_sha256(provenance, "model_config_sha256", "fit_metadata.provenance")
+        _optional_sha256(provenance, "model_architecture_sha256", "fit_metadata.provenance")
         _optional_sha256(provenance, "tokenizer_sha256", "fit_metadata.provenance")
 
     return decoded

@@ -7,7 +7,9 @@ Downloads ~1.4GB on first run (cached in HF_HOME afterwards).
 import json
 
 import pytest
+import torch
 
+from miru_tracer.core.lens import compute_lens_slice
 from miru_tracer.core.sampling import SamplingParams
 from miru_tracer.core.schema import SCHEMA_VERSION, parse_log
 from miru_tracer.core.tracer import LLMTracer
@@ -26,6 +28,36 @@ def qwen_tracer(qwen3):
 
 
 class TestQwen3EndToEnd:
+    def test_final_logit_lens_is_state_aligned_at_exact_positions(self, qwen3):
+        model, tokenizer = qwen3
+        input_ids = tokenizer(
+            "The capital of France is",
+            return_tensors="pt",
+        ).input_ids
+        positions = sorted({0, 2, input_ids.shape[1] - 1})
+        final_layer = model.config.get_text_config().num_hidden_layers - 1
+
+        slice_ = compute_lens_slice(
+            model,
+            tokenizer,
+            input_ids,
+            layers=[final_layer],
+            positions=positions,
+            mode="logit",
+            top_k=8,
+        )
+        with torch.no_grad():
+            model_logits = model(input_ids, use_cache=False).logits[0].float()
+
+        assert slice_.positions == positions
+        for column, position in enumerate(positions):
+            expected = torch.topk(torch.softmax(model_logits[position], -1), 8)
+            assert slice_.tokens[0][column] == expected.indices.tolist()
+            assert slice_.probs[0][column] == pytest.approx(
+                expected.values.tolist(),
+                rel=1e-4,
+            )
+
     def test_eos_ids_include_qwen_chat_terminators(self, qwen_tracer):
         """Qwen3 declares <|im_end|> and <|endoftext|> — both must count as EOS."""
         tokenizer = qwen_tracer.tokenizer
@@ -57,9 +89,7 @@ class TestQwen3EndToEnd:
         assert replayed == replay_expected
 
         # Continue via stream
-        more = list(
-            tracer.generate_stream(max_new_tokens=3, params=SamplingParams())
-        )
+        more = list(tracer.generate_stream(max_new_tokens=3, params=SamplingParams()))
         assert 1 <= len(more) <= 3
 
         # Export -> parse round trip

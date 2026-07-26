@@ -87,9 +87,7 @@ class TestCacheInvariants:
         for i in range(3):
             tracer.peek(top_k=5, temperature=1.0 + i)  # peek with varying params
             tracer.step(SamplingParams(temperature=0.5))
-        assert torch.allclose(
-            tracer._next_raw_logits(), fresh_full_logits(tracer), atol=1e-5
-        )
+        assert torch.allclose(tracer._next_raw_logits(), fresh_full_logits(tracer), atol=1e-5)
 
     def test_manufactured_desync_recovers(self, tracer):
         tracer.reset("Hello world")
@@ -108,9 +106,7 @@ class TestCacheInvariants:
         # The next peek must recover and produce correct logits.
         tracer.peek()
         assert tracer._cache_len() == tracer.seq_len
-        assert torch.allclose(
-            tracer._next_raw_logits(), fresh_full_logits(tracer), atol=1e-5
-        )
+        assert torch.allclose(tracer._next_raw_logits(), fresh_full_logits(tracer), atol=1e-5)
 
     def test_undo_then_step_logits_match_full_forward(self, tracer):
         tracer.reset("Hello world")
@@ -118,9 +114,7 @@ class TestCacheInvariants:
             tracer.step()
         tracer.undo(3)
         assert_invariants(tracer)
-        assert torch.allclose(
-            tracer._next_raw_logits(), fresh_full_logits(tracer), atol=1e-5
-        )
+        assert torch.allclose(tracer._next_raw_logits(), fresh_full_logits(tracer), atol=1e-5)
         tracer.step()
         assert_invariants(tracer)
 
@@ -161,9 +155,7 @@ class TestCacheInvariants:
             assert_invariants(tracer)
 
         # After it all: logits still exactly match ground truth.
-        assert torch.allclose(
-            tracer._next_raw_logits(), fresh_full_logits(tracer), atol=1e-5
-        )
+        assert torch.allclose(tracer._next_raw_logits(), fresh_full_logits(tracer), atol=1e-5)
 
 
 class TestPeekWithoutPrompt:

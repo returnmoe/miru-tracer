@@ -116,23 +116,30 @@ class TestSteer:
         tracer.reset("Hello world")
         baseline = next_prob(tracer, TOKEN_A)
         tracer.set_interventions(
-            [Intervention(kind="steer", layer=FINAL, token_id=TOKEN_A, strength=-4.0, basis="logit")]
+            [
+                Intervention(
+                    kind="steer", layer=FINAL, token_id=TOKEN_A, strength=-4.0, basis="logit"
+                )
+            ]
         )
         assert next_prob(tracer, TOKEN_A) < baseline
         tracer.set_interventions(None)
 
-    def test_steer_in_jacobian_basis_raises_readout(
-        self, tiny_model, tiny_tokenizer, tiny_lens
-    ):
+    def test_steer_in_jacobian_basis_raises_readout(self, tiny_model, tiny_tokenizer, tiny_lens):
         """Steering at the fitted early layer must raise the token's J-lens
         readout probability at that layer."""
         ids = tiny_tokenizer.encode("Hello world test", return_tensors="pt")
 
         def readout_prob(interventions):
             slice_ = compute_lens_slice(
-                tiny_model, tiny_tokenizer, ids,
-                layers=[0], mode="jacobian", jlens=tiny_lens,
-                pinned_token_ids=[TOKEN_A], interventions=interventions,
+                tiny_model,
+                tiny_tokenizer,
+                ids,
+                layers=[0],
+                mode="jacobian",
+                jlens=tiny_lens,
+                pinned_token_ids=[TOKEN_A],
+                interventions=interventions,
             )
             return slice_.pinned_ranks[TOKEN_A][0][-1]  # rank at last position
 
@@ -171,7 +178,11 @@ class TestSwap:
         v_a = lens_vector(tiny_model, TOKEN_A, 0, basis="logit")
         v_b = lens_vector(tiny_model, TOKEN_B, 0, basis="logit")
         iset = InterventionSet(
-            [Intervention(kind="swap", layer=0, token_id=TOKEN_A, token_id_to=TOKEN_B, basis="logit")],
+            [
+                Intervention(
+                    kind="swap", layer=0, token_id=TOKEN_A, token_id_to=TOKEN_B, basis="logit"
+                )
+            ],
             tiny_model,
         )
         ids = tiny_tokenizer.encode("Hello world", return_tensors="pt")
@@ -190,9 +201,7 @@ class TestSwap:
         after = record(iset)
         coef_before = before @ v_a
         # a-component removed...
-        assert (after @ v_a).abs().max().item() < (
-            0.2 * coef_before.abs().max().item() + 1e-4
-        )
+        assert (after @ v_a).abs().max().item() < (0.2 * coef_before.abs().max().item() + 1e-4)
         # ...and moved onto b
         expected_b = before @ v_b + coef_before * (v_b @ v_b) - coef_before * (v_a @ v_b)
         assert torch.allclose(after @ v_b, expected_b, atol=1e-3)
@@ -207,8 +216,12 @@ class TestComposition:
 
         tracer.set_interventions(
             [
-                Intervention(kind="steer", layer=FINAL, token_id=TOKEN_A, strength=3.0, basis="logit"),
-                Intervention(kind="steer", layer=FINAL, token_id=TOKEN_B, strength=3.0, basis="logit"),
+                Intervention(
+                    kind="steer", layer=FINAL, token_id=TOKEN_A, strength=3.0, basis="logit"
+                ),
+                Intervention(
+                    kind="steer", layer=FINAL, token_id=TOKEN_B, strength=3.0, basis="logit"
+                ),
             ]
         )
         assert next_prob(tracer, TOKEN_A) > base_a
@@ -221,8 +234,12 @@ class TestComposition:
         base = next_prob(tracer, TOKEN_A)
         tracer.set_interventions(
             [
-                Intervention(kind="steer", layer=0, token_id=TOKEN_A, strength=2.0, basis="jacobian"),
-                Intervention(kind="steer", layer=FINAL, token_id=TOKEN_A, strength=2.0, basis="logit"),
+                Intervention(
+                    kind="steer", layer=0, token_id=TOKEN_A, strength=2.0, basis="jacobian"
+                ),
+                Intervention(
+                    kind="steer", layer=FINAL, token_id=TOKEN_A, strength=2.0, basis="logit"
+                ),
             ],
             jlens=tiny_lens,
         )
@@ -242,9 +259,7 @@ class TestCacheSafetyUnderInterventions:
         assert tracer._cache_len() == 0
         assert tracer._logits_slot is None
 
-    def test_incremental_matches_full_forward_under_interventions(
-        self, tiny_model, tiny_tokenizer
-    ):
+    def test_incremental_matches_full_forward_under_interventions(self, tiny_model, tiny_tokenizer):
         """The KV-cache correctness invariant must hold with edits active."""
         tracer = LLMTracer(tiny_model, tiny_tokenizer, device="cpu")
         tracer.reset("The quick brown fox")

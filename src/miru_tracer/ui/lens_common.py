@@ -50,7 +50,9 @@ _IV_CELL_STYLE = (
     f"border:{_IV_BORDER} !important; "
     "padding:0.35rem 0.45rem; vertical-align:middle; overflow-wrap:anywhere;"
 )
-_IV_TH_STYLE = f"{_IV_CELL_STYLE} color:var(--body-text-color-subdued); font-weight:600; text-align:left;"
+_IV_TH_STYLE = (
+    f"{_IV_CELL_STYLE} color:var(--body-text-color-subdued); font-weight:600; text-align:left;"
+)
 
 
 def lens_mode_key(ui_choice: str) -> str:
@@ -88,9 +90,7 @@ def token_ref_to_id(ref: str, tokenizer, mode: str) -> int:
             raise ValueError(f"Not a numeric token id: {ref!r}")
         token_id = int(stripped)
         if not 0 <= token_id < len(tokenizer):
-            raise ValueError(
-                f"Token id {token_id} out of range (vocab size {len(tokenizer)})"
-            )
+            raise ValueError(f"Token id {token_id} out of range (vocab size {len(tokenizer)})")
         return token_id
     if not ref.strip():
         raise ValueError("Empty token reference")
@@ -116,9 +116,7 @@ def parse_layer_refs(text: str) -> list[int]:
         lo, sep, hi = part.partition("-")
         lo, hi = lo.strip(), hi.strip()
         if not lo.isdigit() or (sep and not hi.isdigit()):
-            raise ValueError(
-                f"Bad layer reference {part!r}: use a number or range like 12-15"
-            )
+            raise ValueError(f"Bad layer reference {part!r}: use a number or range like 12-15")
         start, end = int(lo), int(hi) if sep else int(lo)
         if end < start:
             raise ValueError(f"Descending layer range {part!r}")
@@ -145,9 +143,7 @@ def parse_token_refs(text: str, tokenizer, mode: str) -> list[int]:
     return ids
 
 
-def add_pinned_token(
-    pinned_ids: list[int], token_ref: str, tokenizer, mode: str
-) -> list[int]:
+def add_pinned_token(pinned_ids: list[int], token_ref: str, tokenizer, mode: str) -> list[int]:
     """Append one pinned token id, preserving order and avoiding duplicates."""
     token_id = token_ref_to_id(token_ref, tokenizer, mode)
     updated = list(pinned_ids or [])
@@ -185,9 +181,7 @@ def pinned_tokens_table_html(pinned_ids: list[int], tokenizer=None) -> str:
     return static_table_html(["ID", "Token", "Decoded"], rows)
 
 
-def intervention_group(
-    interventions: list[Intervention], *, enabled: bool = True
-) -> dict:
+def intervention_group(interventions: list[Intervention], *, enabled: bool = True) -> dict:
     """Build the UI row created by one Add-intervention action."""
     concrete = list(interventions)
     if not concrete:
@@ -230,6 +224,7 @@ def format_layer_refs(layers: list[int]) -> str:
 
 def intervention_description(iv: Intervention, tokenizer=None) -> str:
     """Describe an edit without its layer, which has a dedicated table column."""
+
     def token_name(token_id: int) -> str:
         if tokenizer is None:
             return str(token_id)
@@ -280,8 +275,7 @@ def sparkline(counts: list[int]) -> str:
     if peak == 0:
         return _SPARK_BLOCKS[0] * len(counts)
     return "".join(
-        _SPARK_BLOCKS[min(int(c / peak * (len(_SPARK_BLOCKS) - 1) + 0.5), 7)]
-        for c in counts
+        _SPARK_BLOCKS[min(int(c / peak * (len(_SPARK_BLOCKS) - 1) + 0.5), 7)] for c in counts
     )
 
 
@@ -320,7 +314,7 @@ def interventions_table_html(groups: list, tokenizer=None) -> str:
             f'<td style="{_IV_CELL_STYLE}">{html.escape(layers)}</td>'
             f'<td style="{_IV_CELL_STYLE}">{html.escape(iv.kind)}</td>'
             f'<td style="{_IV_CELL_STYLE}">'
-            f'{html.escape(intervention_description(iv, tokenizer))}</td>'
+            f"{html.escape(intervention_description(iv, tokenizer))}</td>"
             f'<td style="{_IV_CELL_STYLE}">{html.escape(iv.basis)}</td>'
             f'<td style="{_IV_CELL_STYLE}">{html.escape(strength)}</td>'
             f'<td class="miru-iv-actions" style="{_IV_CELL_STYLE} text-align:right;">'
@@ -339,9 +333,7 @@ def describe_with_basis(iv: Intervention, tokenizer=None) -> str:
     return f"{iv.describe(tokenizer)} ({iv.basis})"
 
 
-def intervened_layer_titles(
-    interventions: list[Intervention], tokenizer=None
-) -> dict[int, str]:
+def intervened_layer_titles(interventions: list[Intervention], tokenizer=None) -> dict[int, str]:
     """Map each edited layer to a ``'; '``-joined description of its edits."""
     titles: dict[int, str] = {}
     for iv in interventions:
@@ -453,9 +445,7 @@ def _token_label(text: str) -> str:
     return shown if shown.strip() else "·"
 
 
-def highlighted_tokens(
-    position_texts: list[str], selected: list[int]
-) -> list[tuple[str, str]]:
+def highlighted_tokens(position_texts: list[str], selected: list[int]) -> list[tuple[str, str]]:
     """Value for gr.HighlightedText: one clickable span per position."""
     chosen = set(selected)
     return [
@@ -469,11 +459,7 @@ def selection_summary(selected: list[int], seq_len: int | None) -> str:
     if seq_len is None:
         return ""
     if not selected:
-        available = max(seq_len - 1, 0)
-        return (
-            f"**Selection:** all {available} token-aligned positions "
-            "(position 0 has no preceding causal state)."
-        )
+        return f"**Selection:** all {seq_len} state-aligned positions."
     shown = ", ".join(str(p) for p in selected[:12])
     if len(selected) > 12:
         shown += ", …"

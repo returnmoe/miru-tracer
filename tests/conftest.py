@@ -10,10 +10,17 @@ from __future__ import annotations
 
 import os
 
+# Gradio otherwise starts a best-effort analytics request in a background
+# thread during app tests, producing network noise after pytest closes capture.
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+
 import pytest
 import torch
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
+
+QWEN3_MODEL_ID = "Qwen/Qwen3-0.6B"
+QWEN3_REVISION = "c1899de289a04d12100db370d81485cdf75e47ca"
 
 TINY_VOCAB_SIZE = 260  # 256 byte tokens + eos/pad + 2 spare ids for EOS-list tests
 
@@ -57,6 +64,36 @@ def build_tiny_model() -> LlamaForCausalLM:
     return model
 
 
+def build_tiny_qwen35():
+    """Tiny Qwen3.5/3.6 hybrid DeltaNet model using the PyTorch fallback."""
+    from transformers import Qwen3_5ForCausalLM, Qwen3_5TextConfig
+
+    config = Qwen3_5TextConfig(
+        vocab_size=TINY_VOCAB_SIZE,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        linear_conv_kernel_dim=4,
+        linear_key_head_dim=8,
+        linear_value_head_dim=8,
+        linear_num_key_heads=4,
+        linear_num_value_heads=4,
+        layer_types=[
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+        ],
+    )
+    torch.manual_seed(0)
+    model = Qwen3_5ForCausalLM(config).eval()
+    model.generation_config.eos_token_id = None
+    return model
+
+
 @pytest.fixture(scope="session")
 def tiny_model():
     return build_tiny_model()
@@ -65,6 +102,11 @@ def tiny_model():
 @pytest.fixture(scope="session")
 def tiny_tokenizer():
     return build_byte_tokenizer()
+
+
+@pytest.fixture(scope="session")
+def tiny_qwen35():
+    return build_tiny_qwen35()
 
 
 @pytest.fixture()
@@ -144,12 +186,18 @@ def qwen3():
     """Qwen/Qwen3-0.6B for integration tests. Skips if unavailable."""
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    name = "Qwen/Qwen3-0.6B"
     try:
-        tokenizer = AutoTokenizer.from_pretrained(name)
-        model = AutoModelForCausalLM.from_pretrained(name, dtype=torch.float32).eval()
+        tokenizer = AutoTokenizer.from_pretrained(
+            QWEN3_MODEL_ID,
+            revision=QWEN3_REVISION,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            QWEN3_MODEL_ID,
+            revision=QWEN3_REVISION,
+            dtype=torch.float32,
+        ).eval()
     except OSError as e:  # pragma: no cover - network-dependent
         if os.getenv("MIRU_REQUIRE_EXTERNAL_MODEL") == "1":
-            pytest.fail(f"{name} is required but unavailable: {e}")
-        pytest.skip(f"{name} unavailable: {e}")
+            pytest.fail(f"{QWEN3_MODEL_ID}@{QWEN3_REVISION} is required but unavailable: {e}")
+        pytest.skip(f"{QWEN3_MODEL_ID}@{QWEN3_REVISION} unavailable: {e}")
     return model, tokenizer

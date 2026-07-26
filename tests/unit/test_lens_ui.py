@@ -55,25 +55,31 @@ class MultilingualTokenizer:
 
 
 class TestLensModeKey:
-    @pytest.mark.parametrize("ui,key", [
-        ("Logit", "logit"),
-        ("Jacobian", "jacobian"),
-        ("Compare (Jacobian / Logit)", "compare"),
-        (None, "logit"),
-    ])
+    @pytest.mark.parametrize(
+        "ui,key",
+        [
+            ("Logit", "logit"),
+            ("Jacobian", "jacobian"),
+            ("Compare (Jacobian / Logit)", "compare"),
+            (None, "logit"),
+        ],
+    )
     def test_mapping(self, ui, key):
         assert lens_mode_key(ui) == key
 
 
 class TestTokenModeKey:
-    @pytest.mark.parametrize("ui,key", [
-        ("Text", "text"),
-        ("ID", "id"),
-        ("id", "id"),
-        (" ID ", "id"),
-        ("", "text"),
-        (None, "text"),
-    ])
+    @pytest.mark.parametrize(
+        "ui,key",
+        [
+            ("Text", "text"),
+            ("ID", "id"),
+            ("id", "id"),
+            (" ID ", "id"),
+            ("", "text"),
+            (None, "text"),
+        ],
+    )
     def test_mapping(self, ui, key):
         assert token_mode_key(ui) == key
 
@@ -120,9 +126,7 @@ class TestTokenRefs:
         assert ids == [42, 7]
 
     def test_parse_list_text(self, tiny_tokenizer):
-        expected = [
-            tiny_tokenizer.encode(t, add_special_tokens=False)[0] for t in ("a", "b")
-        ]
+        expected = [tiny_tokenizer.encode(t, add_special_tokens=False)[0] for t in ("a", "b")]
         assert parse_token_refs("a, b, a", tiny_tokenizer, "text") == expected
 
     def test_parse_empty(self, tiny_tokenizer):
@@ -221,8 +225,7 @@ class TestPositions:
     def test_selection_summary(self):
         assert selection_summary([], None) == ""
         summary_all = selection_summary([], 5)
-        assert "all 4 token-aligned positions" in summary_all
-        assert "position 0" in summary_all
+        assert "all 5 state-aligned positions" in summary_all
         summary = selection_summary([1, 3], 5)
         assert "2 of 5 positions" in summary and "1, 3" in summary
         many = selection_summary(list(range(20)), 30)
@@ -251,8 +254,10 @@ class TestActiveInterventionsTable:
     def test_rows_rendered_and_escaped(self, tiny_tokenizer):
         token_id = tiny_tokenizer.encode("<b>", add_special_tokens=False)[0]
         group = intervention_group(
-            [Intervention(kind="steer", layer=layer, token_id=token_id, basis="logit")
-             for layer in [14, 15, 16, 17, 18, 33]]
+            [
+                Intervention(kind="steer", layer=layer, token_id=token_id, basis="logit")
+                for layer in [14, 15, 16, 17, 18, 33]
+            ]
         )
         out = interventions_table_html([group], tiny_tokenizer)
         assert "<table" in out
@@ -321,9 +326,7 @@ class TestActiveInterventionsTable:
                     Intervention(kind="steer", layer=1, token_id=1),
                 ]
             ),
-            intervention_group(
-                [Intervention(kind="ablate", layer=1, token_id=2)]
-            ),
+            intervention_group([Intervention(kind="ablate", layer=1, token_id=2)]),
         ]
         updated, status = apply_intervention_table_action(
             rows, '{"action":"toggle","index":0,"enabled":false}'
@@ -331,9 +334,7 @@ class TestActiveInterventionsTable:
         assert "group 0 disabled" in status
         assert enabled_interventions(updated) == rows[1]["interventions"]
 
-        updated, status = apply_intervention_table_action(
-            updated, '{"action":"delete","index":1}'
-        )
+        updated, status = apply_intervention_table_action(updated, '{"action":"delete","index":1}')
         assert "Deleted intervention group 1" in status
         assert len(updated) == 1
         assert updated[0]["interventions"] == rows[0]["interventions"]
@@ -344,9 +345,7 @@ class TestActiveInterventionsTable:
         assert updated == rows
         assert "Ignored invalid" in status
 
-        updated, status = apply_intervention_table_action(
-            rows, {"action": "delete", "index": 99}
-        )
+        updated, status = apply_intervention_table_action(rows, {"action": "delete", "index": 99})
         assert updated == rows
         assert "Ignored invalid" in status
 
@@ -368,9 +367,7 @@ class TestPinnedTokens:
 
     def test_multilingual_choices_and_table(self):
         tokenizer = MultilingualTokenizer()
-        assert pinned_token_choices([7], tokenizer) == [
-            ("7: æ³ķåĽ½ (法国)", "7")
-        ]
+        assert pinned_token_choices([7], tokenizer) == [("7: æ³ķåĽ½ (法国)", "7")]
         table = pinned_tokens_table_html([7], tokenizer)
         assert "æ³ķåĽ½" in table and "法国" in table
 
@@ -398,8 +395,13 @@ class TestLensPlots:
 
     def test_heatmap_empty(self):
         empty = LensSlice(
-            mode="logit", layers=[], positions=[], position_texts=[],
-            tokens=[], probs=[], texts=[],
+            mode="logit",
+            layers=[],
+            positions=[],
+            position_texts=[],
+            tokens=[],
+            probs=[],
+            texts=[],
         )
         assert plot_lens_heatmap(empty) is None
 
@@ -440,8 +442,13 @@ class TestLensPlots:
 
     def test_pinned_ranks_none_when_empty(self):
         empty = LensSlice(
-            mode="logit", layers=[0], positions=[0], position_texts=["x"],
-            tokens=[[[1]]], probs=[[[1.0]]], texts=[[["a"]]],
+            mode="logit",
+            layers=[0],
+            positions=[0],
+            position_texts=["x"],
+            tokens=[[[1]]],
+            probs=[[[1.0]]],
+            texts=[[["a"]]],
         )
         assert plot_pinned_token_ranks(empty) is None
 
@@ -456,8 +463,13 @@ class TestLensViews:
         assert "<table" in out and "overflow:auto" in out  # scrolls both ways
         assert "⚡" not in out  # no marker without the arg
         empty = LensSlice(
-            mode="logit", layers=[], positions=[], position_texts=[],
-            tokens=[], probs=[], texts=[],
+            mode="logit",
+            layers=[],
+            positions=[],
+            position_texts=[],
+            tokens=[],
+            probs=[],
+            texts=[],
         )
         assert heatmap_html(empty) == ""
 
@@ -474,9 +486,13 @@ class TestLensViews:
 
     def test_heatmap_escapes_tokens(self):
         s = LensSlice(
-            mode="logit", layers=[0], positions=[0],
+            mode="logit",
+            layers=[0],
+            positions=[0],
             position_texts=["<|im_start|>"],
-            tokens=[[[1]]], probs=[[[1.0]]], texts=[[["<b>"]]],
+            tokens=[[[1]]],
+            probs=[[[1.0]]],
+            texts=[[["<b>"]]],
         )
         out = heatmap_html(s)
         assert "&lt;b&gt;" in out and "&lt;|im_start|&gt;" in out
@@ -504,7 +520,7 @@ class TestReadoutInspector:
             position_texts=["planning"],
             tokens=[[[7, 8]], [[10, 7]]],
             probs=[[[0.2, 0.1]], [[0.7, 0.05]]],
-            texts=[[['plans', 'plan']], [['planning', 'plans']]],
+            texts=[[["plans", "plan"]], [["planning", "plans"]]],
         )
 
     @staticmethod
@@ -540,8 +556,9 @@ class TestReadoutInspector:
         assert "<span>All</span><span>Layers</span>" in out
         assert 'data-readout-layer="0"' in out
         assert 'data-readout-panel="0"' in out
-        assert "20.00%" in out and "final model distribution for selected token" in out
-        assert "preceding causal state p−1" in out
+        assert "20.00%" in out and "next-token distribution after selected token" in out
+        assert "residual position p" in out
+        assert "token that follows it" in out
         assert "often degenerate" in out
         assert "best displayed rank 1" in out
         assert "miru-readout-all-active" in out
@@ -634,8 +651,10 @@ class TestReadoutInspector:
 class TestInterventionVisibility:
     def _iv(self, **kw):
         return Intervention(
-            kind=kw.get("kind", "steer"), layer=kw["layer"],
-            token_id=kw.get("token_id", 1), basis=kw["basis"],
+            kind=kw.get("kind", "steer"),
+            layer=kw["layer"],
+            token_id=kw.get("token_id", 1),
+            basis=kw["basis"],
         )
 
     def test_intervened_layer_titles_joins_same_layer(self):
@@ -654,15 +673,18 @@ class TestInterventionVisibility:
         assert summary.count(";") == 4  # 4 edits + the "+2 more" tail
         assert "+2 more" in summary
 
-    @pytest.mark.parametrize("basis,mode,layer,warns", [
-        ("jacobian", "logit", 5, True),
-        ("jacobian", "jacobian", 5, False),
-        ("jacobian", "compare", 5, False),
-        ("logit", "jacobian", 5, True),
-        ("logit", "logit", 5, False),
-        ("logit", "compare", 5, False),
-        ("jacobian", "logit", 31, False),  # final layer (n_layers=32) exempt
-    ])
+    @pytest.mark.parametrize(
+        "basis,mode,layer,warns",
+        [
+            ("jacobian", "logit", 5, True),
+            ("jacobian", "jacobian", 5, False),
+            ("jacobian", "compare", 5, False),
+            ("logit", "jacobian", 5, True),
+            ("logit", "logit", 5, False),
+            ("logit", "compare", 5, False),
+            ("jacobian", "logit", 31, False),  # final layer (n_layers=32) exempt
+        ],
+    )
     def test_warning_truth_table(self, basis, mode, layer, warns):
         ivs = [self._iv(layer=layer, basis=basis)]
         result = intervention_visibility_warning(ivs, mode, n_layers=32)
@@ -676,7 +698,7 @@ class TestInterventionVisibility:
     def test_warning_names_only_mismatched(self):
         ivs = [
             self._iv(layer=5, basis="jacobian"),  # mismatched in logit view
-            self._iv(layer=6, basis="logit"),     # matches logit view
+            self._iv(layer=6, basis="logit"),  # matches logit view
         ]
         result = intervention_visibility_warning(ivs, "logit", n_layers=32)
         assert result is not None

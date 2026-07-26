@@ -46,9 +46,7 @@ class TestStep:
         # raw_probability must equal the temperature-1 softmax of raw logits
         tracer.undo()
         raw_probs = torch.softmax(tracer._next_raw_logits(), dim=-1)
-        assert step.raw_probability == pytest.approx(
-            raw_probs[step.token_id].item(), rel=1e-5
-        )
+        assert step.raw_probability == pytest.approx(raw_probs[step.token_id].item(), rel=1e-5)
 
     def test_full_probs_logged_and_sum_to_one(self, tracer):
         tracer.reset("Hello")

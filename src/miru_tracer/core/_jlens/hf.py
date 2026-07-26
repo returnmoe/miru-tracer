@@ -56,9 +56,7 @@ _LAYOUTS: tuple[Layout, ...] = (
     Layout("language_model"),
     Layout("model", norm="final_layernorm"),  # Phi
     Layout("transformer", layers="h", norm="ln_f", embed="wte"),  # GPT-2
-    Layout(
-        "gpt_neox", norm="final_layer_norm", embed="embed_in", lm_head="embed_out"
-    ),  # Pythia
+    Layout("gpt_neox", norm="final_layer_norm", embed="embed_in", lm_head="embed_out"),  # Pythia
 )
 
 
@@ -125,9 +123,7 @@ class HFLensModel:
         text_config = hf_model.config.get_text_config()
         self.n_layers: int = text_config.num_hidden_layers
         self.d_model: int = text_config.hidden_size
-        self._logit_softcap: float | None = getattr(
-            text_config, "final_logit_softcapping", None
-        )
+        self._logit_softcap: float | None = getattr(text_config, "final_logit_softcapping", None)
         if len(self.layers) != self.n_layers:
             raise ValueError(
                 f"config.num_hidden_layers={self.n_layers} but found "
@@ -140,9 +136,7 @@ class HFLensModel:
         # hooks.
         if compile:
             for i in range(len(self.layers)):
-                self.layers[i] = torch.compile(
-                    self.layers[i], mode="default", dynamic=False
-                )
+                self.layers[i] = torch.compile(self.layers[i], mode="default", dynamic=False)
 
     def __repr__(self) -> str:
         return (
@@ -155,9 +149,7 @@ class HFLensModel:
         return self._embed_tokens.weight.device
 
     def encode(self, text: str, *, max_length: int = 512) -> torch.Tensor:
-        encoded = self.tokenizer(
-            text, return_tensors="pt", truncation=True, max_length=max_length
-        )
+        encoded = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length)
         return encoded.input_ids.to(self.input_device)
 
     def forward(self, input_ids: torch.Tensor) -> Any:
@@ -166,9 +158,7 @@ class HFLensModel:
     def unembed(self, residual: torch.Tensor) -> torch.Tensor:
         target_device = self._lm_head.weight.device
         target_dtype = self._lm_head.weight.dtype
-        logits = self._lm_head(
-            self._final_norm(residual.to(target_dtype).to(target_device))
-        )
+        logits = self._lm_head(self._final_norm(residual.to(target_dtype).to(target_device)))
         if self._logit_softcap is not None:
             logits = self._logit_softcap * torch.tanh(logits / self._logit_softcap)
         return logits
@@ -206,6 +196,4 @@ def from_hf(
         if layout is not None:
             raise TypeError("pass at most one of layout= / text_module=")
         layout = Layout(path=text_module)
-    return HFLensModel(
-        hf_model, tokenizer, layout=layout, compile=compile, force_bos=force_bos
-    )
+    return HFLensModel(hf_model, tokenizer, layout=layout, compile=compile, force_bos=force_bos)

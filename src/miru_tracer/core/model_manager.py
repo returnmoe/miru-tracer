@@ -124,9 +124,7 @@ class ModelManager:
                     device = "cuda"
                     device_name = torch.cuda.get_device_name(0)
                     vram = torch.cuda.get_device_properties(0).total_memory / 1e9
-                    logger.info(
-                        f"Device detected: {device_name} (VRAM: {vram:.2f} GB)"
-                    )
+                    logger.info(f"Device detected: {device_name} (VRAM: {vram:.2f} GB)")
                 else:
                     device = "cpu"
                     device_name = "CPU"
@@ -180,17 +178,13 @@ class ModelManager:
 
                 is_vlm = False
                 try:
-                    new_model = AutoModelForCausalLM.from_pretrained(
-                        model_name, **load_kwargs
-                    )
+                    new_model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
                 except (ValueError, KeyError) as e:
                     if "Unrecognized configuration class" not in str(
                         e
                     ) and "does not support" not in str(e):
                         raise
-                    new_model = AutoModelForMultimodal.from_pretrained(
-                        model_name, **load_kwargs
-                    )
+                    new_model = AutoModelForMultimodal.from_pretrained(model_name, **load_kwargs)
                     is_vlm = True
 
                 if not torch.cuda.is_available() and load_kwargs["device_map"] is None:
