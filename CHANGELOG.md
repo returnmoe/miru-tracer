@@ -119,18 +119,21 @@ hardening problems:
 
 CI now tests the same-position Logit-lens invariant against a real Qwen model,
 builds and installs the wheel, and exercises a tiny hybrid Qwen3.5 model across
-tracing, undo/replay, lens readout, and interventions. The release workflow is
-manual and requires an explicit acknowledgement that the multi-GPU slowdown
-remains unresolved. Both CUDA images are built and service/hardening
-smoke-tested under immutable commit tags, then promoted to exact version tags
-before the Git tag, curated changelog notes, and wheel are published. Mutable
-minor and `latest` aliases are promoted last. A release candidate that was
-current `master` when dispatched remains the candidate throughout the workflow
-even if `master` advances during the image builds, preventing a published tag
-and wheel from being stranded without their exact version image aliases. A
-process-local, two-H100 Qwen3.6-27B run extending past the previously observed
-slowdown boundary is post-release validation for v0.3.0 and a source of
-telemetry for any necessary v0.3.x patch.
+tracing, undo/replay, lens readout, and interventions. The gated release
+workflow accepts either a manual dispatch or a validated
+`release/v<version>` branch push and requires an explicit acknowledgement that
+the multi-GPU slowdown remains unresolved. For the raw-Git path, deliberately
+pushing that branch is the acknowledgement; it does not publish the version
+tag early. Both CUDA images are built and service/hardening smoke-tested under
+immutable commit tags, then promoted to exact version tags before the Git tag,
+curated changelog notes, and wheel are published. Mutable minor and `latest`
+aliases are promoted last. A release candidate that was current `master` when
+dispatched remains the candidate throughout the workflow even if `master`
+advances during the image builds, preventing a published tag and wheel from
+being stranded without their exact version image aliases. A process-local,
+two-H100 Qwen3.6-27B run extending past the previously observed slowdown
+boundary is post-release validation for v0.3.0 and a source of telemetry for
+any necessary v0.3.x patch.
 
 ### Breaking: Lens positions now identify residual states
 

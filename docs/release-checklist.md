@@ -54,10 +54,16 @@ metadata. Mutable minor and `latest` aliases are promoted afterward.
 After the source metadata is ready, CI has passed, and the known risk is
 accepted:
 
-1. Dispatch the `Release` workflow on `master`.
-2. Enter `0.3.0` and acknowledge that the multi-GPU slowdown's root cause
-   remains unresolved. This acknowledgement is not a hardware-test result;
-   the workflow reruns the release-specific automated gates before publishing.
+1. Either dispatch the `Release` workflow on `master`, or push the current
+   `master` commit to the versioned release branch:
+   `git push origin HEAD:refs/heads/release/v0.3.0`. A branch-triggered release
+   rejects version mismatches and release branches that do not point at current
+   `master`; it does not create the public version tag before the image gates.
+2. For a manual dispatch, enter `0.3.0` and acknowledge that the multi-GPU
+   slowdown's root cause remains unresolved. For the raw-Git path, deliberately
+   pushing the versioned release branch is that acknowledgement. Neither path
+   is a hardware-test result; the workflow reruns the release-specific
+   automated gates before publishing.
 3. Confirm both immutable and promoted GHCR tags resolve, the GitHub Release
    uses the curated changelog section, and the wheel, exact `constraints.txt`,
    plus `SHA256SUMS` are attached.

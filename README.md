@@ -247,11 +247,15 @@ docker pull ghcr.io/returnmoe/miru-tracer:0.3.0
 docker pull ghcr.io/returnmoe/miru-tracer:0.3.0-cu126
 ```
 
-Images are published only by the manual release workflow after current-master
-tests, the real-Qwen integration test, wheel validation, both image builds,
-an exact-tag service/hardening smoke test of each immutable image, and explicit
-acknowledgement of the unresolved multi-GPU slowdown. The verified immutable
-images are promoted to exact version aliases before the GitHub Release is
+Images are published only by the gated release workflow, started either by a
+manual dispatch or a validated `release/v<version>` branch push. It runs
+current-master tests, the real-Qwen integration test, wheel validation, both
+image builds, an exact-tag service/hardening smoke test of each immutable
+image, and requires explicit acknowledgement of the unresolved multi-GPU
+slowdown. For the raw-Git path, deliberately pushing the versioned release
+branch is that acknowledgement. The branch must point at current `master`; it
+does not publish the version tag early. The verified immutable images are
+promoted to exact version aliases before the Git tag and GitHub Release are
 created; mutable minor and `latest` aliases are promoted afterward. The
 two-H100 Qwen3.6-27B long run is performed against the published v0.3.0
 artifacts. Pull-request builds are tested but not pushed to GHCR. Both variants

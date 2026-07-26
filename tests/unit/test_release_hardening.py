@@ -165,6 +165,16 @@ def test_release_acknowledges_unresolved_hardware_risk_without_claiming_a_soak()
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
 
     assert "unresolved_slowdown_acknowledged:" in workflow
-    assert 'test "$UNRESOLVED_SLOWDOWN_ACKNOWLEDGED" = "true"' in workflow
+    assert 'test "$unresolved_slowdown_acknowledged" = "true"' in workflow
     assert "h100_soak_confirmed" not in workflow
     assert "h100_soak_evidence" not in workflow
+
+
+def test_release_accepts_only_a_validated_versioned_release_branch_push():
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+
+    assert 'branches:\n      - "release/v*"' in workflow
+    assert 'release_ref="refs/heads/release/v${version}"' in workflow
+    assert 'test "$GITHUB_REF" = "$release_ref"' in workflow
+    assert 'requested_version="${GITHUB_REF#refs/heads/release/v}"' in workflow
+    assert "unresolved_slowdown_acknowledged=true" in workflow

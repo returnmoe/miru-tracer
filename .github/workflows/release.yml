@@ -1,6 +1,9 @@
 name: Release
 
 on:
+  push:
+    branches:
+      - "release/v*"
   workflow_dispatch:
     inputs:
       version:
@@ -43,22 +46,39 @@ jobs:
       - id: version
         name: Confirm release source and known-risk acknowledgement
         env:
+          RELEASE_EVENT: ${{ github.event_name }}
           REQUESTED_VERSION: ${{ inputs.version }}
           UNRESOLVED_SLOWDOWN_ACKNOWLEDGED: ${{ inputs.unresolved_slowdown_acknowledged }}
         run: |
-          test "$GITHUB_REF" = "refs/heads/master"
           git fetch origin master --depth=1
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/master)"
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
           test -n "$version"
-          test "$version" = "$REQUESTED_VERSION"
           test "$version" = "0.3.0"
+          case "$RELEASE_EVENT" in
+            push)
+              release_ref="refs/heads/release/v${version}"
+              test "$GITHUB_REF" = "$release_ref"
+              requested_version="${GITHUB_REF#refs/heads/release/v}"
+              unresolved_slowdown_acknowledged=true
+              ;;
+            workflow_dispatch)
+              test "$GITHUB_REF" = "refs/heads/master"
+              requested_version="$REQUESTED_VERSION"
+              unresolved_slowdown_acknowledged="$UNRESOLVED_SLOWDOWN_ACKNOWLEDGED"
+              ;;
+            *)
+              echo "unsupported release event: $RELEASE_EVENT" >&2
+              exit 1
+              ;;
+          esac
+          test "$version" = "$requested_version"
           grep -q "^## ${version} — " CHANGELOG.md
           if grep -Fqx "## ${version} — unreleased" CHANGELOG.md; then
             echo "date the ${version} changelog entry before publishing" >&2
             exit 1
           fi
-          test "$UNRESOLVED_SLOWDOWN_ACKNOWLEDGED" = "true"
+          test "$unresolved_slowdown_acknowledged" = "true"
           minor="${version%.*}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "minor=$minor" >> "$GITHUB_OUTPUT"
@@ -66,6 +86,8 @@ jobs:
             echo "### Known-risk acknowledgement"
             echo
             echo "Unresolved Qwen3.6-27B multi-GPU slowdown acknowledged: **yes**"
+            echo
+            echo "Authorization path: **${RELEASE_EVENT}**"
             echo
             echo "The released v0.3.0 artifacts require post-release hardware validation before the slowdown can be described as resolved."
           } >> "$GITHUB_STEP_SUMMARY"
