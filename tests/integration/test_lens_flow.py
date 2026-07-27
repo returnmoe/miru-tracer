@@ -31,6 +31,8 @@ def lens_app(tiny_model, tiny_tokenizer, tmp_path, monkeypatch):
     monkeypatch.setattr(ModelManager, "_tokenizer", tiny_tokenizer)
     monkeypatch.setattr(ModelManager, "_device", "cpu")
     monkeypatch.setattr(ModelManager, "_model_name", "tiny/test-model")
+    monkeypatch.setattr(ModelManager, "_model_revision", None)
+    monkeypatch.setattr(ModelManager, "_model_commit", None)
 
     store = LensStore(base_dir=tmp_path)
     monkeypatch.setattr(lens_module, "_lens_store", store)
@@ -322,3 +324,12 @@ class TestFitFileManagement:
         )
         assert "incompatible fit file" in result
         assert "other/test-model" in result
+
+        forced_status, forced_enabled = lens_app.predict(
+            handle_file(str(wrong_identity_path)),
+            True,
+            api_name="/install_fit_file_with_provenance_override",
+        )
+        assert "Installed with explicit provenance bypass" in forced_status
+        assert "FORCED provenance conflict" in forced_status
+        assert forced_enabled is True

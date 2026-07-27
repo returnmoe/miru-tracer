@@ -40,6 +40,19 @@ def _workflow_job_permissions(workflow: str, name: str) -> set[str]:
     return {line.strip() for line in match["body"].splitlines()}
 
 
+def test_release_workflow_and_documentation_match_project_version():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    version = project["project"]["version"]
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    checklist = (ROOT / "docs" / "release-checklist.md").read_text()
+
+    assert f'default: "{version}"' in workflow
+    assert f'test "$version" = "{version}"' in workflow
+    assert f"## {version} — " in changelog
+    assert f"release/v{version}" in checklist
+
+
 def test_all_direct_dependencies_stay_on_tested_minor_lines():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     requirements = list(project["project"]["dependencies"])

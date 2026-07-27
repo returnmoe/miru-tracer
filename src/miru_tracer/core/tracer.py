@@ -264,7 +264,13 @@ class LLMTracer:
             return []
         return list(self._intervention_set.interventions)
 
-    def set_interventions(self, interventions: list[Intervention] | None, jlens=None) -> None:
+    def set_interventions(
+        self,
+        interventions: list[Intervention] | None,
+        jlens=None,
+        *,
+        force_lens_provenance: bool = False,
+    ) -> None:
         """Replace the active intervention set.
 
         Invalidates the KV cache and logits memo — cached values were computed
@@ -273,7 +279,12 @@ class LLMTracer:
         """
         if interventions:
             if jlens is not None and any(iv.basis == "jacobian" for iv in interventions):
-                require_lens_compatible(jlens, self.model, self.tokenizer)
+                require_lens_compatible(
+                    jlens,
+                    self.model,
+                    self.tokenizer,
+                    force_provenance=force_lens_provenance,
+                )
             self._intervention_set = InterventionSet(interventions, self.model, jlens=jlens)
         else:
             self._intervention_set = None

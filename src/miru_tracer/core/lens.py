@@ -116,7 +116,8 @@ class LensStore:
 
     def __init__(self, base_dir: Path | None = None):
         self._base_dir = base_dir
-        self._cache: dict[str, tuple[tuple[str, float], JacobianLens]] = {}
+        self._cache: dict[str, tuple[tuple[str, int], JacobianLens]] = {}
+        self._provenance_overrides: dict[str, tuple[tuple[str, int], int]] = {}
 
     @property
     def base_dir(self) -> Path:
@@ -140,7 +141,7 @@ class LensStore:
         path = self.existing_lens_path(model_name)
         if path is None:
             return None
-        key = (str(path), path.stat().st_mtime)
+        key = (str(path), path.stat().st_mtime_ns)
         cached = self._cache.get(model_name)
         if cached is not None and cached[0] == key:
             lens = cached[1]
@@ -153,6 +154,35 @@ class LensStore:
             self._cache[model_name] = (key, lens)
             logger.info(f"Loaded Jacobian lens for {model_name}: {lens}")
         return lens
+
+    def set_provenance_override(self, model_name: str, model, enabled: bool) -> None:
+        """Enable/disable an explicit override for one model object and artifact.
+
+        The override is tied to both the loaded model object's identity and the
+        lens path/mtime. Reloading the model or replacing the artifact therefore
+        requires another deliberate opt-in.
+        """
+        if not enabled:
+            self._provenance_overrides.pop(model_name, None)
+            return
+        lens = self.get(model_name)
+        path = self.existing_lens_path(model_name)
+        if lens is None or path is None:
+            raise ValueError(f"no fitted lens is installed for {model_name}")
+        key = (str(path), path.stat().st_mtime_ns)
+        self._provenance_overrides[model_name] = (key, id(model))
+
+    def provenance_override_enabled(self, model_name: str, model) -> bool:
+        """Whether provenance conflicts are explicitly bypassed for this pair."""
+        override = self._provenance_overrides.get(model_name)
+        path = self.existing_lens_path(model_name)
+        if override is None or path is None:
+            return False
+        current_key = (str(path), path.stat().st_mtime_ns)
+        enabled = override == (current_key, id(model))
+        if not enabled:
+            self._provenance_overrides.pop(model_name, None)
+        return enabled
 
 
 _lens_store: LensStore | None = None
@@ -177,6 +207,7 @@ def clear_model_caches() -> None:
     clear_provenance_caches()
     if _lens_store is not None:
         _lens_store._cache.clear()
+        _lens_store._provenance_overrides.clear()
 
 
 def wrap_model(model, tokenizer) -> HFLensModel:
@@ -259,6 +290,7 @@ def compute_lens_slice(
     pinned_token_ids: list[int] | None = None,
     interventions: InterventionSet | None = None,
     activations: dict[int, torch.Tensor] | None = None,
+    force_lens_provenance: bool = False,
 ) -> LensSlice:
     """Compute per-(layer, position) top-k lens readouts for a sequence.
 
@@ -278,6 +310,8 @@ def compute_lens_slice(
             ``activations`` is given (they were applied at record time).
         activations: Pre-recorded block outputs from
             :func:`record_lens_activations`; skips the forward pass entirely.
+        force_lens_provenance: Explicitly bypass provenance conflicts. Structural
+            lens/model incompatibilities remain fatal.
     """
     if mode not in LENS_MODES:
         raise ValueError(f"Unknown lens mode: {mode!r}. Use one of {LENS_MODES}.")
@@ -286,7 +320,12 @@ def compute_lens_slice(
 
     wrapper = wrap_model(model, tokenizer)
     if mode == "jacobian" and jlens is not None:
-        require_lens_compatible(jlens, model, tokenizer)
+        require_lens_compatible(
+            jlens,
+            model,
+            tokenizer,
+            force_provenance=force_lens_provenance,
+        )
     seq_len = int(input_ids.shape[1])
     positions = list(range(seq_len)) if positions is None else list(positions)
     bad_positions = [p for p in positions if not 0 <= p < seq_len]

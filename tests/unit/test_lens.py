@@ -1,5 +1,7 @@
 """Readout engine: lens slices, aggregation, store discovery."""
 
+import os
+
 import pytest
 import torch
 
@@ -482,6 +484,28 @@ class TestLensStore:
         save_lens(tiny_lens, path)
         assert store.existing_lens_path("m") == path
         assert store.get("m") is not None
+
+    def test_provenance_override_is_scoped_to_model_and_artifact(self, tmp_path, tiny_lens):
+        store = LensStore(base_dir=tmp_path)
+        path = store.lens_path("m")
+        path.parent.mkdir(parents=True)
+        save_lens(tiny_lens, path)
+        first_model = object()
+        second_model = object()
+
+        store.set_provenance_override("m", first_model, True)
+        assert store.provenance_override_enabled("m", first_model)
+        assert not store.provenance_override_enabled("m", second_model)
+
+        store.set_provenance_override("m", first_model, True)
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
+        assert not store.provenance_override_enabled("m", first_model)
+
+    def test_provenance_override_requires_an_installed_lens(self, tmp_path):
+        store = LensStore(base_dir=tmp_path)
+        with pytest.raises(ValueError, match="no fitted lens"):
+            store.set_provenance_override("missing/model", object(), True)
 
     def test_sanitize(self):
         assert "/" not in sanitize_model_name("Qwen/Qwen3-0.6B")

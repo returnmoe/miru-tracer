@@ -23,7 +23,8 @@ Useful for:
 
 ## Features
 
-- Load any HuggingFace model (with optional 4-bit/8-bit quantization on CUDA)
+- Load any HuggingFace model at its default or a pinned revision (with optional
+  4-bit/8-bit quantization on CUDA)
 - Tokenize text and inspect individual tokens
 - Interactive mode: step through generation manually, pick specific tokens,
   undo steps, jump to any earlier step
@@ -56,7 +57,7 @@ pip install -e . --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
 The declared dependencies stay within the minor release lines tested for
-v0.3.0. `constraints.txt` pins the exact verified set:
+v0.3.1. `constraints.txt` pins the exact verified set:
 `pip install -e . -c constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu`.
 GitHub Releases attach that exact constraints file beside the wheel and include
 both files in `SHA256SUMS`.
@@ -72,7 +73,11 @@ Opens at `http://127.0.0.1:7860`
 ### Basic workflow
 
 1. Load a model in the "Model Loader" tab (try `Qwen/Qwen3-0.6B` for a small,
-   capable test model)
+   capable test model). To reproduce a fitted lens exactly, enter its immutable
+   Hugging Face commit in the optional **Hugging Face revision / commit SHA**
+   field. Miru resolves default, branch, and tag references once and pins the
+   model and tokenizer to the resulting commit for that load. The full resolved
+   SHA is also recorded as `commit_sha` in the application log.
 2. Go to "Interactive Mode"
 3. Enter a prompt and click "Initialize"
 4. Click "Next Step" to generate tokens one at a time
@@ -158,6 +163,14 @@ resolved revision, normalized config, and tokenizer fingerprints. Miru rejects
 confirmed conflicts; older/upstream lenses remain usable with an explicit
 warning that their identity cannot be verified.
 
+v0.2 Miru artifacts recorded a full Transformers-configuration fingerprint
+that also included load details such as dtype. In v0.3.1, a mismatch in that
+legacy fingerprint alone is a warning rather than a rejection; other recorded
+identity conflicts still block the lens. The Lens tab also offers an explicit
+**Force lens despite provenance conflicts** checkbox for recovery when you
+have independently verified the checkpoint. It cannot bypass residual-width
+or layer-range checks and is cleared when the model or lens file changes.
+
 Architecture support: the Llama/Qwen/Mistral/Gemma family (including hybrid
 Qwen3.5/Qwen3.6 cache handling), **Gemma 4**
 (text-only and multimodal wrappers, softcapping included), **GLM MoE-DSA**
@@ -211,7 +224,7 @@ built in-code — no network, suitable for CI.
 Release candidates additionally follow the
 [release checklist](docs/release-checklist.md). The process-local two-H100
 Qwen3.6-27B run that ordinary CI cannot perform is post-release validation for
-v0.3.0, not a completed pre-release test.
+v0.3.x, not a completed pre-release test.
 
 ## Docker
 
@@ -226,13 +239,13 @@ current default and supports Turing, Ampere, Hopper, and Blackwell GPUs.
 CUDA 12.6 remains available as an explicit legacy build for older host drivers
 and Maxwell CC 5.x (except 5.3), Pascal, or Volta GPUs. No single PyTorch wheel
 covers both sets.
-Examples below use release `0.3.0`:
+Examples below use release `0.3.1`:
 
 | Tags | CUDA | Intended use |
 | --- | --- | --- |
-| `0.3.0`, `0.3`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
-| `0.3.0-cu130`, `0.3-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
-| `0.3.0-cu126`, `0.3-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
+| `0.3.1`, `0.3`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
+| `0.3.1-cu130`, `0.3-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
+| `0.3.1-cu126`, `0.3-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
 | `sha-<full-commit>` and `sha-<full-commit>-cu130` | 13.0 | Immutable commit build |
 | `sha-<full-commit>-cu126` | 12.6 | Immutable legacy CUDA 12.6 build |
 
@@ -243,8 +256,8 @@ Dockerfile; only the pinned NVIDIA base, PyTorch wheel index, and exact CUDA
 version assertion differ.
 
 ```bash
-docker pull ghcr.io/returnmoe/miru-tracer:0.3.0
-docker pull ghcr.io/returnmoe/miru-tracer:0.3.0-cu126
+docker pull ghcr.io/returnmoe/miru-tracer:0.3.1
+docker pull ghcr.io/returnmoe/miru-tracer:0.3.1-cu126
 ```
 
 Images are published only by the gated release workflow, started either by a
@@ -257,7 +270,7 @@ branch is that acknowledgement. The branch must point at current `master`; it
 does not publish the version tag early. The verified immutable images are
 promoted to exact version aliases before the Git tag and GitHub Release are
 created; mutable minor and `latest` aliases are promoted afterward. The
-two-H100 Qwen3.6-27B long run is performed against the published v0.3.0
+two-H100 Qwen3.6-27B long run is performed against the published v0.3.1
 artifacts. Pull-request builds are tested but not pushed to GHCR. Both variants
 bundle the matching CUDA userspace runtime, cuDNN, CUDA compatibility
 libraries, PyTorch, Triton, bitsandbytes, and Miru's complete Python dependency
@@ -282,7 +295,7 @@ with the following values:
 
 | Template setting | Recommended value |
 | --- | --- |
-| Container image | `ghcr.io/returnmoe/miru-tracer:0.3.0` for R580.65.06+; use `ghcr.io/returnmoe/miru-tracer:0.3.0-cu126` for an R550-class host |
+| Container image | `ghcr.io/returnmoe/miru-tracer:0.3.1` for R580.65.06+; use `ghcr.io/returnmoe/miru-tracer:0.3.1-cu126` for an R550-class host |
 | Container disk | At least 20 GB; add enough local space for the model and Hugging Face cache |
 | SSH key injection | Required: deploy with `startSsh: true` (GraphQL) or `runpodctl ... --ssh=true` |
 | TCP ports | `22/tcp` |
@@ -320,7 +333,7 @@ runpodctl pod create \
 ```
 
 For a direct-image deployment, replace `--template-id excmb18ueh` with
-`--image ghcr.io/returnmoe/miru-tracer:0.3.0` and supply the desired `--env`
+`--image ghcr.io/returnmoe/miru-tracer:0.3.1` and supply the desired `--env`
 JSON. For a custom GraphQL client, set `startSsh: true` explicitly. Merely
 adding `22/tcp` does not set it. The verified CLI version is available from
 the [official GitHub releases](https://github.com/runpod/runpodctl/releases);

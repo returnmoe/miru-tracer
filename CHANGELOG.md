@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.3.1 — 2026-07-26
+
+### Lens provenance compatibility hotfix
+
+v0.3.0 could reject a valid lens produced by `miru-tracer-fit-lens` v0.2 even
+when the Hugging Face model repository had not changed. The v0.2 fitter
+recorded a SHA-256 fingerprint of the complete serialized Transformers
+configuration. That serialization also contains load/runtime fields such as
+the requested dtype and Transformers version. A lens fitted on CUDA with the
+default `bfloat16`, then used with Miru's `float16` UI loader, could therefore
+report a full-configuration mismatch without any change to the architecture or
+weights. Such provenance was not malformed; the legacy fingerprint was too
+broad for the compatibility decision v0.3.0 made from it.
+
+Version 0.3.1:
+
+- treats a mismatched legacy full-configuration fingerprint as an explicit
+  warning when the artifact predates the normalized architecture fingerprint;
+  independently verifiable model-name, revision, tokenizer, and normalized
+  architecture conflicts still fail closed;
+- adds an optional **Hugging Face revision / commit SHA** field to Model Loader
+  and passes the same resolved immutable commit to both the Hugging Face model
+  and tokenizer. Miru retains and displays that commit without depending on
+  Transformers' private configuration fields;
+- makes `miru-tracer-fit-lens` resolve the selected/default Hub revision before
+  loading either component and record that immutable commit automatically.
+  New Hub-backed fits no longer write `model_commit_hash: null` merely because
+  Transformers omitted its private `config._commit_hash`. Both the fitter and
+  the main application write the full resolved SHA as `commit_sha` in their
+  INFO logs;
+- adds an explicit **Force lens despite provenance conflicts** control for
+  exceptional recovery. It bypasses only provenance conflicts, remains scoped
+  to the exact loaded model object and current lens file, and is cleared when
+  either changes; and
+- keeps residual-width and layer-range checks mandatory even under the force
+  option, so a structurally incompatible lens cannot be loaded.
+
+The Jacobian matrices, estimator, and artifact schema are unchanged. Existing
+v0.2 lenses do not need to be refitted.
+
 ## 0.3.0 — 2026-07-26
 
 ### Lens fitting: bounded checkpoint I/O and cluster diagnostics

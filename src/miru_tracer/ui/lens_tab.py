@@ -277,7 +277,19 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                         file_types=[".safetensors", ".pt"],
                         type="filepath",
                     )
+                    force_lens_provenance = gr.Checkbox(
+                        label="Force lens despite provenance conflicts",
+                        value=False,
+                        info=(
+                            "Unsafe override for model/revision/config/tokenizer identity "
+                            "conflicts. Residual-width and layer-range mismatches still cannot "
+                            "be bypassed. Cleared whenever the model or lens file changes."
+                        ),
+                    )
                     lens_file_check_button = gr.Button("Check status", size="sm")
+                    # Preserve the v0.2/v0.3 API shape for clients that call
+                    # /install_fit_file with only the uploaded file.
+                    lens_file_install_api = gr.Button(visible=False)
 
                 with gr.Group():
                     lens_mode = gr.Radio(
@@ -413,7 +425,9 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 )
 
             mode = lens_mode_key(mode_choice)
-            jlens = get_lens_store().get(analysis["model_name"])
+            store = get_lens_store()
+            jlens = store.get(analysis["model_name"])
+            force_provenance = store.provenance_override_enabled(analysis["model_name"], model)
             if mode in ("jacobian", "compare") and jlens is None:
                 return None, (
                     "Error: no fitted Jacobian lens for "
@@ -483,6 +497,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                         pinned_token_ids=list(pinned_ids or []),
                         interventions=analysis["iset"],
                         activations=activations,
+                        force_lens_provenance=force_provenance,
                     )
                     slices[readout_mode] = slice_
                     all_rows = aggregate_readouts(slice_, limit=None)
@@ -514,6 +529,8 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                         f"showing {len(rows_by_mode[mode])} of "
                         f"{len(all_rows_by_mode[mode])} distinct readout tokens."
                     )
+                if force_provenance and mode in ("jacobian", "compare"):
+                    status += "\nWarning: lens provenance conflicts are being force-bypassed."
                 if dropped:
                     status += f" (skipped unfitted layers: {dropped})"
                 recommended_start = int(analysis["n_layers"] * JACOBIAN_DEFAULT_LAYER_FRACTION)
@@ -695,10 +712,17 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
             tracer = None
             try:
                 tracer = LLMTracer(model, tokenizer, device)
-                jlens = get_lens_store().get(model_manager.get_model_name())
+                store = get_lens_store()
+                model_name = model_manager.get_model_name()
+                jlens = store.get(model_name)
+                force_provenance = store.provenance_override_enabled(model_name, model)
                 active_interventions = enabled_interventions(interventions)
                 try:
-                    tracer.set_interventions(active_interventions or None, jlens=jlens)
+                    tracer.set_interventions(
+                        active_interventions or None,
+                        jlens=jlens,
+                        force_lens_provenance=force_provenance,
+                    )
                 except ValueError as e:
                     yield failed(
                         f"Error in interventions: {e}\n"
@@ -934,6 +958,7 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 model_manager.get_tokenizer(),
                 model_name_or_path=model_name,
             )
+            forced = store.provenance_override_enabled(model_name, model_manager.get_model())
             result = (
                 f"Fitted lens loaded for {model_name}: "
                 f"{len(lens.source_layers)} layers "
@@ -941,13 +966,23 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 f"averaged over {lens.n_prompts} prompts.\n"
                 f"Path: {store.existing_lens_path(model_name)}"
             )
-            if compatibility.errors:
-                result += "\nCompatibility error: " + "; ".join(compatibility.errors)
+            if compatibility.structural_errors:
+                result += "\nStructural compatibility error: " + "; ".join(
+                    compatibility.structural_errors
+                )
+            if compatibility.provenance_errors:
+                label = "FORCED provenance conflict" if forced else "Provenance compatibility error"
+                result += f"\n{label}: " + "; ".join(compatibility.provenance_errors)
             if compatibility.warnings:
                 result += "\nCompatibility warning: " + "; ".join(compatibility.warnings)
+            if forced:
+                result += (
+                    "\nWARNING: explicit provenance bypass is active for this loaded "
+                    "model and lens file."
+                )
             return result
 
-        def install_fit_file(filepath):
+        def install_fit_file(filepath, force_requested):
             """Validate an uploaded fit file and install it for the loaded model."""
             if filepath is None:
                 return fit_file_status()
@@ -967,22 +1002,94 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
                 tokenizer,
                 model_name_or_path=model_name,
             )
-            if compatibility.errors:
-                return "Error: incompatible fit file: " + "; ".join(compatibility.errors)
+            if compatibility.structural_errors:
+                return "Error: structurally incompatible fit file: " + "; ".join(
+                    compatibility.structural_errors
+                )
+            if compatibility.provenance_errors and not force_requested:
+                return (
+                    "Error: incompatible fit file provenance: "
+                    + "; ".join(compatibility.provenance_errors)
+                    + "\nEnable the explicit force option to bypass provenance checks."
+                )
 
-            path = get_lens_store().lens_path(model_name)
+            store = get_lens_store()
+            path = store.lens_path(model_name)
             path.parent.mkdir(parents=True, exist_ok=True)
             save_lens(lens, path)
             # A stale legacy pickle next to the fresh safetensors would keep
             # the unsafe copy around — drop it.
             path.with_name(LEGACY_LENS_FILENAME).unlink(missing_ok=True)
+            store.set_provenance_override(
+                model_name,
+                model,
+                bool(force_requested),
+            )
             logger.info(f"Installed fit file for {model_name} at {path}")
             warning = (
                 "\nInstalled with compatibility warning: " + "; ".join(compatibility.warnings)
                 if compatibility.warnings
                 else ""
             )
-            return f"Installed.{warning}\n{fit_file_status()}"
+            forced = "\nInstalled with explicit provenance bypass." if force_requested else ""
+            return f"Installed.{forced}{warning}\n{fit_file_status()}"
+
+        def configure_provenance_override(enabled):
+            """Apply the unsafe override to the exact current model/lens pair."""
+            model_name = model_manager.get_model_name()
+            model = model_manager.get_model()
+            tokenizer = model_manager.get_tokenizer()
+            if model_name is None or model is None:
+                return (
+                    "Error: load a model before configuring a lens override.",
+                    False,
+                )
+            store = get_lens_store()
+            lens = store.get(model_name)
+            if lens is None:
+                return (
+                    f"Error: no fitted lens is installed for {model_name}.",
+                    False,
+                )
+            compatibility = check_lens_compatibility(
+                lens,
+                model,
+                tokenizer,
+                model_name_or_path=model_name,
+            )
+            if enabled and compatibility.structural_errors:
+                store.set_provenance_override(model_name, model, False)
+                return (
+                    "Error: structural lens incompatibilities cannot be forced: "
+                    + "; ".join(compatibility.structural_errors),
+                    False,
+                )
+            store.set_provenance_override(model_name, model, bool(enabled))
+            return fit_file_status(), bool(enabled)
+
+        def fit_file_ui_state():
+            model_name = model_manager.get_model_name()
+            model = model_manager.get_model()
+            forced = bool(
+                model_name
+                and model is not None
+                and get_lens_store().provenance_override_enabled(model_name, model)
+            )
+            return fit_file_status(), forced
+
+        def install_fit_file_ui(filepath, force_requested):
+            status = install_fit_file(filepath, force_requested)
+            model_name = model_manager.get_model_name()
+            model = model_manager.get_model()
+            forced = bool(
+                model_name
+                and model is not None
+                and get_lens_store().provenance_override_enabled(model_name, model)
+            )
+            return status, forced
+
+        def install_fit_file_default(filepath):
+            return install_fit_file(filepath, False)
 
         # ------------------------------------------------------------ wiring
 
@@ -1135,10 +1242,32 @@ def create_lens_tab(model_manager: ModelManager, settings: Settings) -> gr.Tab:
         )
 
         lens_file_upload.upload(
-            fn=install_fit_file,
+            fn=install_fit_file_ui,
+            inputs=[lens_file_upload, force_lens_provenance],
+            outputs=[lens_file_status, force_lens_provenance],
+            api_name="install_fit_file_with_provenance_override",
+        )
+        force_lens_provenance.input(
+            fn=configure_provenance_override,
+            inputs=[force_lens_provenance],
+            outputs=[lens_file_status, force_lens_provenance],
+        )
+        lens_file_check_button.click(
+            fn=fit_file_status,
+            inputs=[],
+            outputs=[lens_file_status],
+            api_name="fit_file_status",
+        )
+        lens_file_install_api.click(
+            fn=install_fit_file_default,
             inputs=[lens_file_upload],
             outputs=[lens_file_status],
+            api_name="install_fit_file",
         )
-        lens_file_check_button.click(fn=fit_file_status, inputs=[], outputs=[lens_file_status])
+        tab.select(
+            fn=fit_file_ui_state,
+            inputs=[],
+            outputs=[lens_file_status, force_lens_provenance],
+        )
 
     return tab

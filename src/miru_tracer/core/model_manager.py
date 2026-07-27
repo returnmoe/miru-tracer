@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - older transformers
     except ImportError:  # pragma: no cover - transformers 4.x
         from transformers import AutoModelForVision2Seq as AutoModelForMultimodal
 
+from miru_tracer.core.lens_provenance import resolve_hub_model_commit
 from miru_tracer.core.logging_config import get_logger
 from miru_tracer.core.model_runtime import MODEL_RUNTIME_LOCK
 
@@ -39,6 +40,8 @@ class ModelManager:
     _tokenizer = None
     _device = None
     _model_name = None
+    _model_revision = None
+    _model_commit = None
     _lock = threading.Lock()
     _is_loading = False
     _generation = 0
@@ -55,6 +58,8 @@ class ModelManager:
         self._tokenizer = None
         self._device = None
         self._model_name = None
+        self._model_revision = None
+        self._model_commit = None
         self._generation += 1
         return old
 
@@ -82,6 +87,8 @@ class ModelManager:
         quantization: str = "none",
         trust_remote_code: bool = False,
         minimize_ram_usage: bool = False,
+        *,
+        revision: str | None = None,
     ) -> tuple[Any, Any, str, dict[str, Any]]:
         """
         Load a model and tokenizer.
@@ -91,6 +98,8 @@ class ModelManager:
             quantization: "none", "4bit", or "8bit"
             trust_remote_code: Whether to trust remote code (security risk)
             minimize_ram_usage: Use aggressive optimizations to minimize RAM usage during loading
+            revision: Optional Hugging Face revision. A full commit hash gives
+                immutable, reproducible model and tokenizer loading.
 
         Returns:
             (model, tokenizer, device, info_dict)
@@ -98,6 +107,7 @@ class ModelManager:
         Raises:
             RuntimeError: If a model load/unload operation is already in progress
         """
+        revision = (revision or "").strip() or None
         with self._lock:
             if self._is_loading:
                 raise RuntimeError(
@@ -110,7 +120,21 @@ class ModelManager:
         new_tokenizer = None
         try:
             start_time = time.time()
-            logger.info(f"Loading model: {model_name} (quantization={quantization})")
+            resolved_hub_commit = resolve_hub_model_commit(
+                model_name,
+                revision=revision,
+            )
+            effective_revision = resolved_hub_commit or revision
+            revision_label = f"@{effective_revision}" if effective_revision else ""
+            logger.info(
+                f"Loading model: {model_name}{revision_label} (quantization={quantization})"
+            )
+            if resolved_hub_commit is not None:
+                logger.info(
+                    "Resolved Hugging Face revision %r to %s",
+                    revision or "default",
+                    resolved_hub_commit,
+                )
             if old_model is not None:
                 logger.warning(f"Clearing previous model from memory: {old_name}")
 
@@ -132,9 +156,10 @@ class ModelManager:
                     logger.info("Device detected: CPU (no CUDA available)")
 
                 logger.debug(f"Loading tokenizer for {model_name}")
-                new_tokenizer = AutoTokenizer.from_pretrained(
-                    model_name, trust_remote_code=trust_remote_code
-                )
+                tokenizer_kwargs = {"trust_remote_code": trust_remote_code}
+                if effective_revision is not None:
+                    tokenizer_kwargs["revision"] = effective_revision
+                new_tokenizer = AutoTokenizer.from_pretrained(model_name, **tokenizer_kwargs)
                 if new_tokenizer.pad_token is None:
                     new_tokenizer.pad_token = new_tokenizer.eos_token
                 vocab_size = len(new_tokenizer)
@@ -144,6 +169,8 @@ class ModelManager:
                     "trust_remote_code": trust_remote_code,
                     "low_cpu_mem_usage": True,
                 }
+                if effective_revision is not None:
+                    load_kwargs["revision"] = effective_revision
                 quantization_note = None
                 if quantization != "none" and not torch.cuda.is_available():
                     quantization_note = (
@@ -190,12 +217,37 @@ class ModelManager:
                 if not torch.cuda.is_available() and load_kwargs["device_map"] is None:
                     new_model = new_model.to(device)
                 new_model.eval()
+                config_revision = getattr(new_model.config, "_commit_hash", None)
+                if not isinstance(config_revision, str) or not config_revision:
+                    config_revision = None
+                if (
+                    resolved_hub_commit is not None
+                    and config_revision is not None
+                    and config_revision != resolved_hub_commit
+                ):
+                    raise RuntimeError(
+                        "Loaded model reports revision "
+                        f"{config_revision}, but the Hub resolved {resolved_hub_commit}"
+                    )
+                resolved_revision = resolved_hub_commit or config_revision
+                if resolved_revision is not None:
+                    new_model._miru_model_commit = resolved_revision
 
                 with self._lock:
                     self._model = new_model
                     self._tokenizer = new_tokenizer
                     self._device = device
                     self._model_name = model_name
+                    self._model_revision = revision
+                    self._model_commit = resolved_revision
+
+            logger.info(
+                "Model provenance: component=miru-tracer model=%s "
+                "requested_revision=%s commit_sha=%s",
+                model_name,
+                revision or "default",
+                resolved_revision or "unavailable",
+            )
 
             # Gather info
             num_params = new_model.num_parameters() / 1e9
@@ -203,6 +255,8 @@ class ModelManager:
 
             info = {
                 "model_name": model_name,
+                "requested_revision": revision,
+                "resolved_revision": resolved_revision,
                 "device": device,
                 "device_name": device_name,
                 "vram_gb": vram,
@@ -257,6 +311,14 @@ class ModelManager:
     def get_model_name(self) -> str | None:
         """Get currently loaded model name."""
         return self._model_name
+
+    def get_model_revision(self) -> str | None:
+        """Get the requested Hub revision for the loaded model, if any."""
+        return self._model_revision
+
+    def get_model_commit(self) -> str | None:
+        """Get the immutable Hub commit resolved by Transformers, if available."""
+        return self._model_commit
 
     def get_generation(self) -> int:
         """Monotonic identifier invalidating state from earlier models."""

@@ -285,7 +285,9 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                     return None, "Initialize a prompt first."
                 model_name = model_manager.get_model_name()
                 mode = lens_mode_key(mode_choice)
-                jlens = get_lens_store().get(model_name)
+                store = get_lens_store()
+                jlens = store.get(model_name)
+                force_provenance = store.provenance_override_enabled(model_name, tracer.model)
                 if mode in ("jacobian", "compare") and jlens is None:
                     return None, (
                         f"No fitted Jacobian lens for {model_name}. Fit one in "
@@ -318,6 +320,7 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                         "jlens": jlens,
                         "top_k": top_k,
                         "interventions": tracer._intervention_set,
+                        "force_lens_provenance": force_provenance,
                     }
                     if mode == "compare":
                         activations = record_lens_activations(
@@ -360,6 +363,8 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                     )
                     if active:
                         status += f" {active} intervention(s) active on this session."
+                    if force_provenance and mode in ("jacobian", "compare"):
+                        status += " Warning: lens provenance conflicts are force-bypassed."
                     return figure, status
                 except Exception as e:
                     logger.error(f"Interactive lens error: {e}", exc_info=True)
@@ -371,9 +376,18 @@ def create_interactive_mode_tab(model_manager: ModelManager, settings: Settings)
                 return error[0]
             interventions = get_active_interventions()
             with session.lock:
-                jlens = get_lens_store().get(model_manager.get_model_name())
+                model_name = model_manager.get_model_name()
+                store = get_lens_store()
+                jlens = store.get(model_name)
+                force_provenance = store.provenance_override_enabled(
+                    model_name, session.tracer.model
+                )
                 try:
-                    session.tracer.set_interventions(interventions or None, jlens=jlens)
+                    session.tracer.set_interventions(
+                        interventions or None,
+                        jlens=jlens,
+                        force_lens_provenance=force_provenance,
+                    )
                 except ValueError as e:
                     return f"Error: {e}"
             if not interventions:

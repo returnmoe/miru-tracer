@@ -61,6 +61,9 @@ from miru_tracer.core.lens_provenance import (
     model_config_sha256 as _model_config_sha256,
 )
 from miru_tracer.core.lens_provenance import (
+    resolve_hub_model_commit as _resolve_hub_model_commit,
+)
+from miru_tracer.core.lens_provenance import (
     tokenizer_sha256 as _tokenizer_sha256,
 )
 from miru_tracer.core.logging_config import get_logger
@@ -134,8 +137,8 @@ def _with_runtime_provenance(
         if "model_manifest_sha256" not in provenance:
             provenance["model_manifest_sha256"] = _local_model_manifest_sha256(model_name)
     commit = getattr(config, "_commit_hash", None)
-    if isinstance(commit, str):
-        provenance.setdefault("model_commit_hash", commit)
+    if isinstance(commit, str) and commit and not provenance.get("model_commit_hash"):
+        provenance["model_commit_hash"] = commit
     if "model_config_sha256" not in provenance:
         provenance["model_config_sha256"] = _model_config_sha256(model)
         provenance["model_config_sha256_kind"] = MODEL_CONFIG_HASH_KIND
@@ -795,6 +798,7 @@ def main(argv: list[str] | None = None) -> int:
         help="discard any existing checkpoint instead of resuming",
     )
     args = parser.parse_args(argv)
+    args.revision = (args.revision or "").strip() or None
     if args.max_length <= 17:
         parser.error(
             "--max-length must be at least 18 because the first 16 and final "
@@ -831,11 +835,20 @@ def main(argv: list[str] | None = None) -> int:
         dtype_name = "bfloat16" if cuda else "float32"
     dtype = getattr(torch, dtype_name)
 
+    resolved_model_commit = _resolve_hub_model_commit(
+        args.model,
+        revision=args.revision,
+        cache_dir=hf_hub_cache,
+    )
+    effective_revision = resolved_model_commit or args.revision
     cache_kwargs = {} if hf_hub_cache is None else {"cache_dir": hf_hub_cache}
-    if args.revision:
-        cache_kwargs["revision"] = args.revision
+    if effective_revision:
+        cache_kwargs["revision"] = effective_revision
+    if resolved_model_commit:
+        requested_revision = args.revision or "default"
+        echo(f"Resolved Hugging Face revision {requested_revision!r} to {resolved_model_commit}.")
     tokenizer = AutoTokenizer.from_pretrained(args.model, **cache_kwargs)
-    revision_label = f"@{args.revision}" if args.revision else ""
+    revision_label = f"@{effective_revision}" if effective_revision else ""
     if args.device_map:
         echo(
             f"Loading {args.model}{revision_label} ({dtype_name}, device_map={args.device_map})..."
@@ -850,6 +863,28 @@ def main(argv: list[str] | None = None) -> int:
             .to(device)
             .eval()
         )
+    config_model_commit = getattr(model.config, "_commit_hash", None)
+    if (
+        resolved_model_commit
+        and isinstance(config_model_commit, str)
+        and config_model_commit
+        and config_model_commit != resolved_model_commit
+    ):
+        parser.error(
+            "the loaded model reports revision "
+            f"{config_model_commit}, but the Hub resolved {resolved_model_commit}"
+        )
+    model_commit = resolved_model_commit
+    if model_commit is None and isinstance(config_model_commit, str) and config_model_commit:
+        model_commit = config_model_commit
+    logger.info(
+        "Model provenance: component=miru-tracer-fit-lens model=%s "
+        "requested_revision=%s commit_sha=%s",
+        args.model,
+        args.revision or "default",
+        model_commit or "unavailable",
+    )
+
     has_gated_delta, _implementations, fallback_components = _linear_attention_backend_status(model)
     if args.require_fast_kernels and has_gated_delta and fallback_components:
         parser.error(
@@ -889,7 +924,6 @@ def main(argv: list[str] | None = None) -> int:
     if not prompts:
         parser.error("the selected corpus contains no non-empty prompts")
 
-    model_commit = getattr(model.config, "_commit_hash", None)
     artifact_model_id = _artifact_model_identifier(args.model)
     fit_provenance = {
         "model_name_or_path": artifact_model_id,
@@ -897,7 +931,7 @@ def main(argv: list[str] | None = None) -> int:
         "model_manifest_sha256": _local_model_manifest_sha256(
             args.model, exclude=(out_path, checkpoint)
         ),
-        "model_commit_hash": model_commit if isinstance(model_commit, str) else None,
+        "model_commit_hash": model_commit,
         "model_config_sha256": _model_config_sha256(model),
         "model_config_sha256_kind": MODEL_CONFIG_HASH_KIND,
         "model_architecture_sha256": _model_architecture_sha256(model),

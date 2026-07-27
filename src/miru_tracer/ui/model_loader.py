@@ -30,6 +30,23 @@ def resolve_model_name(quick_choice: str | None, custom_model: str | None) -> st
     return (quick_choice or "").strip()
 
 
+def normalize_model_revision(revision: str | None) -> str | None:
+    """Normalize the optional Hub revision field for Transformers."""
+    return (revision or "").strip() or None
+
+
+def format_model_identity(
+    model_name: str | None,
+    requested_revision: str | None = None,
+    resolved_revision: str | None = None,
+) -> str:
+    """Compact loaded-model identity for the non-editable Current field."""
+    if not model_name:
+        return "No model loaded"
+    revision = resolved_revision or requested_revision
+    return model_name if revision is None else f"{model_name}@{revision[:12]}"
+
+
 def toggle_custom_model_field(quick_choice: str | None):
     """Show the freeform HF model field only for the custom option."""
     if quick_choice == CUSTOM_MODEL_CHOICE:
@@ -55,7 +72,11 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
         return "CPU mode (no GPU)"
 
     def get_current_model_display() -> str:
-        return model_manager.get_model_name() or "No model loaded"
+        return format_model_identity(
+            model_manager.get_model_name(),
+            model_manager.get_model_revision(),
+            model_manager.get_model_commit(),
+        )
 
     with gr.Tab("Model Loader") as tab, gr.Column(elem_classes="miru-narrow"):
         gr.Markdown("Load a language model from HuggingFace.")
@@ -92,6 +113,14 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
                 value=QUICK_MODEL_CHOICES[0],
                 visible=False,
                 info="Load a model using its HF identifier",
+            )
+            model_revision = gr.Textbox(
+                label="Hugging Face revision / commit SHA (optional)",
+                placeholder="Paste a full 40-character commit SHA, tag, or branch",
+                info=(
+                    "Pin the model and tokenizer to the same immutable Hugging Face "
+                    "commit. Branches and tags are accepted, but can move."
+                ),
             )
             with gr.Row():
                 quantization = gr.Radio(
@@ -145,10 +174,16 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
             return gr.update(interactive=False), gr.update(interactive=False)
 
         def load_model_handler(
-            quick_model_val, model_name_val, quant_val, trust_val, minimize_ram_val
+            quick_model_val,
+            model_name_val,
+            revision_val,
+            quant_val,
+            trust_val,
+            minimize_ram_val,
         ):
             """Load a model, streaming status so the user sees progress."""
             model_name_val = resolve_model_name(quick_model_val, model_name_val)
+            revision_val = normalize_model_revision(revision_val)
             if not model_name_val:
                 logger.warning("Model load attempted with empty model name")
                 yield (
@@ -162,7 +197,8 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
 
             logger.info(
                 f"Model load requested via UI: {model_name_val} "
-                f"(quantization={quant_val}, trust_remote_code={trust_val}, "
+                f"(revision={revision_val or 'default'}, quantization={quant_val}, "
+                f"trust_remote_code={trust_val}, "
                 f"minimize_ram={minimize_ram_val})"
             )
             if trust_val:
@@ -180,6 +216,8 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
 
             # Immediate feedback while the (long) download/load runs.
             progress_lines = [f"Loading model: {model_name_val}"]
+            if revision_val:
+                progress_lines.append(f"Revision: {revision_val}")
             if quant_val != "none":
                 progress_lines.append(f"Quantization: {quant_val}")
             if trust_val:
@@ -205,6 +243,7 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
                 set_active_interventions([])
                 model, tokenizer, device, info = model_manager.load_model(
                     model_name=model_name_val,
+                    revision=revision_val,
                     quantization=quant_val,
                     trust_remote_code=trust_val,
                     minimize_ram_usage=minimize_ram_val,
@@ -216,6 +255,12 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
                     f"Vocabulary size: {info['vocab_size']:,}",
                     f"Parameters: {info['num_parameters_b']:.2f}B",
                 ]
+                if info.get("resolved_revision"):
+                    success_lines.append(f"Resolved revision: {info['resolved_revision']}")
+                elif revision_val:
+                    success_lines.append(
+                        "Warning: Transformers did not expose a resolved immutable revision."
+                    )
                 if info["device"] == "cuda":
                     success_lines.append(f"VRAM: {info['vram_gb']:.2f} GB")
                 if info.get("quantization_note"):
@@ -227,7 +272,7 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
                 yield (
                     "\n".join(success_lines),
                     json.dumps(info, indent=2),
-                    model_name_val,
+                    get_current_model_display(),
                     get_memory_usage(),
                     *buttons_enabled(),
                 )
@@ -300,6 +345,7 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
             inputs=[
                 quick_model,
                 model_name,
+                model_revision,
                 quantization,
                 trust_remote_code,
                 minimize_ram,
@@ -324,6 +370,8 @@ def create_model_loader_tab(model_manager: ModelManager, settings: Settings):
                 model_info = json.dumps(
                     {
                         "model_name": model_manager.get_model_name(),
+                        "requested_revision": model_manager.get_model_revision(),
+                        "resolved_revision": model_manager.get_model_commit(),
                         "device": model_manager.get_device(),
                         "vocab_size": len(tokenizer),
                         "num_parameters_b": num_params,

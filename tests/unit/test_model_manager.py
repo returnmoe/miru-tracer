@@ -11,6 +11,11 @@ import miru_tracer.core.model_manager as mm
 def manager(monkeypatch, tiny_model, tiny_tokenizer):
     """A ModelManager whose HF loaders return the tiny fixtures."""
     recorded = {}
+    resolved_commit = "a" * 40
+
+    def resolve_commit(name, *, revision):
+        recorded["resolve"] = (name, revision)
+        return resolved_commit
 
     class FakeAutoModel:
         @staticmethod
@@ -26,10 +31,15 @@ def manager(monkeypatch, tiny_model, tiny_tokenizer):
 
     monkeypatch.setattr(mm, "AutoModelForCausalLM", FakeAutoModel)
     monkeypatch.setattr(mm, "AutoTokenizer", FakeAutoTokenizer)
+    monkeypatch.setattr(mm, "resolve_hub_model_commit", resolve_commit)
+    monkeypatch.setattr(tiny_model.config, "_commit_hash", None, raising=False)
+    monkeypatch.delattr(tiny_model, "_miru_model_commit", raising=False)
     # Isolate the singleton's class-level state between tests
     monkeypatch.setattr(mm.ModelManager, "_instance", None)
     monkeypatch.setattr(mm.ModelManager, "_model", None)
     monkeypatch.setattr(mm.ModelManager, "_tokenizer", None)
+    monkeypatch.setattr(mm.ModelManager, "_model_revision", None)
+    monkeypatch.setattr(mm.ModelManager, "_model_commit", None)
     monkeypatch.setattr(mm.ModelManager, "_is_loading", False)
     monkeypatch.setattr(mm.ModelManager, "_generation", 0)
 
@@ -55,6 +65,57 @@ class TestLoadModel:
         assert "CUDA" in info["quantization_note"]
         assert "quantization_config" not in recorded["model_kwargs"]
 
+    def test_revision_is_shared_by_model_and_tokenizer(
+        self,
+        manager,
+        tiny_model,
+        monkeypatch,
+        caplog,
+    ):
+        instance, recorded = manager
+        monkeypatch.setattr(tiny_model.config, "_commit_hash", "a" * 40)
+        caplog.set_level("INFO", logger=mm.__name__)
+
+        *_, info = instance.load_model("fake/model", revision="  immutable-revision  ")
+
+        assert recorded["resolve"] == ("fake/model", "immutable-revision")
+        assert recorded["model_kwargs"]["revision"] == "a" * 40
+        assert recorded["tokenizer_kwargs"]["revision"] == "a" * 40
+        assert instance.get_model_revision() == "immutable-revision"
+        assert instance.get_model_commit() == "a" * 40
+        assert info["requested_revision"] == "immutable-revision"
+        assert info["resolved_revision"] == "a" * 40
+        assert (
+            "Model provenance: component=miru-tracer model=fake/model "
+            f"requested_revision=immutable-revision commit_sha={'a' * 40}" in caplog.messages
+        )
+
+    def test_default_revision_is_resolved_once_for_model_and_tokenizer(self, manager):
+        instance, recorded = manager
+
+        instance.load_model("fake/model", revision="  ")
+
+        assert recorded["resolve"] == ("fake/model", None)
+        assert recorded["model_kwargs"]["revision"] == "a" * 40
+        assert recorded["tokenizer_kwargs"]["revision"] == "a" * 40
+        assert instance.get_model_revision() is None
+        assert instance.get_model_commit() == "a" * 40
+
+    def test_contradictory_loaded_revision_is_rejected(
+        self,
+        manager,
+        tiny_model,
+        monkeypatch,
+    ):
+        instance, _recorded = manager
+        monkeypatch.setattr(tiny_model.config, "_commit_hash", "b" * 40)
+
+        with pytest.raises(RuntimeError, match="Hub resolved"):
+            instance.load_model("fake/model", revision="main")
+
+        assert instance.is_loaded() is False
+        assert instance.get_model_commit() is None
+
     def test_is_loaded_reflects_state(self, manager):
         instance, _ = manager
         assert instance.is_loaded() is False
@@ -68,6 +129,8 @@ class TestLoadModel:
         result = instance.unload_model()
         assert result["status"] == "success"
         assert instance.is_loaded() is False
+        assert instance.get_model_revision() is None
+        assert instance.get_model_commit() is None
         assert instance.unload_model()["status"] == "warning"
 
     def test_failed_reload_leaves_atomic_unloaded_state(self, manager, monkeypatch):

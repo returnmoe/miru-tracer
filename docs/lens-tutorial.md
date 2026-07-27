@@ -51,7 +51,7 @@ On the GPU instance:
 
 ```bash
 # Download both the wheel and constraints.txt attached to the GitHub release:
-pip install ./miru_tracer-0.3.0-py3-none-any.whl -c ./constraints.txt
+pip install ./miru_tracer-0.3.1-py3-none-any.whl -c ./constraints.txt
 
 # Or install from a checkout:
 pip install -e .
@@ -59,14 +59,14 @@ miru-tracer-fit-lens Qwen/Qwen3-0.6B --dim-batch 32
 ```
 
 The project dependency ranges are bounded to the minor versions tested for
-v0.3.0; the attached `constraints.txt` selects the exact release-verified
+v0.3.1; the attached `constraints.txt` selects the exact release-verified
 versions.
 
 Useful flags:
 
 | Flag | Meaning |
 |---|---|
-| `--revision COMMIT` | Load an immutable Hugging Face model revision. Pin a commit for controlled or comparative fits; the resolved commit is also stored in provenance. |
+| `--revision COMMIT` | Select a Hugging Face model revision. A full commit is recommended for controlled or comparative fits; default, branch, tag, and short-hash references are resolved once, then both model and tokenizer are pinned to and record the resulting immutable commit. |
 | `--num-prompts N` | Maximum prompt budget (default 1,000). The run may finish earlier when the convergence criterion below is met. |
 | `--min-prompts N` | Minimum number of successful prompts before convergence can stop the run (default 100). |
 | `--stop-window N` | Number of recent successful prompt updates used for the rolling convergence check (default 10). |
@@ -316,7 +316,7 @@ ssh -L 7860:127.0.0.1:7860 -p <external-ssh-port> root@<pod-ip>
 ```
 
 The default `miru-tracer` image is CUDA 13.0 and supports Blackwell on an
-R580.65.06+ host. Use `miru-tracer:0.3.0-cu126` for an older driver—including
+R580.65.06+ host. Use `miru-tracer:0.3.1-cu126` for an older driver—including
 the R550.54.15 driver in the reported two-H100 run—or a
 Maxwell CC 5.x (except 5.3),
 Pascal, or Volta GPU. Both images contain the matching CUDA userspace libraries;
@@ -339,8 +339,12 @@ Three equivalent ways to get your file there:
    against the loaded model (`d_model`, layer count, model identity, resolved
    revision, normalized config, and tokenizer fingerprint when recorded) and
    installs it in the cache — always as safetensors. Confirmed conflicts are
-   rejected. Older and upstream lenses without provenance remain loadable, but
-   "Check status" warns that their identity cannot be verified.
+   rejected. A v0.2 artifact has only the legacy full-configuration
+   fingerprint, which included load settings such as dtype; a mismatch in that
+   fingerprint alone is a warning in v0.3.1 because it cannot distinguish a
+   changed architecture from a different load configuration. Older and
+   upstream lenses without provenance remain loadable, but "Check status"
+   warns that their identity cannot be verified.
 2. **Copy it yourself**:
    `scp gpu-box:lens.safetensors ~/.cache/miru-tracer/lenses/Qwen--Qwen3-0.6B/lens.safetensors`
    (the directory name is the model name with `/` replaced by `--`).
@@ -348,11 +352,33 @@ Three equivalent ways to get your file there:
    machine without `--out`, it already writes to the cache path.
 
 The app picks up new or updated files automatically (no restart needed — the
-store checks the file's mtime).
+store checks the file's mtime). If you have independently established that a
+checkpoint is correct despite an explicit provenance conflict, select **Force
+lens despite provenance conflicts**. The override applies only to the exact
+loaded model object and current lens file and clears when either changes. It
+does not bypass residual-width or layer-range checks.
+
+If a legacy lens records `"model_commit_hash": null`, the artifact itself
+cannot identify the Hub snapshot used for fitting, and its full-config digest
+cannot be reversed to recover one. Pin **Hugging Face revision / commit SHA**
+only when you can recover the commit from the original fit log, retained
+Hugging Face cache, or another run record. Otherwise the model name, tokenizer
+fingerprint, and structural checks are the available evidence, and Miru reports
+that the exact revision remains unverified.
+
+New Hub-backed fits resolve and record this commit automatically even when
+Transformers does not populate its private `config._commit_hash`. A null value
+is still normal for a genuinely local checkpoint, which has no Hub revision;
+its normalized configuration and local manifest provide the applicable
+identity evidence. Both `miru-tracer-fit-lens` and the main application emit a
+grep-friendly INFO record containing the full resolved `commit_sha`.
 
 ## 4. Using the lenses
 
-Load a model (Model Loader tab), then open the **Lens** tab:
+Load a model in the Model Loader tab, optionally entering a full immutable
+Hugging Face commit in **Hugging Face revision / commit SHA**. Miru passes that
+same revision to the model and tokenizer and reports and logs the resolved
+commit. Then open the **Lens** tab:
 
 1. **Generate & Analyze** runs the prompt (optionally with interventions —
    see below) and computes readouts for every (layer, position) cell.
@@ -398,8 +424,10 @@ not change the Jacobian estimator or matrices. v0.3.0 also changes fitter
 checkpoint cadence, memory cleanup, and diagnostics, but the artifact and
 checkpoint schemas remain unchanged. Existing lenses created by
 `miru-tracer-fit-lens` or the upstream reference implementation remain valid
-and do **not** need retraining. Provenance-free older/upstream artifacts now
-show an identity-verification warning; that warning does not indicate damaged
+and do **not** need retraining. v0.3.0 could reject v0.2 Miru lenses because
+their legacy full-config hash changed with runtime settings; v0.3.1 treats
+that ambiguous mismatch as a warning. Provenance-free older/upstream artifacts
+also show an identity-verification warning; neither warning indicates damaged
 Jacobians. Re-run the inexpensive readout step to replace screenshots, tables,
 or conclusions produced with the old alignment.
 

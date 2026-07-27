@@ -9,7 +9,7 @@ on:
       version:
         description: Version declared in pyproject.toml
         required: true
-        default: "0.3.0"
+        default: "0.3.1"
         type: string
       unresolved_slowdown_acknowledged:
         description: Acknowledge the Qwen3.6-27B multi-GPU slowdown root cause remains unresolved
@@ -54,7 +54,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/master)"
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
           test -n "$version"
-          test "$version" = "0.3.0"
+          test "$version" = "0.3.1"
           case "$RELEASE_EVENT" in
             push)
               release_ref="refs/heads/release/v${version}"
@@ -89,7 +89,7 @@ jobs:
             echo
             echo "Authorization path: **${RELEASE_EVENT}**"
             echo
-            echo "The released v0.3.0 artifacts require post-release hardware validation before the slowdown can be described as resolved."
+            echo "The released v${version} artifacts require post-release hardware validation before the slowdown can be described as resolved."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Reject a conflicting release tag
         env:

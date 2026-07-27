@@ -1032,13 +1032,31 @@ class TestCliMain:
         ],
     )
     def test_device_map_and_prompts_file_flow(
-        self, tiny_model, tiny_tokenizer, tmp_path, monkeypatch, out_name, loader
+        self,
+        tiny_model,
+        tiny_tokenizer,
+        tmp_path,
+        monkeypatch,
+        caplog,
+        out_name,
+        loader,
     ):
         """main() end-to-end with mocked HF loaders: --device-map must reach
         from_pretrained, and the fit must produce a loadable artifact."""
         import transformers
 
+        import miru_tracer.core.lens_fit as lens_fit_module
+        import miru_tracer.core.logging_config as logging_config
+
         recorded = {}
+        resolved_commit = "a" * 40
+        monkeypatch.setattr(tiny_model.config, "_commit_hash", None, raising=False)
+        monkeypatch.setattr(logging_config, "setup_logging", lambda: None)
+        caplog.set_level(logging.INFO, logger=lens_fit_module.__name__)
+
+        def resolve_commit(name, *, revision, cache_dir):
+            recorded["resolve"] = (name, revision, cache_dir)
+            return resolved_commit
 
         class FakeModel:
             @staticmethod
@@ -1054,6 +1072,7 @@ class TestCliMain:
 
         monkeypatch.setattr(transformers, "AutoModelForCausalLM", FakeModel)
         monkeypatch.setattr(transformers, "AutoTokenizer", FakeTokenizer)
+        monkeypatch.setattr(lens_fit_module, "_resolve_hub_model_commit", resolve_commit)
 
         prompts_file = tmp_path / "prompts.txt"
         prompts_file.write_text("\n".join(PROMPTS))
@@ -1087,19 +1106,33 @@ class TestCliMain:
             ]
         )
         assert code == 0
+        assert recorded["resolve"] == ("tiny/test-model", "0123456789abcdef", None)
         assert recorded["model"]["device_map"] == "auto"
-        assert recorded["model"]["revision"] == "0123456789abcdef"
-        assert recorded["tokenizer"]["revision"] == "0123456789abcdef"
+        assert recorded["model"]["revision"] == resolved_commit
+        assert recorded["tokenizer"]["revision"] == resolved_commit
         lens = loader(out)
         assert lens.n_prompts == 3
         assert lens.fit_metadata["convergence"]["enabled"] is False
+        assert lens.fit_metadata["provenance"]["model_commit_hash"] == resolved_commit
+        assert (
+            "Model provenance: component=miru-tracer-fit-lens "
+            "model=tiny/test-model requested_revision=0123456789abcdef "
+            f"commit_sha={resolved_commit}" in caplog.messages
+        )
 
     def test_out_and_hf_home_are_independent(
         self, tiny_model, tiny_tokenizer, tmp_path, monkeypatch
     ):
         import transformers
 
+        import miru_tracer.core.lens_fit as lens_fit_module
+
         recorded = {}
+        resolved_commit = "b" * 40
+
+        def resolve_commit(name, *, revision, cache_dir):
+            recorded["resolve"] = (name, revision, cache_dir)
+            return resolved_commit
 
         class FakeModel:
             @staticmethod
@@ -1115,6 +1148,7 @@ class TestCliMain:
 
         monkeypatch.setattr(transformers, "AutoModelForCausalLM", FakeModel)
         monkeypatch.setattr(transformers, "AutoTokenizer", FakeTokenizer)
+        monkeypatch.setattr(lens_fit_module, "_resolve_hub_model_commit", resolve_commit)
         for name in (
             "HF_HOME",
             "HF_HUB_CACHE",
@@ -1160,8 +1194,12 @@ class TestCliMain:
 
         expected_hub = hf_home.resolve() / "hub"
         assert code == 0
+        assert recorded["resolve"] == ("tiny/test-model", None, expected_hub)
         assert recorded["tokenizer"]["cache_dir"] == expected_hub
         assert recorded["model"]["cache_dir"] == expected_hub
+        assert recorded["tokenizer"]["revision"] == resolved_commit
+        assert recorded["model"]["revision"] == resolved_commit
+        assert load_lens(out).fit_metadata["provenance"]["model_commit_hash"] == resolved_commit
         assert set(output_dir.iterdir()) == {
             out,
             output_dir / "lens.checkpoint.pt",
