@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import html
 
-from miru_tracer.core.lens import LensSlice, ReadoutRow
+from miru_tracer.core.lens import LensSlice, ReadoutRow, format_lens_probability
 
 # YlOrRd (matches the previous Plotly colorscale)
 _YLORRD = [
@@ -317,7 +317,7 @@ def heatmap_html(
             probs, texts = slice_.probs[i][j], slice_.texts[i][j]
             top1 = _tok(texts[0]) if texts else ""
             hover = "&#10;".join(
-                f"{rank + 1}. {_tok(t)} ({p:.3f})"
+                f"{rank + 1}. {_tok(t)} ({format_lens_probability(p)})"
                 for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
             )
             v = ((probs[0] if probs else 0.0) - vmin) / span

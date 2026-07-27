@@ -14,7 +14,7 @@ import plotly.graph_objects as go
 from plotly.colors import qualitative
 from plotly.subplots import make_subplots
 
-from miru_tracer.core.lens import LensSlice, ReadoutRow
+from miru_tracer.core.lens import LensSlice, ReadoutRow, format_lens_probability
 from miru_tracer.core.schema import TokenStep
 from miru_tracer.core.tokenizer_utils import format_token_label, visible_whitespace
 
@@ -338,7 +338,7 @@ def plot_lens_heatmap(slice_: LensSlice) -> go.Figure | None:
                 + "<br>"
                 + (
                     "<br>".join(
-                        f"{rank + 1}. {_hover_text(t)} ({p:.3f})"
+                        f"{rank + 1}. {_hover_text(t)} ({format_lens_probability(p)})"
                         for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
                     )
                     or "(empty)"
@@ -408,7 +408,7 @@ def _lens_heatmap_data(slice_: LensSlice) -> tuple[list, list, list]:
                 + "<br>"
                 + (
                     "<br>".join(
-                        f"{rank + 1}. {_hover_text(t)} ({p:.3f})"
+                        f"{rank + 1}. {_hover_text(t)} ({format_lens_probability(p)})"
                         for rank, (t, p) in enumerate(zip(texts, probs, strict=True))
                     )
                     or "(empty)"

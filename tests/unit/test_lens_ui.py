@@ -473,6 +473,26 @@ class TestLensViews:
         )
         assert heatmap_html(empty) == ""
 
+    def test_heatmap_preserves_small_nonzero_probability(self):
+        small = LensSlice(
+            mode="jacobian",
+            layers=[0],
+            positions=[0],
+            position_texts=["ctx"],
+            tokens=[[[7, 8]]],
+            probs=[[[4.2e-6, 3.1e-6]]],
+            texts=[[["signal", "other"]]],
+        )
+
+        rendered = heatmap_html(small)
+        figure = plot_lens_heatmap(small)
+
+        assert "signal (4.200e-06)" in rendered
+        assert "other (3.100e-06)" in rendered
+        assert "(0.000)" not in rendered
+        assert "signal (4.200e-06)" in figure.data[0].customdata[0][0]
+        assert figure.data[0].z[0][0] == pytest.approx(4.2e-6)
+
     def test_heatmap_marks_intervened_layers(self):
         out = heatmap_html(SLICE, {2: "steer 'a' @L2 (α=+3) (logit)"})
         assert "⚡L2" in out and "⚡L0" not in out

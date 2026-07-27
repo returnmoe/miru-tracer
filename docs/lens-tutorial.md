@@ -51,7 +51,7 @@ On the GPU instance:
 
 ```bash
 # Download both the wheel and constraints.txt attached to the GitHub release:
-pip install ./miru_tracer-0.3.1-py3-none-any.whl -c ./constraints.txt
+pip install ./miru_tracer-0.3.2-py3-none-any.whl -c ./constraints.txt
 
 # Or install from a checkout:
 pip install -e .
@@ -59,7 +59,7 @@ miru-tracer-fit-lens Qwen/Qwen3-0.6B --dim-batch 32
 ```
 
 The project dependency ranges are bounded to the minor versions tested for
-v0.3.1; the attached `constraints.txt` selects the exact release-verified
+v0.3.2; the attached `constraints.txt` selects the exact release-verified
 versions.
 
 Useful flags:
@@ -316,7 +316,7 @@ ssh -L 7860:127.0.0.1:7860 -p <external-ssh-port> root@<pod-ip>
 ```
 
 The default `miru-tracer` image is CUDA 13.0 and supports Blackwell on an
-R580.65.06+ host. Use `miru-tracer:0.3.1-cu126` for an older driver—including
+R580.65.06+ host. Use `miru-tracer:0.3.2-cu126` for an older driver—including
 the R550.54.15 driver in the reported two-H100 run—or a
 Maxwell CC 5.x (except 5.3),
 Pascal, or Volta GPU. Both images contain the matching CUDA userspace libraries;
@@ -341,10 +341,10 @@ Three equivalent ways to get your file there:
    installs it in the cache — always as safetensors. Confirmed conflicts are
    rejected. A v0.2 artifact has only the legacy full-configuration
    fingerprint, which included load settings such as dtype; a mismatch in that
-   fingerprint alone is a warning in v0.3.1 because it cannot distinguish a
-   changed architecture from a different load configuration. Older and
-   upstream lenses without provenance remain loadable, but "Check status"
-   warns that their identity cannot be verified.
+   fingerprint alone has been a warning since v0.3.1 because it cannot
+   distinguish a changed architecture from a different load configuration.
+   Older and upstream lenses without provenance remain loadable, but "Check
+   status" warns that their identity cannot be verified.
 2. **Copy it yourself**:
    `scp gpu-box:lens.safetensors ~/.cache/miru-tracer/lenses/Qwen--Qwen3-0.6B/lens.safetensors`
    (the directory name is the model name with `/` replaced by `--`).
@@ -425,11 +425,11 @@ checkpoint cadence, memory cleanup, and diagnostics, but the artifact and
 checkpoint schemas remain unchanged. Existing lenses created by
 `miru-tracer-fit-lens` or the upstream reference implementation remain valid
 and do **not** need retraining. v0.3.0 could reject v0.2 Miru lenses because
-their legacy full-config hash changed with runtime settings; v0.3.1 treats
-that ambiguous mismatch as a warning. Provenance-free older/upstream artifacts
-also show an identity-verification warning; neither warning indicates damaged
-Jacobians. Re-run the inexpensive readout step to replace screenshots, tables,
-or conclusions produced with the old alignment.
+their legacy full-config hash changed with runtime settings; since v0.3.1 Miru
+treats that ambiguous mismatch as a warning. Provenance-free older/upstream
+artifacts also show an identity-verification warning; neither warning indicates
+damaged Jacobians. Re-run the inexpensive readout step to replace screenshots,
+tables, or conclusions produced with the old alignment.
 
 The recommended Jacobian/Compare range starts after the first 29% of layers,
 which are commonly degenerate, and always includes the final model-output layer

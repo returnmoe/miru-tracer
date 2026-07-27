@@ -4,7 +4,7 @@ Unless a section is explicitly marked post-release, this checklist is a
 release gate rather than a claim that every item has already passed. The
 Qwen3.6-27B reproduction is deliberately post-release: the reporter needs the
 published v0.3 instrumentation to run it on the affected hardware. Shipping
-v0.3.1 therefore accepts a known diagnostic uncertainty; it does not establish
+v0.3.2 therefore accepts a known diagnostic uncertainty; it does not establish
 that the reported slowdown is fixed.
 
 ## 1. Source and metadata
@@ -21,15 +21,16 @@ that the reported slowdown is fixed.
   [macOS-sdist advisory](https://github.com/advisories/GHSA-h35f-9h28-mq5c)
   is accepted because v0.3 publishes no sdist. Pytest is pinned to the fixed
   9.0.3 release.
-- Confirm the dated `0.3.1` changelog entry matches the publication date.
+- Confirm the dated `0.3.2` changelog entry matches the publication date.
   Keep the Lucas Teske credit in the published section.
 - Confirm the release notes explain the v0.2 full-config compatibility fix,
   automatic immutable-commit capture in the fitter, revision-pinned UI
   loading, full `commit_sha` logging in both executables, the provenance-only
-  force option, and why structural lens checks remain mandatory. Keep the
-  v0.3.0 notes for the same-position migration, chunk persistence, diagnostics,
-  hybrid-cache replay fix, and optional-kernel policy.
-- Confirm no `v0.3.1` tag exists at another commit.
+  force option, why structural lens checks remain mandatory, the corrected
+  legacy-warning wording, and the small nonzero probability display fix. Keep
+  the v0.3.0 notes for the same-position migration, chunk persistence,
+  diagnostics, hybrid-cache replay fix, and optional-kernel policy.
+- Confirm no `v0.3.2` tag exists at another commit.
 
 ## 2. Automated gates
 
@@ -59,10 +60,10 @@ accepted:
 
 1. Either dispatch the `Release` workflow on `master`, or push the current
    `master` commit to the versioned release branch:
-   `git push origin HEAD:refs/heads/release/v0.3.1`. A branch-triggered release
+   `git push origin HEAD:refs/heads/release/v0.3.2`. A branch-triggered release
    rejects version mismatches and release branches that do not point at current
    `master`; it does not create the public version tag before the image gates.
-2. For a manual dispatch, enter `0.3.1` and acknowledge that the multi-GPU
+2. For a manual dispatch, enter `0.3.2` and acknowledge that the multi-GPU
    slowdown's root cause remains unresolved. For the raw-Git path, deliberately
    pushing the versioned release branch is that acknowledgement. Neither path
    is a hardware-test result; the workflow reruns the release-specific
@@ -81,8 +82,8 @@ added.
 ## 4. Post-release two-H100 Qwen3.6-27B validation
 
 This validation is required before describing the slowdown as resolved, but
-it does not block v0.3.1. Use a fresh output directory, the exact published
-v0.3.1 wheel or image, the same pinned model revision and prompt corpus for
+it does not block v0.3.2. Use a fresh output directory, the exact published
+v0.3.2 wheel or image, the same pinned model revision and prompt corpus for
 comparisons, two H100s, bf16, and the `device_map=balanced` path from the
 reported incident. Preserve stdout, stderr, scheduler accounting, and
 periodic system monitoring. The supplied incident environment used
@@ -91,7 +92,7 @@ the stock Miru environment and record its `fit_backend` lines rather than
 silently changing that variable.
 
 The supplied run used NVIDIA driver 550.54.15. On that host, use
-`ghcr.io/returnmoe/miru-tracer:0.3.1-cu126`; the unqualified CUDA 13.0 image
+`ghcr.io/returnmoe/miru-tracer:0.3.2-cu126`; the unqualified CUDA 13.0 image
 requires R580.65.06 or newer. Record the exact image digest in the log.
 
 Run at least 160 successful prompts in one process—resuming at corpus prompt

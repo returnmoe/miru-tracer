@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.3.2 — 2026-07-26
+
+### Lens heatmap display and provenance wording hotfix
+
+Jacobian-lens readouts for large-vocabulary models could appear to be zero at
+every position except the last. The underlying probabilities were finite and
+positive: both the static and Plotly heatmaps rounded every value to three
+decimal places, so a valid probability such as `4.2e-6` was displayed as
+`0.000`. The final position merely tended to be confident enough to survive
+that rounding.
+
+Version 0.3.2:
+
+- displays nonzero lens probabilities below `0.001` in scientific notation in
+  both heatmap implementations, while retaining the familiar fixed-point
+  display for larger values;
+- fails with an actionable error if a lens readout produces a non-finite top
+  probability instead of silently rendering invalid output;
+- clarifies the legacy provenance warning when the recorded model name and
+  immutable Hugging Face commit match the loaded model. The warning now says
+  that the revision is verified and limits the uncertainty to the missing
+  normalized architecture fingerprint and the ambiguous legacy full-config
+  hash; and
+- exercises fitted Jacobian lenses at every sequence position across the
+  supported architecture matrix, and compares final-layer lens probabilities
+  with model logits at every position.
+
+The Jacobian matrices, estimator, artifact schema, and probability computation
+are unchanged. Existing lenses do not need to be refitted.
+
 ## 0.3.1 — 2026-07-26
 
 ### Lens provenance compatibility hotfix

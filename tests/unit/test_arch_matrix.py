@@ -14,6 +14,8 @@ Everything here runs offline on randomly initialized models; it proves the
 code paths, not model quality.
 """
 
+import math
+
 import pytest
 import torch
 
@@ -108,8 +110,25 @@ class TestLensAcrossArchitectures:
         d_model = model.config.get_text_config().hidden_size
         assert lens.d_model == d_model
 
-    def test_final_layer_lens_matches_model_logits(self, arch_model, tiny_tokenizer):
-        """Also validates the softcapping path for gemma4 end-to-end."""
+        ids = tiny_tokenizer.encode("Hello world test", return_tensors="pt")
+        slice_ = compute_lens_slice(
+            model,
+            tiny_tokenizer,
+            ids,
+            layers=lens.source_layers,
+            mode="jacobian",
+            jlens=lens,
+            top_k=3,
+        )
+        assert slice_.positions == list(range(ids.shape[1]))
+        assert all(
+            math.isfinite(cell[0]) and cell[0] > 0 for layer in slice_.probs for cell in layer
+        )
+
+    def test_final_layer_lens_matches_model_logits_at_every_position(
+        self, arch_model, tiny_tokenizer
+    ):
+        """Also validates Gemma 4 softcapping and non-final sequence positions."""
         _arch, model = arch_model
         ids = tiny_tokenizer.encode("Hello world test", return_tensors="pt")
         final = model.config.get_text_config().num_hidden_layers - 1
@@ -117,10 +136,13 @@ class TestLensAcrossArchitectures:
             model, tiny_tokenizer, ids, layers=[final], mode="logit", top_k=5
         )
         with torch.no_grad():
-            real = model(ids).logits[0, -1].float()
-        expected = torch.topk(torch.softmax(real, -1), 5)
-        assert slice_.tokens[0][-1] == expected.indices.tolist()
-        assert slice_.probs[0][-1] == pytest.approx(expected.values.tolist(), rel=1e-3)
+            real = model(ids).logits[0].float()
+        expected = torch.topk(torch.softmax(real, -1), 5, dim=-1)
+        for position in range(ids.shape[1]):
+            assert slice_.tokens[0][position] == expected.indices[position].tolist()
+            assert slice_.probs[0][position] == pytest.approx(
+                expected.values[position].tolist(), rel=1e-3
+            )
 
 
 class TestInterventionsAcrossArchitectures:

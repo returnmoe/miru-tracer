@@ -446,13 +446,21 @@ def check_lens_compatibility(
                         "is treated as a runtime/load-configuration difference"
                     )
                 elif artifact_architecture_hash is None:
-                    warnings.append(
-                        f"{message}; this legacy artifact has no normalized "
-                        "architecture fingerprint, so its full hash cannot distinguish "
-                        "an architecture change from runtime/load settings. Other "
-                        "recorded identity checks still apply, but the exact "
-                        "architecture and revision remain unverified"
-                    )
+                    if model_names_match and commits_match:
+                        warnings.append(
+                            f"{message}; this legacy artifact has no normalized "
+                            "architecture fingerprint. The model name and immutable "
+                            "revision match, but its full hash cannot distinguish an "
+                            "architecture change from runtime/load settings"
+                        )
+                    else:
+                        warnings.append(
+                            f"{message}; this legacy artifact has no normalized "
+                            "architecture fingerprint, so its full hash cannot distinguish "
+                            "an architecture change from runtime/load settings. Other "
+                            "recorded identity checks still apply, but the exact "
+                            "architecture and revision remain unverified"
+                        )
                 elif model_names_match and commits_match:
                     warnings.append(f"{message}, despite matching model and revision identifiers")
                 else:

@@ -9,7 +9,7 @@ on:
       version:
         description: Version declared in pyproject.toml
         required: true
-        default: "0.3.1"
+        default: "0.3.2"
         type: string
       unresolved_slowdown_acknowledged:
         description: Acknowledge the Qwen3.6-27B multi-GPU slowdown root cause remains unresolved
@@ -54,7 +54,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/master)"
           version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)
           test -n "$version"
-          test "$version" = "0.3.1"
+          test "$version" = "0.3.2"
           case "$RELEASE_EVENT" in
             push)
               release_ref="refs/heads/release/v${version}"

@@ -50,6 +50,13 @@ LENS_MODES = ("logit", "jacobian")
 _UNEMBED_CHUNK_ROWS = 256
 
 
+def format_lens_probability(probability: float) -> str:
+    """Format a lens probability without rounding small nonzero values to zero."""
+    if probability != 0.0 and abs(probability) < 1e-3:
+        return f"{probability:.3e}"
+    return f"{probability:.3f}"
+
+
 def is_word_token(text: str) -> bool:
     """Whether decoded token text is suitable for word-only lens displays.
 
@@ -403,6 +410,10 @@ def compute_lens_slice(
                 else:
                     k = min(top_k, scores.shape[-1])
                 top_scores, top_ids = torch.topk(ranked_scores, k, dim=-1)  # [P, k]
+                if k and not torch.isfinite(top_scores[:, 0]).all().item():
+                    raise RuntimeError(
+                        f"{mode} lens produced a non-finite top probability at layer {layer}"
+                    )
 
                 layer_tokens, layer_probs, layer_texts = [], [], []
                 for p in range(n_pos):

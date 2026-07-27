@@ -323,6 +323,43 @@ def test_legacy_full_config_hash_allows_runtime_dtype_change_with_warning(
     assert "remain unverified" in warning
 
 
+def test_legacy_full_config_warning_acknowledges_matching_immutable_revision(
+    identified_runtime,
+    monkeypatch,
+):
+    """A missing semantic hash leaves architecture ambiguous, not revision."""
+    model, tokenizer = identified_runtime
+    monkeypatch.setattr(model.config, "dtype", torch.bfloat16)
+    model.config._commit_hash = None
+    clear_provenance_caches()
+    provenance = _runtime_provenance(model, tokenizer)
+    provenance.pop("model_config_sha256_kind")
+    provenance.pop("model_architecture_sha256")
+    provenance.pop("model_architecture_sha256_kind")
+
+    # Reproduce a repaired v0.2 artifact: the fit-time full config had no
+    # private Transformers commit field, while the recovered immutable commit
+    # is now recorded explicitly and exposed by the loaded model. A serialized
+    # load-time field also differs, producing the ambiguous legacy hash mismatch.
+    model.config._commit_hash = "a" * 40
+    model.config.dtype = torch.float16
+    clear_provenance_caches()
+
+    result = check_lens_compatibility(
+        _lens(provenance),
+        model,
+        tokenizer,
+        model_name_or_path="example/model",
+    )
+
+    assert result.compatible
+    assert result.errors == ()
+    warning = " ".join(result.warnings)
+    assert "model name and immutable revision match" in warning
+    assert "architecture change from runtime/load settings" in warning
+    assert "revision remain unverified" not in warning
+
+
 def test_legacy_full_config_warning_does_not_mask_tokenizer_conflict(
     identified_runtime,
     monkeypatch,
