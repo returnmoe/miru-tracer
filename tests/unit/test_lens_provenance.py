@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -195,6 +197,16 @@ def test_normalized_architecture_hash_ignores_loader_identity(identified_runtime
     model.config._commit_hash = "b" * 40
     clear_provenance_caches()
     assert model_architecture_sha256(model) == first
+
+
+def test_composite_and_causal_text_configs_share_semantic_hash(tiny_qwen35):
+    from transformers import Qwen3_5Config
+
+    composite_config = Qwen3_5Config(text_config=tiny_qwen35.config.to_dict())
+    composite_model = SimpleNamespace(config=composite_config)
+
+    assert composite_config.get_text_config().to_dict() == tiny_qwen35.config.to_dict()
+    assert model_architecture_sha256(composite_model) == model_architecture_sha256(tiny_qwen35)
 
 
 def test_hub_revision_is_resolved_from_commit_addressed_cache_path(

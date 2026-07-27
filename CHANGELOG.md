@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.3 — 2026-07-26
+
+### Composite-config lens provenance hotfix
+
+The `miru-semantic-v1` architecture fingerprint added during the v0.3 release
+series normalized whichever Transformers configuration object it received.
+For composite models such as Qwen3.5/Qwen3.6, one code path could expose the
+outer multimodal configuration while the causal-language-model loader exposed
+its text subconfiguration. Those two objects describe the same text
+architecture but serialize differently, causing a false
+`model-architecture fingerprint does not match` error even when the model
+repository and immutable revision matched.
+
+Version 0.3.3:
+
+- defines `miru-semantic-v1` consistently over the model's text configuration,
+  using `get_text_config()` when Transformers supplies it;
+- keeps the existing fingerprint kind and artifact schema, removing the
+  representation bug in place rather than adding a second fingerprint version
+  or a permanent legacy compatibility branch; and
+- adds a Qwen3.5/Qwen3.6 regression proving that equivalent composite and
+  causal-text configurations produce the same semantic fingerprint.
+
+No Jacobian matrices or model weights need to be regenerated. Affected v0.3.2
+artifacts only need their recorded architecture fingerprint updated; artifacts
+that were fitted while `model.config` already exposed the text configuration
+are unaffected.
+
 ## 0.3.2 — 2026-07-26
 
 ### Lens heatmap display and provenance wording hotfix

@@ -127,11 +127,11 @@ def _without_volatile_config_fields(value: Any) -> Any:
 
 
 def model_architecture_sha256(model) -> str | None:
-    """Hash architecture-affecting config while ignoring runtime/load details."""
+    """Hash the text architecture while ignoring runtime/load details."""
     key = (id(model), MODEL_ARCHITECTURE_HASH_KIND)
     if key in _model_config_cache:
         return _model_config_cache[key]
-    config = getattr(model, "config", None)
+    config = _text_config(model)
     if config is None or not hasattr(config, "to_dict"):
         result = None
     else:

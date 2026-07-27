@@ -51,7 +51,7 @@ On the GPU instance:
 
 ```bash
 # Download both the wheel and constraints.txt attached to the GitHub release:
-pip install ./miru_tracer-0.3.2-py3-none-any.whl -c ./constraints.txt
+pip install ./miru_tracer-0.3.3-py3-none-any.whl -c ./constraints.txt
 
 # Or install from a checkout:
 pip install -e .
@@ -59,7 +59,7 @@ miru-tracer-fit-lens Qwen/Qwen3-0.6B --dim-batch 32
 ```
 
 The project dependency ranges are bounded to the minor versions tested for
-v0.3.2; the attached `constraints.txt` selects the exact release-verified
+v0.3.3; the attached `constraints.txt` selects the exact release-verified
 versions.
 
 Useful flags:
@@ -316,7 +316,7 @@ ssh -L 7860:127.0.0.1:7860 -p <external-ssh-port> root@<pod-ip>
 ```
 
 The default `miru-tracer` image is CUDA 13.0 and supports Blackwell on an
-R580.65.06+ host. Use `miru-tracer:0.3.2-cu126` for an older driver—including
+R580.65.06+ host. Use `miru-tracer:0.3.3-cu126` for an older driver—including
 the R550.54.15 driver in the reported two-H100 run—or a
 Maxwell CC 5.x (except 5.3),
 Pascal, or Volta GPU. Both images contain the matching CUDA userspace libraries;

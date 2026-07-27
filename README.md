@@ -57,7 +57,7 @@ pip install -e . --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
 The declared dependencies stay within the minor release lines tested for
-v0.3.2. `constraints.txt` pins the exact verified set:
+v0.3.3. `constraints.txt` pins the exact verified set:
 `pip install -e . -c constraints.txt --extra-index-url https://download.pytorch.org/whl/cpu`.
 GitHub Releases attach that exact constraints file beside the wheel and include
 both files in `SHA256SUMS`.
@@ -171,6 +171,12 @@ identity conflicts still block the lens. The Lens tab also offers an explicit
 have independently verified the checkpoint. It cannot bypass residual-width
 or layer-range checks and is cleared when the model or lens file changes.
 
+v0.3.3 corrects `miru-semantic-v1` for composite model configurations such as
+Qwen3.5/Qwen3.6. The fingerprint is now always computed from the causal text
+configuration, so an outer composite config and its equivalent text config no
+longer produce a false conflict. Affected v0.3.2 fit files need only a metadata
+fingerprint update; their Jacobian matrices do not need to be refitted.
+
 Architecture support: the Llama/Qwen/Mistral/Gemma family (including hybrid
 Qwen3.5/Qwen3.6 cache handling), **Gemma 4**
 (text-only and multimodal wrappers, softcapping included), **GLM MoE-DSA**
@@ -239,13 +245,13 @@ current default and supports Turing, Ampere, Hopper, and Blackwell GPUs.
 CUDA 12.6 remains available as an explicit legacy build for older host drivers
 and Maxwell CC 5.x (except 5.3), Pascal, or Volta GPUs. No single PyTorch wheel
 covers both sets.
-Examples below use release `0.3.2`:
+Examples below use release `0.3.3`:
 
 | Tags | CUDA | Intended use |
 | --- | --- | --- |
-| `0.3.2`, `0.3`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
-| `0.3.2-cu130`, `0.3-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
-| `0.3.2-cu126`, `0.3-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
+| `0.3.3`, `0.3`, `latest` | 13.0 | Default; Turing through Blackwell, with an NVIDIA R580.65.06+ driver |
+| `0.3.3-cu130`, `0.3-cu130`, `latest-cu130` | 13.0 | Explicit aliases for the default build |
+| `0.3.3-cu126`, `0.3-cu126`, `latest-cu126` | 12.6 | Legacy drivers or Maxwell CC 5.x except 5.3, Pascal, and Volta GPUs |
 | `sha-<full-commit>` and `sha-<full-commit>-cu130` | 13.0 | Immutable commit build |
 | `sha-<full-commit>-cu126` | 12.6 | Immutable legacy CUDA 12.6 build |
 
@@ -256,8 +262,8 @@ Dockerfile; only the pinned NVIDIA base, PyTorch wheel index, and exact CUDA
 version assertion differ.
 
 ```bash
-docker pull ghcr.io/returnmoe/miru-tracer:0.3.2
-docker pull ghcr.io/returnmoe/miru-tracer:0.3.2-cu126
+docker pull ghcr.io/returnmoe/miru-tracer:0.3.3
+docker pull ghcr.io/returnmoe/miru-tracer:0.3.3-cu126
 ```
 
 Images are published only by the gated release workflow, started either by a
@@ -270,7 +276,7 @@ branch is that acknowledgement. The branch must point at current `master`; it
 does not publish the version tag early. The verified immutable images are
 promoted to exact version aliases before the Git tag and GitHub Release are
 created; mutable minor and `latest` aliases are promoted afterward. The
-two-H100 Qwen3.6-27B long run is performed against the published v0.3.2
+two-H100 Qwen3.6-27B long run is performed against the published v0.3.3
 artifacts. Pull-request builds are tested but not pushed to GHCR. Both variants
 bundle the matching CUDA userspace runtime, cuDNN, CUDA compatibility
 libraries, PyTorch, Triton, bitsandbytes, and Miru's complete Python dependency
@@ -295,7 +301,7 @@ with the following values:
 
 | Template setting | Recommended value |
 | --- | --- |
-| Container image | `ghcr.io/returnmoe/miru-tracer:0.3.2` for R580.65.06+; use `ghcr.io/returnmoe/miru-tracer:0.3.2-cu126` for an R550-class host |
+| Container image | `ghcr.io/returnmoe/miru-tracer:0.3.3` for R580.65.06+; use `ghcr.io/returnmoe/miru-tracer:0.3.3-cu126` for an R550-class host |
 | Container disk | At least 20 GB; add enough local space for the model and Hugging Face cache |
 | SSH key injection | Required: deploy with `startSsh: true` (GraphQL) or `runpodctl ... --ssh=true` |
 | TCP ports | `22/tcp` |
@@ -333,7 +339,7 @@ runpodctl pod create \
 ```
 
 For a direct-image deployment, replace `--template-id excmb18ueh` with
-`--image ghcr.io/returnmoe/miru-tracer:0.3.2` and supply the desired `--env`
+`--image ghcr.io/returnmoe/miru-tracer:0.3.3` and supply the desired `--env`
 JSON. For a custom GraphQL client, set `startSsh: true` explicitly. Merely
 adding `22/tcp` does not set it. The verified CLI version is available from
 the [official GitHub releases](https://github.com/runpod/runpodctl/releases);
